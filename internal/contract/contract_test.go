@@ -82,6 +82,21 @@ func TestNamespaceValidation(t *testing.T) {
 	}
 }
 
+func TestValidEnvName(t *testing.T) {
+	valid := []string{"DATABASE_URL", "_internal", "x", "A1", "lower_case"}
+	invalid := []string{"BAD-NAME", "1LEADING", "has space", "", "weird.name", "a/b"}
+	for _, name := range valid {
+		if !ValidEnvName(name) {
+			t.Errorf("%q should be a valid env name", name)
+		}
+	}
+	for _, name := range invalid {
+		if ValidEnvName(name) {
+			t.Errorf("%q should be rejected", name)
+		}
+	}
+}
+
 func TestFindWalksUp(t *testing.T) {
 	root := t.TempDir()
 	writeContract(t, root, sample)

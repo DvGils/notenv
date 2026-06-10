@@ -49,7 +49,7 @@ verify a download:
 ```sh
 cosign verify-blob \
   --bundle checksums.txt.bundle \
-  --certificate-identity-regexp 'https://github.com/DvGils/notenv' \
+  --certificate-identity-regexp '^https://github\.com/DvGils/notenv/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   checksums.txt
 sha256sum -c checksums.txt --ignore-missing      # then check your archive's hash
@@ -214,21 +214,38 @@ clear`). Set either `cache_ttl` to `"0"` to disable caching.
 On macOS and Windows the caches are not yet wired up, so those platforms prompt and fetch on
 every run; the cache lands together with their native key stores (see [Status](#status)).
 
+**Concurrent writes.** `notenv set` is a read-modify-write of the whole namespace blob, and
+there is no locking across machines yet. If two people (or two machines) run `set` on the
+same namespace at nearly the same time, the later upload wins and the earlier new key is
+lost. Object versioning on the remote preserves the overwritten bytes, but notenv does not
+reconcile them automatically. In practice this is a non-issue for a single user; compare-and-swap
+on write lands with team mode.
+
 ## Security
 
 - **At rest, anywhere:** only age ciphertext exists (on your storage and in any local
   cache). It is useless without your key.
 - **Storage provider compromise:** the provider sees ciphertext only and cannot decrypt it.
-- **Stolen storage credential:** grants read of
-  ciphertext, not plaintext. Your key is a separate factor held in your password manager.
+- **Stolen storage credential:** grants read of ciphertext, not plaintext (your key is a
+  separate factor held in your password manager). Most credentials also allow writes, so
+  the integrity caveat below applies too.
+- **Write access to your storage (integrity, not confidentiality):** notenv protects
+  *confidentiality* unconditionally, but it does not sign the blob or bind it to a version.
+  An attacker (or a misbehaving sync) that can *write* your storage can delete a blob, or
+  roll it back to an older ciphertext that was once valid, reverting a rotated secret
+  without your machine being able to tell. They still cannot forge new plaintext: a
+  substituted blob they don't hold the key for simply fails to decrypt. This is the same
+  trade-off as encrypting onto dumb storage (LUKS, restic). Object versioning on the remote
+  (the default on B2) lets you recover the prior bytes; signed, version-bound headers are a
+  planned hardening.
 - **Running machine compromise:** an attacker with your live session and your key can
   decrypt. notenv shrinks the window (no `.env` lying around, plaintext only in the child
   process for its lifetime) but cannot defend a fully compromised host.
 - **notenv itself:** a small, auditable, client-side-crypto core. The tool never needs to be
   trusted with anything at rest.
 
-The only irreplaceable secret is your passphrase, which you store somewhere safe (e.g, password manager)
-not on the storage backend. A lost or dead machine loses nothing: retrieve the passphrase on
+The only irreplaceable secret is your passphrase, which you store somewhere safe (e.g. a
+password manager), not on the storage backend. A lost or dead machine loses nothing: retrieve the passphrase on
 a new machine and notenv works again.
 
 ## Building from source

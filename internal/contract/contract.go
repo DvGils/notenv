@@ -22,6 +22,13 @@ var ErrNotFound = errors.New("no " + FileName + " found (run `notenv init` in yo
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// ValidEnvName reports whether s is a usable environment variable name (and
+// thus a valid secret key): a letter or underscore followed by letters,
+// digits, or underscores. Entry points that store a key (e.g. `notenv set`)
+// should check this before doing any work, so a name that could never be
+// injected never reaches storage.
+func ValidEnvName(s string) bool { return envName.MatchString(s) }
+
 // NamespaceName constrains namespaces: they become remote object names.
 // Must start with an alphanumeric or underscore, which excludes the
 // path-significant names "." and ".." (and any leading "-"), while still
@@ -81,7 +88,7 @@ func Parse(path string) (*File, error) {
 		}
 	}
 	for key := range f.Secrets {
-		if !envName.MatchString(key) {
+		if !ValidEnvName(key) {
 			return nil, fmt.Errorf("%s: %q is not a valid environment variable name", path, key)
 		}
 	}
@@ -95,7 +102,7 @@ func Parse(path string) (*File, error) {
 // section (creating the section if absent). Textual insert, not a TOML
 // rewrite, so the user's comments and layout survive.
 func Declare(path, key string) error {
-	if !envName.MatchString(key) {
+	if !ValidEnvName(key) {
 		return fmt.Errorf("%q is not a valid environment variable name", key)
 	}
 	data, err := os.ReadFile(path)

@@ -22,6 +22,12 @@ var setCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key := args[0]
+		// Validate before any work: an invalid name can never be injected
+		// (BuildEnv only iterates declared secrets, and Declare would reject
+		// it), so it must not reach storage as an orphan blob entry.
+		if !contract.ValidEnvName(key) {
+			return fmt.Errorf("%q is not a valid environment variable name", key)
+		}
 		a, err := loadApp()
 		if err != nil {
 			return err

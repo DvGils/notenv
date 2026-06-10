@@ -55,9 +55,14 @@ func decodeKey(b []byte) keyAction {
 	return keyNone
 }
 
-// renderMenu draws the option list with the cursor row highlighted.
+// renderMenu draws the option list with the cursor row highlighted. Lines are
+// separated by newlines rather than terminated by them, so the cursor finishes
+// on the last option's row, not a blank line below it. That stops the terminal
+// from scrolling when the menu sits at the bottom of the screen (which would
+// otherwise throw off the cursor-up redraw and print a new menu each keypress).
+// Each line is cleared with \x1b[2K so a shorter redraw leaves no stale text.
 func renderMenu(out io.Writer, label string, options []Option, cursor int) {
-	fmt.Fprint(out, question(label, "")+"\r\n")
+	fmt.Fprint(out, "\x1b[2K"+question(label, ""))
 	for i, opt := range options {
 		line := "  " + opt.Label
 		if i == cursor {
@@ -66,7 +71,7 @@ func renderMenu(out io.Writer, label string, options []Option, cursor int) {
 		if opt.Detail != "" {
 			line += "  " + Dim(opt.Detail)
 		}
-		fmt.Fprint(out, "\x1b[2K"+line+"\r\n")
+		fmt.Fprint(out, "\r\n\x1b[2K"+line)
 	}
 }
 
@@ -98,25 +103,28 @@ func Select(label string, options []Option) (int, error) {
 	defer fmt.Fprint(out, "\x1b[?25h") // show cursor
 
 	cursor := 0
-	rewind := func() { fmt.Fprintf(out, "\x1b[%dA", len(options)+1) }
-	clear := func() { fmt.Fprintf(out, "\x1b[%dA\x1b[J", len(options)+1) } // wipe the menu
+	// After renderMenu the cursor sits on the last option's row. moveTop
+	// returns to the start of the menu (label row, column 0); wipe also erases
+	// the menu from there to the end of the screen.
+	moveTop := func() { fmt.Fprintf(out, "\x1b[%dA\r", len(options)) }
+	wipe := func() { moveTop(); fmt.Fprint(out, "\x1b[0J") }
 
 	renderMenu(out, label, options, cursor)
 	buf := make([]byte, 3)
 	for {
 		n, err := f.Read(buf)
 		if err != nil {
-			clear()
+			wipe()
 			return -1, err
 		}
 		switch decodeKey(buf[:n]) {
 		case keyConfirm:
-			clear()
+			wipe()
 			term.Restore(fd, previous)
 			fmt.Fprintln(out, question(label, "")+options[cursor].Label)
 			return cursor, nil
 		case keyCancel:
-			clear()
+			wipe()
 			return -1, ErrCanceled
 		case keyUp:
 			cursor = (cursor + len(options) - 1) % len(options)
@@ -125,7 +133,7 @@ func Select(label string, options []Option) (int, error) {
 		default:
 			continue
 		}
-		rewind()
+		moveTop()
 		renderMenu(out, label, options, cursor)
 	}
 }
