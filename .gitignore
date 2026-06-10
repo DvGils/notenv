@@ -27,6 +27,10 @@ go.work.sum
 # env file
 .env
 
+# Build artifacts
+/notenv
+/dist/
+
 # Editor/IDE
 # .idea/
 # .vscode/

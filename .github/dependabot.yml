@@ -1,0 +1,26 @@
+version: 2
+
+updates:
+  # Keep the SHA-pinned GitHub Actions current (bumps the pin and the version
+  # comment together). Without this, immutable pins silently go stale.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        update-types: [minor, patch]
+
+  # Go module dependencies. The dependency surface is deliberately small
+  # (age, cobra, x/*, BurntSushi/toml); keep it patched.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"
+    groups:
+      go-minor-patch:
+        update-types: [minor, patch]
