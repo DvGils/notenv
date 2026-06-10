@@ -12,6 +12,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Gated on the protected `release` environment: the job pauses for manual
+    # approval before it builds, signs, or publishes anything, so a pushed tag
+    # cannot ship a release on its own.
+    environment: release
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
