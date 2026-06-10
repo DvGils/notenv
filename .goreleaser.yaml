@@ -50,15 +50,13 @@ checksum:
 # by a release run of this repo. Requires id-token: write in the workflow.
 signs:
   - cmd: cosign
-    certificate: "${artifact}.pem"
+    # cosign 3.x produces a single Sigstore bundle (signature + certificate
+    # in one file) instead of separate .sig/.pem. Point GoReleaser's
+    # signature artifact at the bundle so it gets uploaded with the release.
+    signature: "${artifact}.bundle"
     args:
       - sign-blob
-      # cosign 3.x defaults to the new single-file bundle and ignores the
-      # separate signature/certificate outputs. Opt back into the two-file
-      # output that GoReleaser uploads and the README verifies.
-      - "--new-bundle-format=false"
-      - "--output-certificate=${certificate}"
-      - "--output-signature=${signature}"
+      - "--bundle=${artifact}.bundle"
       - "${artifact}"
       - "--yes"
     artifacts: checksum

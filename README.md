@@ -48,8 +48,7 @@ verify a download:
 
 ```sh
 cosign verify-blob \
-  --certificate checksums.txt.pem \
-  --signature checksums.txt.sig \
+  --bundle checksums.txt.bundle \
   --certificate-identity-regexp 'https://github.com/DvGils/notenv' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   checksums.txt
