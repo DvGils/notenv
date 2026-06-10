@@ -53,6 +53,10 @@ signs:
     certificate: "${artifact}.pem"
     args:
       - sign-blob
+      # cosign 3.x defaults to the new single-file bundle and ignores the
+      # separate signature/certificate outputs. Opt back into the two-file
+      # output that GoReleaser uploads and the README verifies.
+      - "--new-bundle-format=false"
       - "--output-certificate=${certificate}"
       - "--output-signature=${signature}"
       - "${artifact}"
