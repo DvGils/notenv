@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 
@@ -12,6 +13,61 @@ import (
 type Option struct {
 	Label  string
 	Detail string
+}
+
+// keyAction is the meaning of a key press in the picker.
+type keyAction int
+
+const (
+	keyNone keyAction = iota
+	keyConfirm
+	keyCancel
+	keyUp
+	keyDown
+)
+
+// decodeKey maps a raw read from the terminal to an action. Arrow keys
+// arrive as the 3-byte escape sequence ESC [ A/B; single bytes cover the
+// vi-style and control keys.
+func decodeKey(b []byte) keyAction {
+	if len(b) == 3 && b[0] == 0x1b && b[1] == '[' {
+		switch b[2] {
+		case 'A':
+			return keyUp
+		case 'B':
+			return keyDown
+		}
+		return keyNone
+	}
+	if len(b) != 1 {
+		return keyNone
+	}
+	switch b[0] {
+	case '\r', '\n':
+		return keyConfirm
+	case 3, 'q', 27: // Ctrl-C, q, bare Esc
+		return keyCancel
+	case 'k':
+		return keyUp
+	case 'j':
+		return keyDown
+	}
+	return keyNone
+}
+
+// renderMenu draws the option list with the cursor row highlighted.
+func renderMenu(out io.Writer, label string, options []Option, cursor int) {
+	fmt.Fprint(out, question(label, "")+"\r\n")
+	for i, opt := range options {
+		line := "  " + opt.Label
+		if i == cursor {
+			line = Cyan("› " + opt.Label)
+		}
+		if opt.Detail != "" {
+			line += "  " + Dim(opt.Detail)
+		}
+		fmt.Fprint(out, "\x1b[2K"+line+"\r\n")
+	}
 }
 
 // Select renders an arrow-key picker on the controlling terminal and
@@ -42,25 +98,10 @@ func Select(label string, options []Option) (int, error) {
 	defer fmt.Fprint(out, "\x1b[?25h") // show cursor
 
 	cursor := 0
-	render := func() {
-		fmt.Fprint(out, question(label, "")+"\r\n")
-		for i, opt := range options {
-			line := "  " + opt.Label
-			if i == cursor {
-				line = Cyan("› " + opt.Label)
-			}
-			if opt.Detail != "" {
-				line += "  " + Dim(opt.Detail)
-			}
-			fmt.Fprint(out, "\x1b[2K"+line+"\r\n")
-		}
-	}
 	rewind := func() { fmt.Fprintf(out, "\x1b[%dA", len(options)+1) }
-	clear := func() {
-		fmt.Fprintf(out, "\x1b[%dA\x1b[J", len(options)+1) // wipe the menu
-	}
+	clear := func() { fmt.Fprintf(out, "\x1b[%dA\x1b[J", len(options)+1) } // wipe the menu
 
-	render()
+	renderMenu(out, label, options, cursor)
 	buf := make([]byte, 3)
 	for {
 		n, err := f.Read(buf)
@@ -68,25 +109,24 @@ func Select(label string, options []Option) (int, error) {
 			clear()
 			return -1, err
 		}
-		key := buf[:n]
-		switch {
-		case n == 1 && (key[0] == '\r' || key[0] == '\n'):
+		switch decodeKey(buf[:n]) {
+		case keyConfirm:
 			clear()
 			term.Restore(fd, previous)
 			fmt.Fprintln(out, question(label, "")+options[cursor].Label)
 			return cursor, nil
-		case n == 1 && (key[0] == 3 || key[0] == 'q' || key[0] == 27): // Ctrl-C, q, bare Esc
+		case keyCancel:
 			clear()
 			return -1, ErrCanceled
-		case n == 1 && key[0] == 'k', n == 3 && key[2] == 'A': // up
+		case keyUp:
 			cursor = (cursor + len(options) - 1) % len(options)
-		case n == 1 && key[0] == 'j', n == 3 && key[2] == 'B': // down
+		case keyDown:
 			cursor = (cursor + 1) % len(options)
 		default:
 			continue
 		}
 		rewind()
-		render()
+		renderMenu(out, label, options, cursor)
 	}
 }
 

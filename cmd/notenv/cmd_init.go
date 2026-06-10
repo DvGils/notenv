@@ -124,10 +124,9 @@ func writeContract(cwd string) error {
 		if !contract.NamespaceName.MatchString(namespace) {
 			return fmt.Errorf("namespace %q must match %s", namespace, contract.NamespaceName)
 		}
-		if namespace == filepath.Base(cwd) {
-			// The default: keep it implicit (and commented) in the file.
-			namespace = ""
-		} else {
+		// Only write an explicit namespace line when it differs from the
+		// directory-name default; otherwise leave the default commented out.
+		if namespace != filepath.Base(cwd) {
 			nsLine = fmt.Sprintf("\nnamespace = %q\n", namespace)
 		}
 	}

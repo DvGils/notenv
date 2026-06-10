@@ -133,105 +133,36 @@ func chooseRemote(ctx context.Context) (string, error) {
 
 // createRemote drives `rclone config create` for curated key-based
 // providers: 2-3 questions in notenv's language instead of rclone's
-// 20-question wizard.
+// 20-question wizard. Each provider's prompts live in its own builder.
 func createRemote(ctx context.Context) (string, error) {
-	providers := []ui.Option{
-		{Label: "Backblaze B2", Detail: "application key"},
-		{Label: "S3-compatible", Detail: "AWS, Cloudflare R2, MinIO…"},
-		{Label: "SFTP", Detail: "any SSH server"},
-		{Label: "WebDAV", Detail: "Nextcloud, ownCloud…"},
+	providers := []struct {
+		opt         ui.Option
+		defaultName string
+		build       func() (string, map[string]string, error)
+	}{
+		{ui.Option{Label: "Backblaze B2", Detail: "application key"}, "notenv-b2", b2Params},
+		{ui.Option{Label: "S3-compatible", Detail: "AWS, Cloudflare R2, MinIO…"}, "notenv-s3", s3Params},
+		{ui.Option{Label: "SFTP", Detail: "any SSH server"}, "notenv-sftp", sftpParams},
+		{ui.Option{Label: "WebDAV", Detail: "Nextcloud, ownCloud…"}, "notenv-webdav", webdavParams},
 	}
-	provider, err := ui.Select("Provider", providers)
+	opts := make([]ui.Option, len(providers))
+	for i, p := range providers {
+		opts[i] = p.opt
+	}
+
+	choice, err := ui.Select("Provider", opts)
 	if err != nil {
 		return "", err
 	}
+	provider := providers[choice]
 
-	defaults := []string{"notenv-b2", "notenv-s3", "notenv-sftp", "notenv-webdav"}
-	name, err := ui.Input("Name for the new remote", defaults[provider])
+	name, err := ui.Input("Name for the new remote", provider.defaultName)
 	if err != nil {
 		return "", err
 	}
-
-	var kind string
-	params := map[string]string{}
-	switch provider {
-	case 0: // Backblaze B2
-		kind = "b2"
-		if params["account"], err = requireInput("Backblaze keyID", ""); err != nil {
-			return "", err
-		}
-		if params["key"], err = keyring.ReadSecret("applicationKey (hidden): "); err != nil {
-			return "", err
-		}
-		// Keep B2's native versioning: it's what backs Put's
-		// retain-prior-versions contract.
-		params["hard_delete"] = "false"
-	case 1: // S3-compatible
-		kind = "s3"
-		flavors := []ui.Option{
-			{Label: "AWS S3"},
-			{Label: "Cloudflare R2"},
-			{Label: "MinIO"},
-			{Label: "Other S3-compatible"},
-		}
-		flavor, err := ui.Select("Which S3", flavors)
-		if err != nil {
-			return "", err
-		}
-		params["provider"] = []string{"AWS", "Cloudflare", "Minio", "Other"}[flavor]
-		if params["access_key_id"], err = requireInput("Access key ID", ""); err != nil {
-			return "", err
-		}
-		if params["secret_access_key"], err = keyring.ReadSecret("Secret access key (hidden): "); err != nil {
-			return "", err
-		}
-		if flavor == 0 {
-			if params["region"], err = requireInput("Region", "e.g. eu-central-1"); err != nil {
-				return "", err
-			}
-		} else {
-			if params["endpoint"], err = requireInput("Endpoint URL", ""); err != nil {
-				return "", err
-			}
-		}
-	case 2: // SFTP
-		kind = "sftp"
-		if params["host"], err = requireInput("Host", ""); err != nil {
-			return "", err
-		}
-		if params["user"], err = ui.Input("User", os.Getenv("USER")); err != nil {
-			return "", err
-		}
-		auth, err := ui.Select("Authentication", []ui.Option{
-			{Label: "ssh-agent / default keys", Detail: "no credentials stored"},
-			{Label: "password"},
-		})
-		if err != nil {
-			return "", err
-		}
-		if auth == 1 {
-			if params["pass"], err = keyring.ReadSecret("Password (hidden): "); err != nil {
-				return "", err
-			}
-		}
-	case 3: // WebDAV
-		kind = "webdav"
-		if params["url"], err = requireInput("WebDAV URL", ""); err != nil {
-			return "", err
-		}
-		vendor, err := ui.Select("Server", []ui.Option{
-			{Label: "Nextcloud"}, {Label: "ownCloud"}, {Label: "Other"},
-		})
-		if err != nil {
-			return "", err
-		}
-		params["vendor"] = []string{"nextcloud", "owncloud", "other"}[vendor]
-		if params["user"], err = requireInput("User", ""); err != nil {
-			return "", err
-		}
-		if params["pass"], err = keyring.ReadSecret("Password (hidden): "); err != nil {
-			return "", err
-		}
+	kind, params, err := provider.build()
+	if err != nil {
+		return "", err
 	}
 
 	if err := backend.CreateRemote(ctx, name, kind, params); err != nil {
@@ -239,6 +170,95 @@ func createRemote(ctx context.Context) (string, error) {
 	}
 	ui.Successf("created rclone remote %q", name)
 	return name, nil
+}
+
+func b2Params() (string, map[string]string, error) {
+	// hard_delete=false keeps B2's native versioning, which backs Put's
+	// retain-prior-versions contract.
+	params := map[string]string{"hard_delete": "false"}
+	var err error
+	if params["account"], err = requireInput("Backblaze keyID", ""); err != nil {
+		return "", nil, err
+	}
+	if params["key"], err = keyring.ReadSecret("applicationKey (hidden): "); err != nil {
+		return "", nil, err
+	}
+	return "b2", params, nil
+}
+
+func s3Params() (string, map[string]string, error) {
+	params := map[string]string{}
+	flavor, err := ui.Select("Which S3", []ui.Option{
+		{Label: "AWS S3"},
+		{Label: "Cloudflare R2"},
+		{Label: "MinIO"},
+		{Label: "Other S3-compatible"},
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	params["provider"] = []string{"AWS", "Cloudflare", "Minio", "Other"}[flavor]
+	if params["access_key_id"], err = requireInput("Access key ID", ""); err != nil {
+		return "", nil, err
+	}
+	if params["secret_access_key"], err = keyring.ReadSecret("Secret access key (hidden): "); err != nil {
+		return "", nil, err
+	}
+	// AWS resolves by region; everything else needs an explicit endpoint.
+	if flavor == 0 {
+		if params["region"], err = requireInput("Region", "e.g. eu-central-1"); err != nil {
+			return "", nil, err
+		}
+	} else if params["endpoint"], err = requireInput("Endpoint URL", ""); err != nil {
+		return "", nil, err
+	}
+	return "s3", params, nil
+}
+
+func sftpParams() (string, map[string]string, error) {
+	params := map[string]string{}
+	var err error
+	if params["host"], err = requireInput("Host", ""); err != nil {
+		return "", nil, err
+	}
+	if params["user"], err = ui.Input("User", os.Getenv("USER")); err != nil {
+		return "", nil, err
+	}
+	auth, err := ui.Select("Authentication", []ui.Option{
+		{Label: "ssh-agent / default keys", Detail: "no credentials stored"},
+		{Label: "password"},
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	if auth == 1 {
+		if params["pass"], err = keyring.ReadSecret("Password (hidden): "); err != nil {
+			return "", nil, err
+		}
+	}
+	return "sftp", params, nil
+}
+
+func webdavParams() (string, map[string]string, error) {
+	params := map[string]string{}
+	var err error
+	if params["url"], err = requireInput("WebDAV URL", ""); err != nil {
+		return "", nil, err
+	}
+	vendor, err := ui.Select("Server", []ui.Option{
+		{Label: "Nextcloud"}, {Label: "ownCloud"}, {Label: "Other"},
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	params["vendor"] = []string{"nextcloud", "owncloud", "other"}[vendor]
+	if params["user"], err = requireInput("User", ""); err != nil {
+		return "", nil, err
+	}
+	if params["pass"], err = keyring.ReadSecret("Password (hidden): "); err != nil {
+		return "", nil, err
+	}
+	return "webdav", params, nil
 }
 
 // manualRcloneConfig is the escape hatch: hand the terminal to rclone's
