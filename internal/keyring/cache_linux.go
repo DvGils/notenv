@@ -8,7 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// kernelCache stores passphrases as "user"-type keys in the kernel's
+// kernelCache stores master keys as "user"-type keys in the kernel's
 // per-UID user keyring. Keys live in kernel memory only, are shared across
 // the user's processes (prompt once per login session), and the kernel
 // enforces the TTL.
@@ -35,11 +35,11 @@ func (kernelCache) Get(scope string) (string, bool) {
 	return string(buf[:n]), true
 }
 
-func (kernelCache) Store(scope, passphrase string, ttl time.Duration) error {
+func (kernelCache) Store(scope, masterKey string, ttl time.Duration) error {
 	if ttl <= 0 {
 		return nil
 	}
-	id, err := unix.AddKey("user", keyDesc(scope), []byte(passphrase), unix.KEY_SPEC_USER_KEYRING)
+	id, err := unix.AddKey("user", keyDesc(scope), []byte(masterKey), unix.KEY_SPEC_USER_KEYRING)
 	if err != nil {
 		return err
 	}

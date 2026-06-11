@@ -27,11 +27,10 @@ import (
 
 // formatVersion is the on-storage schema version of segment and snapshot objects
 // (the secret values). Every object written carries it; a read rejects any
-// object stamped with a higher version (written by a newer notenv) instead of
-// misreading it. A missing version (0) is a pre-0.4 object and read as the
-// current format, so this field was added without breaking the prior layout. The
-// key header (internal/crypto) is versioned separately and more strictly: it has
-// always been authenticated and has no version-0 path. Bump only on an
+// object stamped with a different version — higher means a newer notenv wrote
+// it, absent (0) means a pre-0.4 layout this notenv no longer reads (compact
+// with 0.4 first, or re-set the values). The key header (internal/crypto) is
+// versioned separately by the same exact-match rule. Bump only on an
 // incompatible change to these payloads.
 const formatVersion = 1
 
@@ -284,11 +283,15 @@ func (n *Namespace) openInto(ctx context.Context, key string, v any) error {
 	return nil
 }
 
-// checkFormat rejects an object written by a newer notenv rather than misreading
-// it. Version 0 is a pre-versioning object and read as the current format.
+// checkFormat rejects an object this build cannot faithfully read: a higher
+// version was written by a newer notenv, and an absent version (0) by a
+// pre-0.4 one.
 func checkFormat(version int, key string) error {
-	if version > formatVersion {
+	switch {
+	case version > formatVersion:
 		return fmt.Errorf("%s was written by a newer notenv (format v%d, this build understands up to v%d); upgrade notenv", key, version, formatVersion)
+	case version < 1:
+		return fmt.Errorf("%s carries no format version (written by a pre-0.4 notenv); compact the namespace with notenv 0.4 to rewrite it, or re-add its values with `notenv set`", key)
 	}
 	return nil
 }
