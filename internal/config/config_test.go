@@ -1,11 +1,49 @@
 package config_test
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/contract"
 )
+
+// TestNextSeqConcurrent hammers NextSeq from many goroutines at once; with the
+// read-modify-write locked, every returned sequence number must be distinct.
+func TestNextSeqConcurrent(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const workers, perWorker = 16, 5
+
+	results := make(chan int, workers*perWorker)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range perWorker {
+				n, err := config.NextSeq("scope", "ns")
+				if err != nil {
+					t.Errorf("NextSeq: %v", err)
+					return
+				}
+				results <- n
+			}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	seen := map[int]bool{}
+	for n := range results {
+		if seen[n] {
+			t.Fatalf("duplicate sequence number %d under concurrency", n)
+		}
+		seen[n] = true
+	}
+	if len(seen) != workers*perWorker {
+		t.Fatalf("got %d distinct sequence numbers, want %d", len(seen), workers*perWorker)
+	}
+}
 
 func TestSelectStorage(t *testing.T) {
 	two := &config.User{

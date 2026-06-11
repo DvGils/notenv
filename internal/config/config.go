@@ -475,13 +475,24 @@ func MachineID() (string, error) {
 // NextSeq returns the next strictly-increasing sequence number for (scope,
 // namespace) on this machine, persisting the counter. It orders this machine's
 // segments even when a freshly listed remote is briefly stale, so two of its
-// writes never share a sequence number.
+// writes never share a sequence number. The read-modify-write is locked, so two
+// concurrent processes on the machine can't read the same counter and collide.
 func NextSeq(scope, namespace string) (int, error) {
 	dir, err := Dir()
 	if err != nil {
 		return 0, err
 	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return 0, err
+	}
 	path := filepath.Join(dir, "seq.json")
+
+	unlock, err := lockFile(path + ".lock")
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+
 	seqs := map[string]int{}
 	switch data, err := os.ReadFile(path); {
 	case err == nil:
@@ -494,9 +505,6 @@ func NextSeq(scope, namespace string) (int, error) {
 	key := scope + "\x00" + namespace
 	seqs[key]++
 	next := seqs[key]
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return 0, err
-	}
 	data, err := json.MarshalIndent(seqs, "", "  ")
 	if err != nil {
 		return 0, err
@@ -505,4 +513,35 @@ func NextSeq(scope, namespace string) (int, error) {
 		return 0, err
 	}
 	return next, nil
+}
+
+// lockFile takes an exclusive lock by atomically creating lock, spinning while
+// another process holds it and reclaiming a lock left by a crash (one older than
+// the stale window). It guards a local, low-contention counter, so a short spin
+// is fine. The returned function releases the lock.
+func lockFile(lock string) (func(), error) {
+	const (
+		spin  = 5 * time.Millisecond
+		stale = 15 * time.Second
+		wait  = 30 * time.Second
+	)
+	start := time.Now()
+	for {
+		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(lock) }, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, err
+		}
+		if info, statErr := os.Stat(lock); statErr == nil && time.Since(info.ModTime()) > stale {
+			_ = os.Remove(lock) // reclaim a lock left by a crashed process
+			continue
+		}
+		if time.Since(start) > wait {
+			return nil, fmt.Errorf("timed out acquiring %s; remove it if no notenv is running", lock)
+		}
+		time.Sleep(spin)
+	}
 }
