@@ -328,6 +328,44 @@ that the key it was sealed under is still the vault's master, rolling itself bac
 you to re-run) if a teammate re-keyed mid-flight, while the rotation re-keys anything written
 under the old master during its run. No write ever ends up encrypted to a key nobody holds.
 
+## Using notenv with AI agents
+
+Coding agents read everything: files, tool output, logs. A `.env` file on disk *will*
+eventually enter the model's context — `cat`-ed while debugging, swept up by a glob, or
+extracted by a prompt-injected instruction — and anything that enters context persists in
+transcripts and whatever the conversation touches next. notenv removes the file and gives the
+agent a verb that separates *using* credentials from *knowing* them:
+
+- **`notenv run -- cmd`** injects secrets into the child only; the value never appears in
+  anything the model reads.
+- **`notenv list`** tells the agent *which* credentials exist (to decide what's runnable)
+  without showing values.
+- **Captured output is masked.** When stdout/stderr is not a terminal — which is exactly how
+  agents and CI read output — any injected value a child prints (a server echoing its
+  connection string on boot, a debug dump) is replaced with `<notenv-masked:NAME>` before the
+  model sees it.
+- **Unlock prompts reach the human, not the model.** Passphrase prompts read the terminal
+  device directly, so when an agent's command needs an unlock, the question goes to whoever is
+  at the keyboard.
+
+Drop this in your `AGENTS.md` / `CLAUDE.md`:
+
+```markdown
+This project manages secrets with notenv (https://github.com/DvGils/notenv).
+- Run anything needing credentials via `notenv run -- <cmd>`; the env vars in
+  notenv.toml are injected automatically.
+- `notenv list` shows which secret names exist. Never print, ask for, or store
+  secret values; never create .env files.
+- If a command prompts for a passphrase, stop and let the user answer it.
+```
+
+**Honest limits:** this is accident-proofing, not a security boundary. An agent running as
+your user can still extract a value deliberately (`notenv run -- printenv KEY`) or read the
+session key cache, and a child process that legitimately holds a secret can always send it
+somewhere — masking catches accidents, not intent. A broker mode that keeps the unlocked key
+in a separate trust domain (so agents can *use* but provably not *extract*) is on the
+roadmap; see [Status](#status) and the [threat model](./THREAT_MODEL.md).
+
 ## Security
 
 - **At rest, anywhere:** only age ciphertext exists (on your storage and in any local
@@ -392,14 +430,20 @@ key and slot management (`notenv key …`); team access by age recipient, passph
 master-key rotation, offboarding by re-key, advisory primary governance, and authenticated +
 version-pinned headers (vanished-header detection included); append-only writes so concurrent
 `set`s never lose each other — including against a concurrent master rotation — with automatic
-compaction keeping reads fast; per-checkout namespace pinning; multiple storages per machine;
+compaction keeping reads fast; per-checkout namespace pinning with join confirmation;
+[masked captured output](#using-notenv-with-ai-agents); multiple storages per machine;
 passphrase or identity unlock; Linux key/blob caching. Releases are reproducible,
 cosign-signed, and carry SLSA build provenance.
 
 **Planned:**
 - Signed rotation transitions (multi-machine key continuity, so legitimate rotations don't
-  need a manual `notenv key trust`).
+  need a manual `notenv key trust`) — the centerpiece of v1, and the prerequisite for
+  fleet/agent vault sharing.
 - Per-blob manifest (detect rollback of an individual secret's value).
+- An MCP server mode, so agents discover and use notenv through their native tooling.
+- A broker mode: the unlocked key lives in a separate trust domain and execs children on
+  behalf of agents, turning "agents shouldn't see credentials" from a convention into a
+  boundary.
 - `notenv edit` for bulk edits in `$EDITOR`.
 - Homebrew / AUR / Scoop packages.
 

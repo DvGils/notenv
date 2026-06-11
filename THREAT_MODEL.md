@@ -92,6 +92,17 @@ What holds, and against whom.
   `notenv run` at another project's secrets in your vault. ✅ (what running untrusted code does
   with its *own* pinned namespace remains out of scope; see [Non-goals](#non-goals).)
 
+### Captured output (logs, CI, agent context)
+
+- **Against accidental disclosure through a child's output:** `notenv run` scrubs the exact
+  values it injected from the child's stdout/stderr whenever the stream is captured (not a
+  terminal), replacing them with named placeholders — so a server that echoes its connection
+  string on boot does not hand it to the CI log, the shell pipeline, or the LLM reading the
+  tool output. Best-effort by construction: exact byte matching (an encoded or transformed
+  value passes through), values shorter than 6 bytes are skipped, and a live terminal is wired
+  through untouched unless `--mask` is given. This is **accident-proofing for the dominant
+  real-world leak, not a boundary** — see [Non-goals](#non-goals). ✅ (qualified)
+
 ### No-residue
 
 - When a `notenv run` exits, the plaintext (which lived only in the child process's environment) is
@@ -109,6 +120,7 @@ What holds, and against whom.
 | Former key holder (had the master) | **Lost for past secrets** | n/a | Rotate master + storage credential to limit future |
 | Local attacker, no live session | Holds | Holds | Nothing secret on disk |
 | Local attacker **with** live session + cached key | **Lost** | n/a | Out of scope (see below) |
+| Captured child output (logs, agent context) | Holds for accidents (masked, best-effort) | n/a | Deliberate extraction out of scope |
 | Malicious notenv build / supply chain | n/a | n/a | Mitigated by reproducible + signed releases |
 
 ## Non-goals
@@ -124,6 +136,14 @@ notenv does **not** defend these, by design. Treating them as in-scope would be 
 - **Code you choose to run under `notenv run`.** The child process receives the pinned namespace's
   secrets; that is the product. Namespace pinning stops a malicious repository from *silently*
   reaching another project's secrets, not from misusing the secrets you knowingly hand it.
+- **Deliberate extraction by anything running as your user.** An agent (or any code) with your
+  UID can run `notenv run -- printenv KEY` or read the session key cache; output masking catches
+  accidents, not intent. The same trust model as ssh-agent. A broker that holds the unlocked key
+  in a separate trust domain — agents *use*, provably cannot *extract* — is planned, and until it
+  exists notenv makes no agent-containment claim.
+- **Exfiltration by a process legitimately holding a secret.** A child handed `$KEY` can send it
+  anywhere it has network access to. No secrets manager fixes egress; that is sandbox and
+  network-policy territory.
 - **Storage availability.** An adversary with write/delete access can delete or corrupt objects.
   This is denial-of-service, not a confidentiality break; object versioning (default on Backblaze
   B2) recovers prior bytes, but notenv does not guarantee availability.

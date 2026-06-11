@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 
+	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/contract"
+	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
@@ -17,7 +20,14 @@ import (
 // project's secrets to its scripts. The storage target is already machine-only;
 // this closes the same hole one level down. The decision matrix lives in
 // config.CheckNamespacePin; this is the I/O around it.
-func guardNamespace(dir string, binding config.LocalBinding, resolved string) error {
+//
+// A first use whose namespace is just the directory's name still gets one
+// check: if that namespace already holds secrets in the vault, this checkout
+// is *joining* it — usually a legitimate new clone of your own project, but
+// also exactly what a malicious repository named after your project looks
+// like — so the join is confirmed once rather than pinned silently. A virgin
+// namespace (the new-project flow) pins without ceremony.
+func guardNamespace(ctx context.Context, store backend.Backend, dir string, binding config.LocalBinding, resolved string) error {
 	decision, err := config.CheckNamespacePin(binding, resolved, filepath.Base(dir))
 	if err != nil {
 		return fmt.Errorf("%s: %w", filepath.Join(dir, contract.FileName), err)
@@ -26,19 +36,40 @@ func guardNamespace(dir string, binding config.LocalBinding, resolved string) er
 	case config.NamespaceOK:
 		return nil
 	case config.NamespaceConfirm:
-		if ui.Interactive() {
-			ok, err := ui.Confirm(fmt.Sprintf("%s requests namespace %q, not this directory's name — expose that namespace's secrets to commands run here?", contract.FileName, resolved), false)
-			if err != nil {
+		if err := confirmNamespace(fmt.Sprintf("%s requests namespace %q, not this directory's name — expose that namespace's secrets to commands run here?", contract.FileName, resolved),
+			fmt.Sprintf("%s requests namespace %q (not this directory's name %q); pinning it for this checkout", contract.FileName, resolved, filepath.Base(dir)), resolved); err != nil {
+			return err
+		}
+	case config.NamespacePin:
+		joining, err := secrets.Exists(ctx, store, resolved)
+		if err != nil {
+			return fmt.Errorf("check namespace %q before first use: %w", resolved, err)
+		}
+		if joining {
+			if err := confirmNamespace(fmt.Sprintf("this checkout hasn't used notenv before, but namespace %q already holds secrets — expose them to commands run here?", resolved),
+				fmt.Sprintf("first use in this checkout joins existing namespace %q; pinning it", resolved), resolved); err != nil {
 				return err
 			}
-			if !ok {
-				return fmt.Errorf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)
-			}
-		} else {
-			ui.Warnf("%s requests namespace %q (not this directory's name %q); pinning it for this checkout", contract.FileName, resolved, filepath.Base(dir))
 		}
 	}
 	pinNamespace(dir, binding, resolved)
+	return nil
+}
+
+// confirmNamespace asks the user to accept a namespace before its first use in
+// this checkout, or warns loudly where no one can answer (CI).
+func confirmNamespace(question, ciWarning, resolved string) error {
+	if !ui.Interactive() {
+		ui.Warnf("%s", ciWarning)
+		return nil
+	}
+	ok, err := ui.Confirm(question, false)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)
+	}
 	return nil
 }
 

@@ -4,6 +4,49 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.6.0 (unreleased)
+
+The agent release: notenv's founding property — plaintext never touches disk, exists only in
+the child's environment — turns out to be exactly what AI agents need, because anything an
+agent *reads* lands in a model's context and persists in transcripts. This release makes
+captured output safe by default and documents the agent story with the same honesty as the
+rest of the threat model.
+
+### Added
+
+- **Output masking.** `notenv run` now scrubs the exact secret values it injected from the
+  child's stdout/stderr whenever the stream is captured (a pipe, a file, an agent or CI
+  harness), replacing them with `<notenv-masked:NAME>` — so a server that echoes its
+  connection string on boot no longer hands it to the log or the LLM reading the tool output.
+  Streamed across write boundaries (split values are still caught); a live terminal is wired
+  through untouched so colors and TUIs keep working; `--mask` forces masking on a terminal,
+  `--no-mask` disables it. Best-effort by design: exact byte matching only, values shorter
+  than 6 bytes pass through.
+- **Joining an existing namespace is confirmed.** A fresh checkout whose derived namespace
+  already holds secrets in the vault now asks once before exposing them (warns in CI). This
+  closes the remaining namespace-pinning gap: a malicious repository *named after your
+  project* could previously derive its namespace silently. A virgin namespace (the
+  new-project flow) still pins without ceremony.
+- **An agents section in the README**: the context-leak threat, `run`/`list` as the verbs
+  that separate using credentials from knowing them, a copy-paste `AGENTS.md` recipe, and the
+  limits stated plainly (same-UID extraction and child egress are not defended; no
+  agent-containment claim until a broker mode exists).
+
+### Changed
+
+- `notenv run` waits up to 10 seconds for a lingering grandchild holding the output pipe
+  after the child exits (previously it could wait forever when output was piped); the child's
+  real exit code is preserved.
+
+### Documentation
+
+- Threat model: captured child output joins the security properties (masked, best-effort,
+  qualified) and the adversary table; deliberate same-UID extraction and child exfiltration
+  join the non-goals explicitly.
+- Honest cost notes: passphrase unlock latency scales with the number of passphrase slots;
+  SFTP/WebDAV passwords entered during setup briefly pass through argv (prefer key-based
+  SFTP auth).
+
 ## 0.5.0 (unreleased)
 
 A security-hardening release driven by an end-to-end review of the design against its own

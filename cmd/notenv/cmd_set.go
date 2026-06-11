@@ -30,7 +30,7 @@ var setCmd = &cobra.Command{
 		if !contract.ValidEnvName(key) {
 			return fmt.Errorf("%q is not a valid environment variable name", key)
 		}
-		a, err := loadApp()
+		a, err := loadApp(cmd.Context())
 		if err != nil {
 			return err
 		}

@@ -1,26 +1,38 @@
 // Package runner executes the child process with secrets in its
 // environment: exec, stream stdio, propagate exit code.
-// Plaintext exists only in the child's env for its lifetime.
+// Plaintext exists only in the child's env for its lifetime; Masker
+// additionally scrubs the values from captured output.
 package runner
 
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
-// Run executes argv with the given environment, wiring the parent's stdio
-// through and forwarding termination signals to the child. It returns the
-// child's exit code (128+signal if the child was killed by a signal).
-func Run(argv []string, env []string) (int, error) {
+// waitDelay bounds how long Wait blocks on the child's stdout/stderr pipes
+// after the child itself has exited. The pipes only exist when a non-file
+// writer (a Masker) is interposed; a grandchild that inherited them and
+// outlives the child would otherwise hold Wait open forever.
+const waitDelay = 10 * time.Second
+
+// Run executes argv with the given environment, streaming the child's output
+// to stdout/stderr (pass os.Stdout/os.Stderr for a direct wire, or Maskers to
+// scrub captured output — the caller flushes those after Run returns) and
+// forwarding termination signals to the child. It returns the child's exit
+// code (128+signal if the child was killed by a signal).
+func Run(argv []string, env []string, stdout, stderr io.Writer) (int, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.WaitDelay = waitDelay
 
 	if err := cmd.Start(); err != nil {
 		return -1, fmt.Errorf("exec %s: %w", argv[0], err)
@@ -44,15 +56,24 @@ func Run(argv []string, env []string) (int, error) {
 	close(done)
 	signal.Stop(signals)
 
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The child itself exited; only a lingering pipe holder (a grandchild
+		// that inherited stdout) was cut loose. Report the child's real exit.
+		err = nil
+	}
 	if err == nil {
-		return 0, nil
+		return exitCode(cmd.ProcessState), nil
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
-		if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-			return 128 + int(ws.Signal()), nil
-		}
-		return exit.ExitCode(), nil
+		return exitCode(exit.ProcessState), nil
 	}
 	return -1, err
+}
+
+func exitCode(state *os.ProcessState) int {
+	if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return state.ExitCode()
 }

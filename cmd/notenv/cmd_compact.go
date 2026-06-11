@@ -19,7 +19,7 @@ Safe to run alongside other machines writing secrets; their writes are never
 lost. Avoid running two compactions against the same namespace at once.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := loadApp()
+		a, err := loadApp(cmd.Context())
 		if err != nil {
 			return err
 		}
