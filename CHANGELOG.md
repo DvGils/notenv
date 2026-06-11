@@ -4,9 +4,47 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
-## 0.4.1 (unreleased)
+## 0.5.0 (unreleased)
 
-A correctness and hardening patch. No storage-format or interface changes.
+A security-hardening release driven by an end-to-end review of the design against its own
+threat model. It closes the one honest-parties data-loss race (writes concurrent with a master
+rotation), stops a committed contract from silently retargeting a checkout at another project's
+secrets, and makes every local trust decision visible and deliberate. It also folds in the
+unreleased 0.4.1 correctness work.
+
+### Security
+
+- **Writes racing a master rotation can no longer strand ciphertext.** Previously, a `set` (or
+  worse, a compaction) running concurrently with `notenv key rotate-master` / `key rm` could
+  leave objects sealed under the replaced master — undecryptable by everyone once that key
+  evaporated, poisoning every read of the namespace. Now every write confirms *after it lands*
+  that the master it was sealed under is still the vault's master and rolls itself back
+  otherwise (compaction checks before deleting anything and undoes its own snapshot); the
+  rotation re-lists the namespace after its header flip and re-keys anything a not-yet-aware
+  writer sealed under the old master. Covered for every non-crash interleaving; the
+  (seconds-wide, crash-only) residual is documented in the threat model.
+- **The namespace is pinned per checkout.** The committed `notenv.toml` chooses the namespace,
+  and the namespace chooses which secrets reach a child process — so a cloned untrusted
+  repository could name another project's namespace in your vault and have `notenv run` hand
+  that project's secrets to its scripts. The git-ignored `notenv.local.toml` now records the
+  namespace a checkout has accepted: an unusual namespace (not the directory's name) is
+  confirmed interactively on first use, and a contract that later changes its namespace is
+  refused until re-accepted with `notenv init`.
+- **A vanished header is an alarm, not virgin storage.** A machine that has pinned a vault and
+  then finds no header refuses to walk you through creating a fresh one (which also used to
+  overwrite the pin, silencing the alarm forever). Restore the header, or use the new
+  **`notenv key forget`** after a deliberate vault reset.
+- **`notenv key trust` shows what it trades before clearing an alarm**: the pinned revision and
+  master next to the observed ones, an explicit warning on a master change or rollback, and a
+  confirmation prompt (`--yes` for scripts). Overriding a security check is no longer the path
+  of least resistance.
+- **Reads trust only rclone's not-found exit codes.** Whether a header "doesn't exist" drives
+  the virgin-storage decision, and stderr-text matching (fragile across rclone versions and
+  locales) could fake it; text matching survives only for housekeeping subcommands where a
+  false match is harmless.
+- **Header creation goes through the safe-write protocol** (read back, authenticate, re-unlock
+  with the new passphrase) before you walk away believing escrow is done; its freshness check
+  also refuses to clobber a header a concurrent setup wrote.
 
 ### Fixed
 
@@ -18,12 +56,27 @@ A correctness and hardening patch. No storage-format or interface changes.
   reading them back; on an eventually-consistent backend that read can lag, and the old code
   deleted the possibly-landed object. It now deletes only on a genuine byte mismatch (real
   corruption) and otherwise surfaces an error for the caller to retry over.
+- **`set`/`unset` no longer warn about a conflict the write itself just settled**; conflicts are
+  reported from the post-write state.
+- **Hidden prompts work on Windows when stdin is a pipe** (`notenv set --stdin`): prompts open
+  the console device (`CONIN$`) directly, the same way `/dev/tty` is used elsewhere.
+- **A fold that hits an undecryptable object now names it**, so recovery starts from an object
+  key instead of a guess.
+
+### Breaking changes
+
+- **Pre-0.4 (versionless) segment and snapshot objects are no longer read.** That lenient path
+  was migration logic with no remaining users. A v0 object is refused with a pointer at the
+  upgrade path: compact the namespace with notenv 0.4 to rewrite it, or re-add its values.
+- **`notenv key trust` now requires confirmation** (interactive prompt, or `--yes` in scripts).
 
 ### Documentation
 
+- Threat model: the write/rotation concurrency guarantee and its crash residual, vanished-header
+  detection, namespace pinning, and an explicit caveat that warm-cache runs defer the pin checks
+  by up to one cache TTL.
 - Clarified that the key header and the segment/snapshot payloads are versioned by separate,
-  intentional rules: the header is always authenticated with no unversioned path; segment and
-  snapshot payloads read an absent version as the pre-0.4 schema.
+  intentional rules; both now reject anything but their exact supported version.
 
 ## 0.4.0
 

@@ -31,11 +31,10 @@ import (
 // headerVersion is the header's on-storage format version. There is one format:
 // the indirect slot model with header authentication + a monotonic revision (see
 // auth.go). ParseHeader accepts only exactly this version with a valid auth tag,
-// with no lenient or unversioned path by design, since accepting an
-// unauthenticated or unknown-version header would be a security hole. This is
-// deliberately stricter than the segment/snapshot payloads (internal/secrets),
-// which read an absent version as the pre-0.4 schema; the header has no such
-// unversioned predecessor on storage. Bump only on a future incompatible change.
+// with no lenient or unversioned path, since accepting an unauthenticated or
+// unknown-version header would be a security hole. The segment/snapshot payloads
+// (internal/secrets) are versioned by the same exact-match rule. Bump only on a
+// future incompatible change.
 const headerVersion = 1
 
 // Header is the parsed header object.

@@ -185,7 +185,8 @@ Add `--storage NAME` to any command to target a specific [vault](#multiple-vault
 | `notenv key rotate-master` | Mint a fresh master key and re-encrypt every secret; all slots kept. |
 | `notenv key set-primary <name\|index>` | Transfer the primary (governance) slot. |
 | `notenv key gen-identity` | Generate an age identity on this machine (to join a vault). |
-| `notenv key trust` | Re-pin after a confirmed legitimate master change (clears a rollback alarm). |
+| `notenv key trust` | Re-pin after a confirmed legitimate master change (shows what changed, asks, clears the alarm). |
+| `notenv key forget` | Forget this machine's pin + cached key for a storage (after a deliberate vault reset). |
 | `notenv key restore-backup` | Restore the header from its pre-write backup. |
 
 ## Configuration
@@ -222,9 +223,13 @@ mode = "passphrase"
 ```
 
 Storage settings are deliberately machine-only: a committed `notenv.toml` cannot redirect
-where your machine reads and writes secrets. When a machine has more than one storage, a
-project records which one it uses in a git-ignored **`notenv.local.toml`** (written by
-`notenv init`); see [Multiple vaults](#multiple-vaults).
+where your machine reads and writes secrets. A third, git-ignored file — **`notenv.local.toml`**,
+written by `notenv init` — records what this *checkout* has agreed to: which storage it uses
+(when the machine has several) and which **namespace** it reads. The namespace pin matters: the
+committed contract chooses the namespace, so without it a cloned repository could silently point
+your machine at another project's secrets in the same vault. Using a namespace other than the
+directory's name is confirmed once per checkout, and a contract that later changes its namespace
+is refused until you re-accept it with `notenv init`. See [Multiple vaults](#multiple-vaults).
 
 ## Teams and key management
 
@@ -261,12 +266,14 @@ slot (the one `key rm` refuses to remove).
 One machine can use several storages. `notenv setup` adds a named storage and can be re-run to
 add more; the first becomes the default.
 
-- A project chooses its storage at `notenv init` time, recorded in a git-ignored
-  `notenv.local.toml` beside `notenv.toml`. With a single storage there is nothing to pick.
+- A project chooses its storage at `notenv init` time, recorded (along with its
+  [namespace pin](#configuration)) in a git-ignored `notenv.local.toml` beside `notenv.toml`.
+  With a single storage there is nothing to pick.
 - `--storage NAME` overrides the choice for any command; use it in CI to pin the vault from
   outside the repo.
-- The committed `notenv.toml` never names a storage, so cloning an untrusted project can't
-  point your machine at a different vault than you intend.
+- The committed `notenv.toml` never names a storage, and the namespace it names is pinned per
+  checkout — so cloning an untrusted project can't point your machine at a different vault, or
+  silently at a different project's secrets within your vault.
 
 ## Caching and performance
 
@@ -316,6 +323,11 @@ are never affected. `notenv compact` forces it on demand. Compaction is safe to 
 others are writing (their writes are never lost); just don't run two compactions of the same
 namespace at once.
 
+Writes are also safe against a **concurrent master rotation**: every write confirms afterwards
+that the key it was sealed under is still the vault's master, rolling itself back (and telling
+you to re-run) if a teammate re-keyed mid-flight, while the rotation re-keys anything written
+under the old master during its run. No write ever ends up encrypted to a key nobody holds.
+
 ## Security
 
 - **At rest, anywhere:** only age ciphertext exists (on your storage and in any local
@@ -327,16 +339,23 @@ namespace at once.
 - **Write access to your storage (integrity):** the key header is authenticated (an HMAC
   keyed from the master key) and carries a monotonic revision that each machine pins locally.
   A party who can *write* your storage but holds no key cannot forge or alter the header
-  undetected, and rolling it back to an older version is detected on any machine that has seen
-  a newer one (it refuses and points you at `notenv key trust`). They still cannot forge
-  plaintext: a substituted blob they don't hold the key for fails to decrypt. Two honest
-  limits: on *first* contact with a vault a machine has no prior revision to compare against
-  (trust on first use), and a *former key holder* who kept the master key and retains storage
-  *write* can fork history in a way only the vault owner's machine detects; rotate the
-  storage credential to cut them off (notenv advises this on `key rm` but, not owning the
-  storage, can't enforce it). Deletion is an availability concern, not confidentiality;
-  object versioning (the default on B2) recovers prior bytes. Per-blob value rollback and
-  cross-machine key continuity are planned hardening.
+  undetected; rolling it back to an older version is detected on any machine that has seen
+  a newer one (it refuses and points you at `notenv key trust`, which shows what changed and
+  asks before clearing the alarm), and **deleting the header outright is detected the same
+  way** (a pinned machine refuses to treat the vault as virgin; `notenv key forget` is the
+  deliberate-reset escape hatch). They still cannot forge plaintext: a substituted blob they
+  don't hold the key for fails to decrypt. Two honest limits: on *first* contact with a vault
+  a machine has no prior revision to compare against (trust on first use), and a *former key
+  holder* who kept the master key and retains storage *write* can fork history in a way only
+  the vault owner's machine detects; rotate the storage credential to cut them off (notenv
+  advises this on `key rm` but, not owning the storage, can't enforce it). Deletion of blobs
+  is an availability concern, not confidentiality; object versioning (the default on B2)
+  recovers prior bytes. Per-blob value rollback and cross-machine key continuity are planned
+  hardening.
+- **A cloned, untrusted project:** the committed `notenv.toml` can redirect neither your
+  storage (machine-only) nor — silently — your namespace: the namespace is pinned per
+  checkout, an unusual one is confirmed before first use, and a contract that changes its
+  namespace later is refused (see [Configuration](#configuration)).
 - **Running machine compromise:** an attacker with your live session and your key can
   decrypt. notenv shrinks the window (no `.env` lying around, plaintext only in the child
   process for its lifetime) but cannot defend a fully compromised host.
@@ -371,10 +390,11 @@ Actively developed and being tested.
 **Working today:** `setup`, `init`, `set`, `unset`, `list`, `run`, `compact`, and `cache`; full
 key and slot management (`notenv key …`); team access by age recipient, passphrase and
 master-key rotation, offboarding by re-key, advisory primary governance, and authenticated +
-version-pinned headers; append-only writes so concurrent `set`s never lose each other, with
-automatic compaction keeping reads fast; multiple storages per machine; passphrase or identity
-unlock; Linux key/blob caching. Releases are reproducible, cosign-signed, and carry SLSA build
-provenance.
+version-pinned headers (vanished-header detection included); append-only writes so concurrent
+`set`s never lose each other — including against a concurrent master rotation — with automatic
+compaction keeping reads fast; per-checkout namespace pinning; multiple storages per machine;
+passphrase or identity unlock; Linux key/blob caching. Releases are reproducible,
+cosign-signed, and carry SLSA build provenance.
 
 **Planned:**
 - Signed rotation transitions (multi-machine key continuity, so legitimate rotations don't
