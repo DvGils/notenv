@@ -4,7 +4,28 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
-## 0.4.0 (unreleased)
+## 0.4.1 (unreleased)
+
+A correctness and hardening patch. No storage-format or interface changes.
+
+### Fixed
+
+- **Concurrent `set`/`unset` on one machine can no longer collide.** The sequence-counter
+  update in `NextSeq` is now locked, so two simultaneous writes never read the same counter and
+  emit segments that share a sequence number (which could leave conflict resolution
+  non-deterministic).
+- **A write whose verify read-back merely lags is no longer deleted.** Writes are verified by
+  reading them back; on an eventually-consistent backend that read can lag, and the old code
+  deleted the possibly-landed object. It now deletes only on a genuine byte mismatch (real
+  corruption) and otherwise surfaces an error for the caller to retry over.
+
+### Documentation
+
+- Clarified that the key header and the segment/snapshot payloads are versioned by separate,
+  intentional rules: the header is always authenticated with no unversioned path; segment and
+  snapshot payloads read an absent version as the pre-0.4 schema.
+
+## 0.4.0
 
 A hardening release: more command coverage, and much deeper testing of the storage and
 concurrency model under imperfect conditions.

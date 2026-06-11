@@ -25,12 +25,14 @@ import (
 	"github.com/DvGils/notenv/internal/crypto"
 )
 
-// formatVersion is the on-storage schema version of segment and snapshot
-// objects. Every object written carries it; a read rejects any object stamped
-// with a higher version (written by a newer notenv) instead of misreading it. A
-// missing version (0) is a pre-versioning object and read as the current format,
-// so this version field was added without breaking the prior layout. Bump only
-// on an incompatible change to these payloads.
+// formatVersion is the on-storage schema version of segment and snapshot objects
+// (the secret values). Every object written carries it; a read rejects any
+// object stamped with a higher version (written by a newer notenv) instead of
+// misreading it. A missing version (0) is a pre-0.4 object and read as the
+// current format, so this field was added without breaking the prior layout. The
+// key header (internal/crypto) is versioned separately and more strictly: it has
+// always been authenticated and has no version-0 path. Bump only on an
+// incompatible change to these payloads.
 const formatVersion = 1
 
 // segment is one append: a single key write or deletion, ordered across
@@ -284,19 +286,24 @@ func (n *Namespace) objectKey(prefix string) (string, error) {
 	return fmt.Sprintf("%s%s-%s.age", n.prefix(), prefix, hex.EncodeToString(buf)), nil
 }
 
-// putVerified writes sealed at key and reads it back, removing it and failing on
-// a mismatch. Reads fail closed on any unreadable object (a dropped or tampered
-// write must not be silently skipped), so a botched write would otherwise poison
-// every later fold of the namespace; this stops one from being left behind.
+// putVerified writes sealed at key and reads it back. Because reads fail closed
+// on any unreadable object (a dropped or tampered write must not be silently
+// skipped), a botched write would otherwise poison every later fold; this stops
+// a genuinely corrupt object from being left behind. It deletes only on a real
+// byte mismatch: a read-back that merely errors could be read-after-write lag,
+// and deleting a write that may have landed is the wrong reflex, so it surfaces
+// the error and leaves the object for the caller to retry over.
 func (n *Namespace) putVerified(ctx context.Context, key string, sealed []byte) error {
 	if err := n.store.Put(ctx, key, sealed); err != nil {
 		return err
 	}
-	if got, err := n.store.Get(ctx, key); err != nil || !bytes.Equal(got, sealed) {
+	got, err := n.store.Get(ctx, key)
+	if err != nil {
+		return fmt.Errorf("verify %s after write: %w", key, err)
+	}
+	if !bytes.Equal(got, sealed) {
+		// The backend stored different bytes than we sent: a corrupt write.
 		_ = n.store.Delete(ctx, key)
-		if err != nil {
-			return err
-		}
 		return fmt.Errorf("object %s read back corrupted; write not recorded", key)
 	}
 	return nil
