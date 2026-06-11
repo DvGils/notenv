@@ -9,7 +9,7 @@
 > Your `.env`, encrypted and off your disk, with no infrastructure to run.
 
 notenv replaces `.env` files. Your secrets are encrypted **on your machine** with
-[age](https://github.com/FiloSottile/age), stored as a single ciphertext blob on
+[age](https://github.com/FiloSottile/age), stored as ciphertext on
 **storage you already own** (Backblaze B2, S3, Google Drive, SFTP, WebDAV, or anything
 [rclone](https://rclone.org) speaks), and decrypted **only into the environment of the
 process you run**. Plaintext never touches your disk.
@@ -106,7 +106,8 @@ notenv run -- ...    # ready
 ```
 
 Nothing else to restore. The committed `notenv.toml` and your password manager are all you
-need.
+need. Joining someone else's vault instead of restoring your own? See
+[Teams and key management](#teams-and-key-management).
 
 ---
 
@@ -143,10 +144,16 @@ notenv run -- cmd
         nothing written to disk
 ```
 
-Your secrets are encrypted with a random master key. That master key never exists in
-plaintext at rest: it is stored wrapped under your passphrase in a small header object next
-to your secrets, the same approach LUKS and restic use. Unlocking it once per session is all
-it takes; rotating your passphrase later rewrites only the header, not your secrets.
+Your secrets are encrypted with a random **master key**. The master key never exists in
+plaintext at rest: a small header object next to your secrets holds it wrapped under one or
+more **key slots**, the same approach LUKS and restic use. A slot is either a **passphrase**
+(yours, escrowed) or a teammate's **age public key** (so you can grant access without sharing
+a secret). Unlocking any slot yields the master key for the session.
+
+The header is authenticated and carries a monotonic revision, so a party that can write your
+storage but holds no key cannot tamper with it or roll it back undetected. Changing a
+passphrase rewrites only the header; rotating the master key re-encrypts every secret under a
+fresh key while keeping all slots; see [Teams and key management](#teams-and-key-management).
 
 ## Commands
 
@@ -161,6 +168,23 @@ it takes; rotating your passphrase later rewrites only the header, not your secr
 | `notenv run --refresh -- cmd` | Same, but bypass the local cache and pull the latest secrets first. |
 | `notenv cache clear` | Remove all locally cached ciphertext on this machine. |
 | `notenv --version` | Print the version, commit, and build date. |
+
+Add `--storage NAME` to any command to target a specific [vault](#multiple-vaults).
+
+### Key and slot management
+
+| Command | What it does |
+|---|---|
+| `notenv key list` | List the key slots (name, type, primary, fingerprint). |
+| `notenv key add --passphrase` | Add another passphrase slot (a backup or second device). |
+| `notenv key add --recipient age1… [--name N]` | Add a teammate by their age public key. |
+| `notenv key rm <name\|index>` | Remove a slot **and re-key the vault** (offboarding). |
+| `notenv key rotate` | Change the passphrase on your slot (header only). |
+| `notenv key rotate-master` | Mint a fresh master key and re-encrypt every secret; all slots kept. |
+| `notenv key set-primary <name\|index>` | Transfer the primary (governance) slot. |
+| `notenv key gen-identity` | Generate an age identity on this machine (to join a vault). |
+| `notenv key trust` | Re-pin after a confirmed legitimate master change (clears a rollback alarm). |
+| `notenv key restore-backup` | Restore the header from its pre-write backup. |
 
 ## Configuration
 
@@ -178,14 +202,17 @@ SENTRY_DSN   = { required = false }
 STRIPE_KEY   = { name = "stripe-secret-key" }   # use a different storage key name
 ```
 
-**`~/.config/notenv/config.toml`** is per machine and **is not committed**. It points at your
-storage and is written for you by `notenv setup`:
+**`~/.config/notenv/config.toml`** is per machine and **is not committed**. It defines one or
+more named storages (vaults) and is written for you by `notenv setup`:
 
 ```toml
-[storage]
+default = "personal"               # storage used when a project has no local binding
+
+[storage.personal]
 remote    = "s3-notenv"            # an rclone remote name
 base      = "my-bucket/notenv"     # path within the remote
-versioned = true                   # remote keeps old versions on overwrite (some storage providers do)
+versioned = true                   # remote keeps old versions on overwrite (B2 does)
+# cache_ttl = "1h"                 # local ciphertext cache lifetime; "0" disables
 
 [crypto]
 mode = "passphrase"
@@ -193,7 +220,51 @@ mode = "passphrase"
 ```
 
 Storage settings are deliberately machine-only: a committed `notenv.toml` cannot redirect
-where your machine reads and writes secrets.
+where your machine reads and writes secrets. When a machine has more than one storage, a
+project records which one it uses in a git-ignored **`notenv.local.toml`** (written by
+`notenv init`); see [Multiple vaults](#multiple-vaults).
+
+## Teams and key management
+
+Several people (or machines) can share one vault with no server, using key slots. The
+asymmetric path is the point: you add a teammate with only their **public** key, and they
+never share a secret with you.
+
+**Onboard a teammate:**
+
+1. Teammate: `notenv key gen-identity`; saves an age identity on their machine and prints
+   their public `age1…` recipient.
+2. They send you that recipient (public; safe to share in the clear).
+3. You: `notenv key add --recipient age1… --name alice`.
+4. Teammate: `notenv setup` (pointing at the same storage), then `notenv run -- …`. Their
+   identity unlocks the vault; no passphrase.
+
+**Offboard** with `notenv key rm <name>`: it removes the slot **and re-keys the vault** (mints
+a fresh master key and re-encrypts every secret), so the removed credential can no longer
+decrypt. All surviving slots keep working.
+
+> **notenv does not own your storage**, so it cannot revoke a former holder's storage *write*
+> access. For complete offboarding, also rotate that storage's credential at your provider.
+> Otherwise a holder who kept both the old master key and write access could roll the vault
+> back to a state where their slot still exists. notenv **detects** such a rollback
+> ([Security](#security)) but cannot prevent it; `key rm` reminds you to rotate the credential.
+
+**Other operations:** `notenv key rotate-master` re-keys the vault while keeping every slot (a
+precaution if a machine may be compromised). `notenv key rotate` changes your own passphrase.
+`notenv key list` shows the slots; `notenv key set-primary` transfers the advisory governance
+slot (the one `key rm` refuses to remove).
+
+## Multiple vaults
+
+One machine can use several storages. `notenv setup` adds a named storage and can be re-run to
+add more; the first becomes the default.
+
+- A project chooses its storage at `notenv init` time, recorded in a git-ignored
+  `notenv.local.toml` beside `notenv.toml`. With a single storage there is nothing to pick.
+- `--storage NAME` overrides the choice for any command; use it in CI to pin the vault from
+  outside the repo.
+- The committed `notenv.toml` never names a storage, so cloning an untrusted project can't
+  point your machine at a different vault than you intend.
 
 ## Caching and performance
 
@@ -219,7 +290,7 @@ there is no locking across machines yet. If two people (or two machines) run `se
 same namespace at nearly the same time, the later upload wins and the earlier new key is
 lost. Object versioning on the remote preserves the overwritten bytes, but notenv does not
 reconcile them automatically. In practice this is a non-issue for a single user; compare-and-swap
-on write lands with team mode.
+on write is planned.
 
 ## Security
 
@@ -229,15 +300,19 @@ on write lands with team mode.
 - **Stolen storage credential:** grants read of ciphertext, not plaintext (your key is a
   separate factor held in your password manager). Most credentials also allow writes, so
   the integrity caveat below applies too.
-- **Write access to your storage (integrity, not confidentiality):** notenv protects
-  *confidentiality* unconditionally, but it does not sign the blob or bind it to a version.
-  An attacker (or a misbehaving sync) that can *write* your storage can delete a blob, or
-  roll it back to an older ciphertext that was once valid, reverting a rotated secret
-  without your machine being able to tell. They still cannot forge new plaintext: a
-  substituted blob they don't hold the key for simply fails to decrypt. This is the same
-  trade-off as encrypting onto dumb storage (LUKS, restic). Object versioning on the remote
-  (the default on B2) lets you recover the prior bytes; signed, version-bound headers are a
-  planned hardening.
+- **Write access to your storage (integrity):** the key header is authenticated (an HMAC
+  keyed from the master key) and carries a monotonic revision that each machine pins locally.
+  A party who can *write* your storage but holds no key cannot forge or alter the header
+  undetected, and rolling it back to an older version is detected on any machine that has seen
+  a newer one (it refuses and points you at `notenv key trust`). They still cannot forge
+  plaintext: a substituted blob they don't hold the key for fails to decrypt. Two honest
+  limits: on *first* contact with a vault a machine has no prior revision to compare against
+  (trust on first use), and a *former key holder* who kept the master key and retains storage
+  *write* can fork history in a way only the vault owner's machine detects; rotate the
+  storage credential to cut them off (notenv advises this on `key rm` but, not owning the
+  storage, can't enforce it). Deletion is an availability concern, not confidentiality;
+  object versioning (the default on B2) recovers prior bytes. Per-blob value rollback and
+  cross-machine key continuity are planned hardening.
 - **Running machine compromise:** an attacker with your live session and your key can
   decrypt. notenv shrinks the window (no `.env` lying around, plaintext only in the child
   process for its lifetime) but cannot defend a fully compromised host.
@@ -265,13 +340,17 @@ full set of release artifacts locally without publishing.
 
 Actively developed and being tested.
 
-**Working today:** `setup`, `init`, `set`, `list`, `run`, and `cache`, with passphrase-based
-encryption and Linux key/blob caching. Releases are reproducible, cosign-signed, and carry
-SLSA build provenance.
+**Working today:** `setup`, `init`, `set`, `list`, `run`, and `cache`; full key and slot
+management (`notenv key …`); team access by age recipient, passphrase and master-key
+rotation, offboarding by re-key, advisory primary governance, and authenticated +
+version-pinned headers; multiple storages per machine; passphrase or identity unlock; Linux
+key/blob caching. Releases are reproducible, cosign-signed, and carry SLSA build provenance.
 
 **Planned:**
-- Team access by adding key slots (each developer or an age recipient), with no server.
-- Key rotation and slot management (`notenv key ...`).
+- Compare-and-swap on write (closes the concurrent-write race).
+- Signed rotation transitions (multi-machine key continuity, so legitimate rotations don't
+  need a manual `notenv key trust`).
+- Per-blob manifest (detect rollback of an individual secret's value).
 - `notenv edit` for bulk edits in `$EDITOR`.
 - Homebrew / AUR / Scoop packages.
 - Native key/blob caching on macOS (Keychain) and Windows (DPAPI).
