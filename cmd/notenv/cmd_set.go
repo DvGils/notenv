@@ -9,9 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/contract"
-	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keyring"
+	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
@@ -36,56 +37,47 @@ var setCmd = &cobra.Command{
 
 		ctx := cmd.Context()
 
-		// Fetch fresh (bypass the read cache): a read-modify-write must see
-		// current storage state, not a possibly-stale local copy.
-		secrets := map[string]string{}
-		ciphertext, found, err := a.getBlob(ctx, false, false)
+		// Fold fresh from storage (the master ceremony runs here on virgin
+		// storage). A new write appends a segment, so it never has to win a
+		// read-modify-write race against another machine.
+		state, mk, err := a.foldState(ctx)
 		if err != nil {
 			return err
-		}
-		var mk *crypto.MasterKey
-		if found {
-			// decrypt recovers from a stale cached master (another machine
-			// re-keyed) and returns the master that worked, which we reuse to
-			// re-encrypt the updated blob.
-			var plaintext []byte
-			if plaintext, mk, err = a.decrypt(ctx, ciphertext); err != nil {
-				return err
-			}
-			if secrets, err = decodePayload(plaintext); err != nil {
-				return err
-			}
-		} else {
-			// Virgin namespace or virgin storage: the master ceremony runs here
-			// (choose passphrase + escrow warning) before anything is written.
-			if mk, err = a.master(ctx); err != nil {
-				return err
-			}
 		}
 
 		value, err := readValue(key)
 		if err != nil {
 			return err
 		}
-		secrets[a.contract.StorageKey(key)] = value
+		seq, err := config.NextSeq(a.cacheScope, a.namespace)
+		if err != nil {
+			return err
+		}
 
-		plaintext, err := encodePayload(secrets)
-		if err != nil {
-			return err
-		}
-		sealed, err := mk.Encrypt(plaintext)
-		if err != nil {
-			return err
-		}
-		if err := ui.Spin("Uploading encrypted blob", func() error {
-			return a.store.Put(ctx, a.namespace, sealed)
+		var updated *secrets.State
+		if err := ui.Spin("Uploading encrypted segment", func() error {
+			var aerr error
+			updated, aerr = a.secretsNamespace(mk).Append(ctx, state, seq, a.contract.StorageKey(key), value, false)
+			return aerr
 		}); err != nil {
 			return err
 		}
-		// Refresh the local cache with the freshly written blob, so the next
-		// `run` on this machine is instant and coherent.
-		_ = a.blobs.Put(a.cacheScope, a.namespace, sealed)
+		// Refresh the local cache with the new folded state, so the next `run`
+		// on this machine is instant and coherent.
+		a.cacheFolded(mk, updated.Secrets)
 		ui.Successf("%s set in namespace %q", key, a.namespace)
+
+		// Keep the segment log short: once enough have accumulated, fold them
+		// into a snapshot. Best-effort housekeeping — the write already landed,
+		// so a compaction failure never fails the command.
+		if state.SegmentCount()+1 >= secrets.DefaultCompactThreshold {
+			cErr := ui.Spin(fmt.Sprintf("Compacting namespace %q", a.namespace), func() error {
+				return a.secretsNamespace(mk).Compact(ctx)
+			})
+			if cErr != nil {
+				ui.Warnf("auto-compaction skipped (harmless; run `notenv compact` later): %v", cErr)
+			}
+		}
 
 		// Convenience: keep the committed contract in sync with reality.
 		if _, declared := a.contract.Secrets[key]; !declared {

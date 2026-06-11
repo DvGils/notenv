@@ -13,7 +13,7 @@ import (
 )
 
 // seedVault writes a header (owner passphrase + alice recipient) and the given
-// namespace blobs (each a small plaintext) encrypted under the master.
+// ciphertext objects (each a small plaintext) encrypted under the master.
 func seedVault(t *testing.T, store *memstore.Store, blobs map[string]string) (*crypto.MasterKey, *age.X25519Identity) {
 	t.Helper()
 	ctx := context.Background()
@@ -38,12 +38,12 @@ func seedVault(t *testing.T, store *memstore.Store, blobs map[string]string) (*c
 	if err := store.PutHeader(ctx, raw); err != nil {
 		t.Fatal(err)
 	}
-	for ns, val := range blobs {
+	for key, val := range blobs {
 		sealed, err := mk.Encrypt([]byte(val))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Put(ctx, ns, sealed); err != nil {
+		if err := store.Put(ctx, key, sealed); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -70,17 +70,17 @@ func assertVault(t *testing.T, store *memstore.Store, oldMK *crypto.MasterKey, a
 	if cur.String() == oldMK.String() {
 		t.Fatal("master was not rotated")
 	}
-	for ns, val := range want {
-		blob, err := store.Get(ctx, ns)
+	for key, val := range want {
+		blob, err := store.Get(ctx, key)
 		if err != nil {
-			t.Fatalf("get %q: %v", ns, err)
+			t.Fatalf("get %q: %v", key, err)
 		}
 		plain, err := cur.Decrypt(blob)
 		if err != nil || string(plain) != val {
-			t.Fatalf("blob %q under new master: %v %q", ns, err, plain)
+			t.Fatalf("blob %q under new master: %v %q", key, err, plain)
 		}
 		if _, err := oldMK.Decrypt(blob); err == nil {
-			t.Fatalf("blob %q still decrypts under the OLD master", ns)
+			t.Fatalf("blob %q still decrypts under the OLD master", key)
 		}
 	}
 }
@@ -88,7 +88,7 @@ func assertVault(t *testing.T, store *memstore.Store, oldMK *crypto.MasterKey, a
 func TestRotateMasterHappyPath(t *testing.T) {
 	ctx := context.Background()
 	store := memstore.New()
-	blobs := map[string]string{"proj": "a", "other": "b"}
+	blobs := map[string]string{"proj/snap-aa.age": "a", "other/seg-m-bb.age": "b"}
 	oldMK, alice := seedVault(t, store, blobs)
 
 	base := store.Header()
@@ -111,7 +111,7 @@ func TestRotateMasterHappyPath(t *testing.T) {
 func TestRotateMasterReRunAfterCrash(t *testing.T) {
 	ctx := context.Background()
 	store := memstore.New()
-	blobs := map[string]string{"proj": "a", "other": "b"}
+	blobs := map[string]string{"proj/snap-aa.age": "a", "other/seg-m-bb.age": "b"}
 	oldMK, alice := seedVault(t, store, blobs)
 	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
 
@@ -143,7 +143,7 @@ func TestRotateMasterReRunAfterCrash(t *testing.T) {
 func TestRotateMasterOnFlipBeforeNarrow(t *testing.T) {
 	ctx := context.Background()
 	store := memstore.New()
-	blobs := map[string]string{"proj": "a", "other": "b"}
+	blobs := map[string]string{"proj/snap-aa.age": "a", "other/seg-m-bb.age": "b"}
 	oldMK, _ := seedVault(t, store, blobs)
 	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
 

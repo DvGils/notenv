@@ -13,6 +13,7 @@ import (
 	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/contract"
+	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
@@ -85,15 +86,9 @@ var initCmd = &cobra.Command{
 		store := &backend.RcloneStorage{Remote: eff.Remote, Base: eff.Base, Versioned: eff.Versioned}
 		var joined bool
 		if err := ui.Spin(fmt.Sprintf("Checking for existing secrets (namespace %q)", eff.Namespace), func() error {
-			_, getErr := store.Get(ctx, eff.Namespace)
-			if getErr == nil {
-				joined = true
-				return nil
-			}
-			if errors.Is(getErr, backend.ErrNotFound) {
-				return nil
-			}
-			return getErr
+			exists, existsErr := secrets.Exists(ctx, store, eff.Namespace)
+			joined = exists
+			return existsErr
 		}); err != nil {
 			return err
 		}

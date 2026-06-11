@@ -3,13 +3,14 @@ package keymgmt
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/crypto"
 )
 
-// Vault is a backend that holds both namespace blobs and the key header, which
-// rotation needs together.
+// Vault is a backend that holds both the ciphertext objects and the key header,
+// which rotation needs together.
 type Vault interface {
 	backend.Backend
 	backend.HeaderStore
@@ -43,15 +44,15 @@ func RotateMaster(ctx context.Context, store Vault, hdr *crypto.Header, base []b
 	if err != nil {
 		return nil, err
 	}
-	namespaces, err := store.List(ctx)
+	objects, err := blobObjects(ctx, store)
 	if err != nil {
 		return nil, fmt.Errorf("list secrets: %w", err)
 	}
 
-	// Phase 1: widen — every blob readable under the old AND new master.
-	for _, ns := range namespaces {
-		if err := reencrypt(ctx, store, ns, oldMK, oldMK, newMK); err != nil {
-			return nil, fmt.Errorf("re-encrypt %q (widen): %w", ns, err)
+	// Phase 1: widen — every object readable under the old AND new master.
+	for _, key := range objects {
+		if err := reencrypt(ctx, store, key, oldMK, oldMK, newMK); err != nil {
+			return nil, fmt.Errorf("re-encrypt %q (widen): %w", key, err)
 		}
 	}
 
@@ -69,18 +70,38 @@ func RotateMaster(ctx context.Context, store Vault, hdr *crypto.Header, base []b
 		onFlip(newMK)
 	}
 
-	// Phase 3: narrow — every blob readable under the new master only.
-	for _, ns := range namespaces {
-		if err := reencrypt(ctx, store, ns, newMK, newMK); err != nil {
-			return nil, fmt.Errorf("re-encrypt %q (narrow): %w; the vault is re-keyed but some secrets still carry the old key, re-run `notenv key rotate-master`", ns, err)
+	// Phase 3: narrow — every object readable under the new master only.
+	for _, key := range objects {
+		if err := reencrypt(ctx, store, key, newMK, newMK); err != nil {
+			return nil, fmt.Errorf("re-encrypt %q (narrow): %w; the vault is re-keyed but some secrets still carry the old key, re-run `notenv key rotate-master`", key, err)
 		}
 	}
 	return newMK, nil
 }
 
-// reencrypt reads ns, decrypts it with readMK, and re-encrypts it to writeMKs.
-func reencrypt(ctx context.Context, store Vault, ns string, readMK *crypto.MasterKey, writeMKs ...*crypto.MasterKey) error {
-	blob, err := store.Get(ctx, ns)
+// blobObjects lists every ciphertext object a rotation must re-key: the
+// snapshots and segments under every namespace. The key header is managed
+// separately, so it (and its ".prev") is excluded by the ".age" suffix.
+func blobObjects(ctx context.Context, store Vault) ([]string, error) {
+	keys, err := store.List(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	var objects []string
+	for _, key := range keys {
+		// Ciphertext lives under a namespace prefix (<ns>/...); requiring the
+		// slash also skips any stray root-level blob from an earlier layout.
+		if strings.Contains(key, "/") && strings.HasSuffix(key, ".age") {
+			objects = append(objects, key)
+		}
+	}
+	return objects, nil
+}
+
+// reencrypt reads the object at key, decrypts it with readMK, and re-encrypts
+// it to writeMKs in place.
+func reencrypt(ctx context.Context, store Vault, key string, readMK *crypto.MasterKey, writeMKs ...*crypto.MasterKey) error {
+	blob, err := store.Get(ctx, key)
 	if err != nil {
 		return err
 	}
@@ -92,5 +113,5 @@ func reencrypt(ctx context.Context, store Vault, ns string, readMK *crypto.Maste
 	if err != nil {
 		return err
 	}
-	return store.Put(ctx, ns, sealed)
+	return store.Put(ctx, key, sealed)
 }

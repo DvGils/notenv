@@ -1,8 +1,7 @@
-// Package backend defines where ciphertext lives. The Backend interface is
-// the seam between client-side-crypto and provider-holds-plaintext storage
-// models: RcloneStorage is the only MVP implementation. A future
-// KeyVaultBackend can implement the same interface and simply ignore the
-// crypto layer.
+// Package backend defines where ciphertext lives. The Backend interface is a
+// flat object store keyed by base-relative path: it only moves opaque bytes.
+// The append-only segment/snapshot layout a namespace is assembled from lives a
+// layer up, in internal/secrets. RcloneStorage is the only implementation.
 package backend
 
 import (
@@ -10,20 +9,26 @@ import (
 	"errors"
 )
 
-// ErrNotFound is returned by Get when no blob exists for the namespace.
-var ErrNotFound = errors.New("namespace not found")
+// ErrNotFound is returned by Get and Delete when no object exists at the key.
+var ErrNotFound = errors.New("object not found")
 
+// Backend is a flat object store. Keys are base-relative paths (for example
+// "myapp/snapshot.age"); the store prepends its own base and moves bytes,
+// nothing more.
 type Backend interface {
-	// Get returns the stored ciphertext for a namespace (or ErrNotFound).
-	Get(ctx context.Context, namespace string) ([]byte, error)
-	// Put stores ciphertext. Implementations SHOULD retain prior versions.
-	Put(ctx context.Context, namespace string, ciphertext []byte) error
-	// List returns known namespaces.
-	List(ctx context.Context) ([]string, error)
+	// Get returns the object stored at key (or ErrNotFound).
+	Get(ctx context.Context, key string) ([]byte, error)
+	// Put stores data at key, overwriting any existing object.
+	Put(ctx context.Context, key string, data []byte) error
+	// List returns the keys of every object under prefix, base-relative and
+	// recursive. An absent prefix yields no keys, not an error.
+	List(ctx context.Context, prefix string) ([]string, error)
+	// Delete removes the object at key. Removing an absent key is not an error.
+	Delete(ctx context.Context, key string) error
 }
 
 // HeaderStore is implemented by client-side-crypto backends, which keep the
-// key-slot header next to the namespace blobs (see internal/crypto:
+// key-slot header next to the ciphertext objects (see internal/crypto:
 // LUKS2-style wrapped master key). Backends where the provider holds
 // plaintext have no key material and won't implement it.
 type HeaderStore interface {

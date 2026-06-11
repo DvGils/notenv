@@ -166,6 +166,7 @@ fresh key while keeping all slots; see [Teams and key management](#teams-and-key
 | `notenv list` | List stored secret names (never values). |
 | `notenv run -- cmd` | Run a command with secrets injected as environment variables. |
 | `notenv run --refresh -- cmd` | Same, but bypass the local cache and pull the latest secrets first. |
+| `notenv compact` | Force-fold a namespace's change segments into a single snapshot (also happens automatically). |
 | `notenv cache clear` | Remove all locally cached ciphertext on this machine. |
 | `notenv --version` | Print the version, commit, and build date. |
 
@@ -285,12 +286,18 @@ clear`). Set either `cache_ttl` to `"0"` to disable caching.
 On macOS and Windows the caches are not yet wired up, so those platforms prompt and fetch on
 every run; the cache lands together with their native key stores (see [Status](#status)).
 
-**Concurrent writes.** `notenv set` is a read-modify-write of the whole namespace blob, and
-there is no locking across machines yet. If two people (or two machines) run `set` on the
-same namespace at nearly the same time, the later upload wins and the earlier new key is
-lost. Object versioning on the remote preserves the overwritten bytes, but notenv does not
-reconcile them automatically. In practice this is a non-issue for a single user; compare-and-swap
-on write is planned.
+**Concurrent writes.** `notenv set` never overwrites a shared object. Each change is appended
+as its own uniquely named, encrypted segment, and reads fold a namespace's segments together,
+last write wins per key. So if two people (or two machines) `set` different keys at the same
+time, both survive, no lost writes, no locking, on any remote. Setting the *same* key
+concurrently is a genuine conflict: one value wins deterministically and the other is reported
+and kept recoverable in its segment until the next compaction.
+
+Segments accumulate as you write, so once enough pile up a `set` folds them back into a single
+snapshot automatically; it's best-effort housekeeping that never fails your write, and reads
+are never affected. `notenv compact` forces it on demand. Compaction is safe to run while
+others are writing (their writes are never lost); just don't run two compactions of the same
+namespace at once.
 
 ## Security
 
@@ -340,14 +347,15 @@ full set of release artifacts locally without publishing.
 
 Actively developed and being tested.
 
-**Working today:** `setup`, `init`, `set`, `list`, `run`, and `cache`; full key and slot
-management (`notenv key …`); team access by age recipient, passphrase and master-key
+**Working today:** `setup`, `init`, `set`, `list`, `run`, `compact`, and `cache`; full key and
+slot management (`notenv key …`); team access by age recipient, passphrase and master-key
 rotation, offboarding by re-key, advisory primary governance, and authenticated +
-version-pinned headers; multiple storages per machine; passphrase or identity unlock; Linux
-key/blob caching. Releases are reproducible, cosign-signed, and carry SLSA build provenance.
+version-pinned headers; append-only writes so concurrent `set`s never lose each other, with
+automatic compaction keeping reads fast; multiple storages per machine; passphrase or identity
+unlock; Linux key/blob caching. Releases are reproducible, cosign-signed, and carry SLSA build
+provenance.
 
 **Planned:**
-- Compare-and-swap on write (closes the concurrent-write race).
 - Signed rotation transitions (multi-machine key continuity, so legitimate rotations don't
   need a manual `notenv key trust`).
 - Per-blob manifest (detect rollback of an individual secret's value).

@@ -10,14 +10,14 @@ import (
 	"github.com/DvGils/notenv/internal/backend/backendtest"
 )
 
-// TestRcloneConformance runs the shared HeaderStore contract against a real
+// TestRcloneConformance runs the shared conformance contracts against a real
 // rclone remote, proving the in-memory fake models the real backend. It is
 // skipped unless a remote is provided, so the default `go test` stays
 // offline:
 //
 //	NOTENV_TEST_REMOTE=local NOTENV_TEST_BASE=/tmp/notenv-conformance go test ./internal/backend/...
 //
-// The base path is wiped of header objects before each subtest's store so runs
+// The base path is wiped of all objects before each subtest's store so runs
 // don't bleed into each other.
 func TestRcloneConformance(t *testing.T) {
 	remote := os.Getenv("NOTENV_TEST_REMOTE")
@@ -31,9 +31,7 @@ func TestRcloneConformance(t *testing.T) {
 
 	basePath := remote + ":" + strings.Trim(base, "/")
 	clean := func() {
-		for _, obj := range []string{".header.json", ".header.json.prev"} {
-			_ = exec.Command("rclone", "deletefile", basePath+"/"+obj).Run()
-		}
+		_ = exec.Command("rclone", "delete", basePath).Run() // wipe every object under the base
 	}
 
 	backendtest.HeaderStoreContract(t, func(t *testing.T) backend.HeaderStore {
@@ -41,4 +39,10 @@ func TestRcloneConformance(t *testing.T) {
 		t.Cleanup(clean)
 		return &backend.RcloneStorage{Remote: remote, Base: base}
 	}, false)
+
+	backendtest.BackendContract(t, func(t *testing.T) backend.Backend {
+		clean()
+		t.Cleanup(clean)
+		return &backend.RcloneStorage{Remote: remote, Base: base}
+	})
 }

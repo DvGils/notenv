@@ -23,8 +23,8 @@ type RcloneStorage struct {
 	Remote string // rclone remote name, e.g. "b2"
 	Base   string // path within the remote, e.g. "my-bucket/notenv"
 	// Versioned: the remote retains old versions on overwrite (B2 does
-	// natively), so the .prev backup copy (~3s server-side on B2) is
-	// redundant and skipped.
+	// natively), so the header's ".prev" backup copy (~3s server-side on B2)
+	// is redundant and skipped (see BackupHeader).
 	Versioned bool
 }
 
@@ -121,8 +121,8 @@ func (s *RcloneStorage) Probe(ctx context.Context) error {
 	return nil
 }
 
-func (s *RcloneStorage) Get(ctx context.Context, namespace string) ([]byte, error) {
-	return s.catObject(ctx, s.objectPath(namespace))
+func (s *RcloneStorage) Get(ctx context.Context, key string) ([]byte, error) {
+	return s.catObject(ctx, s.objectPath(key))
 }
 
 // catObject downloads a single object, mapping both rclone's not-found exit
@@ -143,34 +143,47 @@ func (s *RcloneStorage) catObject(ctx context.Context, path string) ([]byte, err
 	return out, nil
 }
 
-func (s *RcloneStorage) Put(ctx context.Context, namespace string, ciphertext []byte) error {
-	path := s.objectPath(namespace)
-	// Best-effort previous-version copy for remotes without native object
-	// versioning. The ".prev" suffix keeps it out of List's "*.age" filter.
-	if !s.Versioned {
-		_, _ = runRclone(ctx, nil, "copyto", path, path+".prev")
-	}
-	_, err := runRclone(ctx, ciphertext, "rcat", path)
+func (s *RcloneStorage) Put(ctx context.Context, key string, data []byte) error {
+	_, err := runRclone(ctx, data, "rcat", s.objectPath(key))
 	return err
 }
 
-func (s *RcloneStorage) List(ctx context.Context) ([]string, error) {
-	out, err := runRclone(ctx, nil, "lsf", "--files-only", s.basePath())
+func (s *RcloneStorage) Delete(ctx context.Context, key string) error {
+	if _, err := runRclone(ctx, nil, "deletefile", s.objectPath(key)); err != nil {
+		if isNotFound(err) {
+			return nil // already gone
+		}
+		return err
+	}
+	return nil
+}
+
+// List returns base-relative keys of every object under prefix, recursively.
+func (s *RcloneStorage) List(ctx context.Context, prefix string) ([]string, error) {
+	root := s.basePath()
+	clean := strings.Trim(prefix, "/")
+	if clean != "" {
+		root += "/" + clean
+	}
+	out, err := runRclone(ctx, nil, "lsf", "-R", "--files-only", root)
 	if err != nil {
 		if isNotFound(err) {
-			return nil, nil // base dir doesn't exist yet, so no namespaces
+			return nil, nil // prefix doesn't exist yet, so no objects
 		}
 		return nil, err
 	}
-	var namespaces []string
+	var keys []string
 	for line := range strings.SplitSeq(string(out), "\n") {
-		name, ok := strings.CutSuffix(strings.TrimSpace(line), ".age")
-		if !ok || strings.HasPrefix(name, ".") { // dot-objects (.header.json, .prev) aren't namespaces
+		rel := strings.TrimSpace(line)
+		if rel == "" {
 			continue
 		}
-		namespaces = append(namespaces, name)
+		if clean != "" {
+			rel = clean + "/" + rel
+		}
+		keys = append(keys, rel)
 	}
-	return namespaces, nil
+	return keys, nil
 }
 
 const (
@@ -234,8 +247,8 @@ func (s *RcloneStorage) basePath() string {
 	return s.Remote + ":" + strings.Trim(s.Base, "/")
 }
 
-func (s *RcloneStorage) objectPath(namespace string) string {
-	return s.basePath() + "/" + namespace + ".age"
+func (s *RcloneStorage) objectPath(key string) string {
+	return s.basePath() + "/" + key
 }
 
 // runRclone runs the binary with stdin (may be nil) and returns stdout.

@@ -4,6 +4,41 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.3.0
+
+This release makes concurrent writes safe: two machines changing secrets at the same time no
+longer overwrite each other. There is no automatic upgrade from 0.2.x; see Breaking changes.
+
+### Breaking changes
+
+- **New on-storage layout, with no migration path from 0.2.x.** A namespace is now an
+  append-only set of per-write segment objects (folded into an occasional snapshot) under a
+  `<namespace>/` prefix, replacing the single `<namespace>.age` blob. To move from 0.2.x,
+  re-add your secrets with `notenv set`. notenv is pre-1.0, so this is a one-time clean break.
+
+### Added
+
+- **Safe concurrent writes.** `notenv set` appends a uniquely named, encrypted segment instead
+  of rewriting a shared blob, so two machines setting different keys at the same time never lose
+  each other's change — on any remote, with no locking. Reads fold a namespace's segments over
+  its snapshot, last write wins per key, ordered by a Lamport clock.
+- **Conflict reporting.** Setting the *same* key concurrently on two machines is a genuine
+  conflict: one value wins deterministically and the other is reported on the next read and kept
+  recoverable in its segment until the next compaction.
+- **Automatic compaction.** Once a namespace's segments pass a threshold, a `set` folds them
+  into a single fresh snapshot so cold reads stay fast. It is best-effort (a compaction failure
+  never fails the write) and write-path only (reads never mutate storage). `notenv compact`
+  forces it on demand. Compaction writes the new snapshot before removing what it folded and
+  only removes objects it read, so a write — or another compaction — that lands concurrently is
+  never lost.
+
+### Known limitations and planned work
+
+- Don't run two compactions against the same namespace simultaneously: it's safe (no writes
+  lost) but wasteful, briefly leaving redundant snapshots that the next compaction collapses.
+- On an eventually-consistent remote a fold can briefly read stale (never lost) just after a
+  compaction; strongly-consistent remotes (Backblaze B2, S3) are unaffected.
+
 ## 0.2.0
 
 This release turns notenv from a solo, passphrase-only tool into a multi-user, multi-vault

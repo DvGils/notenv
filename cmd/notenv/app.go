@@ -15,6 +15,7 @@ import (
 	"github.com/DvGils/notenv/internal/contract"
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keyring"
+	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
@@ -23,6 +24,7 @@ type app struct {
 	contract     *contract.File
 	contractPath string
 	namespace    string
+	machine      string // this machine's stable id, naming the segments it writes
 	store        backend.Backend
 	cache        keyring.Cache
 	blobs        blobcache.Cache
@@ -58,10 +60,15 @@ func loadApp() (*app, error) {
 	if err != nil {
 		return nil, err
 	}
+	machine, err := config.MachineID()
+	if err != nil {
+		return nil, err
+	}
 	return &app{
 		contract:     cf,
 		contractPath: filepath.Join(dir, contract.FileName),
 		namespace:    eff.Namespace,
+		machine:      machine,
 		store:        &backend.RcloneStorage{Remote: eff.Remote, Base: eff.Base, Versioned: eff.Versioned},
 		cache:        keyring.DefaultCache(),
 		blobs:        blobcache.New(eff.BlobCacheTTL),
@@ -70,102 +77,116 @@ func loadApp() (*app, error) {
 	}, nil
 }
 
-// getBlob fetches the namespace blob. found=false means no blob exists yet
-// (not an error here; callers decide what that means).
-//   - readCache: serve a fresh-enough local copy with no network. Reads
-//     (run/list) pass true unless --refresh; writes (set) pass false so the
-//     read-modify-write always sees current storage state.
-//   - writeCache: repopulate the cache after a network fetch. Reads pass
-//     true (incl. --refresh, so the next run is warm); set passes false and
-//     caches the new sealed blob itself after writing.
-func (a *app) getBlob(ctx context.Context, readCache, writeCache bool) (ciphertext []byte, found bool, err error) {
-	if readCache {
-		if cached, ok := a.blobs.Get(a.cacheScope, a.namespace); ok {
-			return cached, true, nil
-		}
-	}
-	spinErr := ui.Spin(fmt.Sprintf("Fetching namespace %q", a.namespace), func() error {
-		var getErr error
-		ciphertext, getErr = a.store.Get(ctx, a.namespace)
-		if errors.Is(getErr, backend.ErrNotFound) {
-			return nil
-		}
-		return getErr
-	})
-	if spinErr != nil {
-		return nil, false, spinErr
-	}
-	if writeCache && ciphertext != nil {
-		_ = a.blobs.Put(a.cacheScope, a.namespace, ciphertext) // best-effort
-	}
-	return ciphertext, ciphertext != nil, nil
+// secretsNamespace binds this command's namespace log to a master key.
+func (a *app) secretsNamespace(mk *crypto.MasterKey) *secrets.Namespace {
+	return secrets.For(a.store, a.namespace, mk, a.machine)
 }
 
-// fetchSecrets pulls the namespace blob and decrypts it in memory with the
-// master key. Plaintext never touches disk. refresh bypasses the read cache
-// (and repopulates it) to pull another machine's change.
-//
-// After a remote re-key (rotate-master / key rm elsewhere), a cached blob and/or
-// a cached master can be stale and fail to decrypt. fetchSecrets recovers once,
-// cheapest first: re-fetch a fresh blob (a stale blob, no master re-unlock),
-// then drop and re-unlock the master (a stale master). Only a genuine
-// master/blob mismatch surfaces an error.
-func (a *app) fetchSecrets(ctx context.Context, refresh bool) (map[string]string, error) {
-	readCache := !refresh
-	ciphertext, found, err := a.getBlob(ctx, readCache, true)
+// withMaster resolves the master key and runs fn with it, recovering once from
+// a stale cached master (another machine re-keyed) by dropping the cache and
+// re-unlocking. Returns the master fn ran against.
+func (a *app) withMaster(ctx context.Context, fn func(*crypto.MasterKey) error) (*crypto.MasterKey, error) {
+	_, wasCached := a.cache.Get(a.cacheScope) // before master(), to know if it was already cached
+	mk, err := a.master(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !found {
+	if err = fn(mk); err != nil && wasCached {
+		a.cache.Drop(a.cacheScope)
+		if mk, err = a.master(ctx); err == nil {
+			err = fn(mk)
+		}
+	}
+	return mk, err
+}
+
+// foldState reads the namespace from storage and resolves its secrets in
+// memory. Plaintext never touches disk. Returns the folded state and the master
+// that opened it.
+func (a *app) foldState(ctx context.Context) (*secrets.State, *crypto.MasterKey, error) {
+	var state *secrets.State
+	mk, err := a.withMaster(ctx, func(mk *crypto.MasterKey) error {
+		return ui.Spin(fmt.Sprintf("Reading namespace %q", a.namespace), func() error {
+			var ferr error
+			state, ferr = a.secretsNamespace(mk).Fold(ctx)
+			return ferr
+		})
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return state, mk, nil
+}
+
+// fetchSecrets resolves the namespace's secrets for run/list. It serves a warm,
+// fully-local copy from the folded-blob cache when both the blob and the master
+// are cached; otherwise it folds from storage and repopulates the cache.
+// refresh skips the cache to pull another machine's changes.
+func (a *app) fetchSecrets(ctx context.Context, refresh bool) (map[string]string, error) {
+	if !refresh {
+		if cached, ok := a.cachedSecrets(); ok {
+			return cached, nil
+		}
+	}
+	state, mk, err := a.foldState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !state.HasHistory() {
 		return nil, fmt.Errorf("no secrets stored yet for namespace %q; use `notenv set KEY` first", a.namespace)
 	}
-	_, wasCached := a.cache.Get(a.cacheScope) // before master(), to know if it was already cached
-	mk, err := a.master(ctx)
-	if err != nil {
-		return nil, err
-	}
-	plaintext, err := mk.Decrypt(ciphertext)
-	if err != nil && readCache {
-		// Maybe a stale cached blob: re-fetch fresh and retry with the same master.
-		if fresh, ok, ferr := a.getBlob(ctx, false, true); ferr == nil && ok {
-			ciphertext = fresh
-			plaintext, err = mk.Decrypt(ciphertext)
-		}
-	}
-	if err != nil && wasCached {
-		// Maybe a stale cached master: drop it, re-unlock from the fresh header.
-		a.cache.Drop(a.cacheScope)
-		if mk, err = a.master(ctx); err == nil {
-			plaintext, err = mk.Decrypt(ciphertext)
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-	return decodePayload(plaintext)
+	a.cacheFolded(mk, state.Secrets)
+	reportConflicts(state.Conflicts)
+	return state.Secrets, nil
 }
 
-// decrypt opens an already-fresh ciphertext with the master, recovering once
-// from a stale cached master (another machine re-keyed) by dropping the cache
-// and re-unlocking. Returns the plaintext and the master that worked. Used by
-// `set`, which always fetches the blob uncached.
-func (a *app) decrypt(ctx context.Context, ciphertext []byte) ([]byte, *crypto.MasterKey, error) {
-	_, wasCached := a.cache.Get(a.cacheScope) // before master(), to know if it was already cached
-	mk, err := a.master(ctx)
+// cachedSecrets opens the warm folded-blob cache with no network: it needs both
+// the blob and the master already cached, and is a clean miss if either is
+// absent or stale.
+func (a *app) cachedSecrets() (map[string]string, bool) {
+	cached, ok := a.blobs.Get(a.cacheScope, a.namespace)
+	if !ok {
+		return nil, false
+	}
+	rawMaster, ok := a.cache.Get(a.cacheScope)
+	if !ok {
+		return nil, false
+	}
+	mk, err := crypto.ParseMasterKey(rawMaster)
 	if err != nil {
-		return nil, nil, err
+		return nil, false
 	}
-	plaintext, err := mk.Decrypt(ciphertext)
-	if err != nil && wasCached {
-		a.cache.Drop(a.cacheScope)
-		if mk, err = a.master(ctx); err == nil {
-			plaintext, err = mk.Decrypt(ciphertext)
-		}
-	}
+	plaintext, err := mk.Decrypt(cached)
 	if err != nil {
-		return nil, nil, err
+		return nil, false
 	}
-	return plaintext, mk, nil
+	secrets, err := decodePayload(plaintext)
+	if err != nil {
+		return nil, false
+	}
+	return secrets, true
+}
+
+// cacheFolded stores the folded secrets as a single sealed blob, so the next
+// run on this machine is instant. Best-effort: a cache failure never fails the
+// command.
+func (a *app) cacheFolded(mk *crypto.MasterKey, folded map[string]string) {
+	plaintext, err := encodePayload(folded)
+	if err != nil {
+		return
+	}
+	if sealed, err := mk.Encrypt(plaintext); err == nil {
+		_ = a.blobs.Put(a.cacheScope, a.namespace, sealed)
+	}
+}
+
+// reportConflicts warns about keys written concurrently on more than one
+// machine. The kept value is deterministic; the shadowed ones survive in their
+// segments until the next compaction.
+func reportConflicts(conflicts []secrets.Conflict) {
+	for _, c := range conflicts {
+		ui.Warnf("%q was set concurrently on more than one machine; kept machine %s's value (re-run `notenv set %s` to settle it)", c.Key, c.Winner, c.Key)
+	}
 }
 
 // master returns the unwrapped master key: session cache first, then the
