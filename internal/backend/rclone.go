@@ -132,7 +132,7 @@ func (s *RcloneStorage) Get(ctx context.Context, key string) ([]byte, error) {
 func (s *RcloneStorage) catObject(ctx context.Context, path string) ([]byte, error) {
 	out, err := runRclone(ctx, nil, "cat", path)
 	if err != nil {
-		if isNotFound(err) {
+		if isNotFoundExit(err) {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -150,7 +150,7 @@ func (s *RcloneStorage) Put(ctx context.Context, key string, data []byte) error 
 
 func (s *RcloneStorage) Delete(ctx context.Context, key string) error {
 	if _, err := runRclone(ctx, nil, "deletefile", s.objectPath(key)); err != nil {
-		if isNotFound(err) {
+		if isNotFoundLoose(err) {
 			return nil // already gone
 		}
 		return err
@@ -167,7 +167,7 @@ func (s *RcloneStorage) List(ctx context.Context, prefix string) ([]string, erro
 	}
 	out, err := runRclone(ctx, nil, "lsf", "-R", "--files-only", root)
 	if err != nil {
-		if isNotFound(err) {
+		if isNotFoundExit(err) {
 			return nil, nil // prefix doesn't exist yet, so no objects
 		}
 		return nil, err
@@ -197,8 +197,7 @@ func (s *RcloneStorage) GetHeader(ctx context.Context) ([]byte, error) {
 
 // PutHeader writes the header object. It does NOT back up first: the safe-write
 // protocol (internal/keymgmt) calls BackupHeader before this, because a
-// clobbered header locks the user out of every blob under it. Creation on
-// virgin storage calls PutHeader directly (nothing to back up yet).
+// clobbered header locks the user out of every blob under it.
 func (s *RcloneStorage) PutHeader(ctx context.Context, raw []byte) error {
 	_, err := runRclone(ctx, raw, "rcat", s.basePath()+"/"+headerObject)
 	return err
@@ -216,7 +215,7 @@ func (s *RcloneStorage) BackupHeader(ctx context.Context) error {
 	src := s.basePath() + "/" + headerObject
 	dst := s.basePath() + "/" + headerBackupObject
 	if _, err := runRclone(ctx, nil, "copyto", src, dst); err != nil {
-		if isNotFound(err) {
+		if isNotFoundLoose(err) {
 			return nil // no header yet, nothing to back up
 		}
 		return err
@@ -235,7 +234,7 @@ func (s *RcloneStorage) RestoreHeaderBackup(ctx context.Context) error {
 	src := s.basePath() + "/" + headerBackupObject
 	dst := s.basePath() + "/" + headerObject
 	if _, err := runRclone(ctx, nil, "copyto", src, dst); err != nil {
-		if isNotFound(err) {
+		if isNotFoundLoose(err) {
 			return ErrNotFound
 		}
 		return err
@@ -283,18 +282,39 @@ func (e *rcloneError) Error() string {
 
 func (e *rcloneError) Unwrap() error { return e.err }
 
-func isNotFound(err error) bool {
+// isNotFoundExit reports rclone's dedicated not-found exit codes (3: directory,
+// 4: file). This is the only not-found signal reads (cat, lsf) trust: a
+// GetHeader not-found drives the virgin-storage decision in the key ceremony,
+// and stderr text (which shifts across rclone versions and locales) must never
+// be able to fake that.
+func isNotFoundExit(err error) bool {
 	re, ok := errors.AsType[*rcloneError](err)
 	if !ok {
 		return false
 	}
-	if exit, ok := errors.AsType[*exec.ExitError](re.err); ok {
-		switch exit.ExitCode() {
-		case rcloneExitDirNotFound, rcloneExitFileNotFound:
-			return true
-		}
+	exit, ok := errors.AsType[*exec.ExitError](re.err)
+	if !ok {
+		return false
 	}
-	// Exit code isn't always 3/4: a `copyto` whose source is missing reports a
-	// generic exit 1 with a "doesn't exist" message, so match the text too.
+	switch exit.ExitCode() {
+	case rcloneExitDirNotFound, rcloneExitFileNotFound:
+		return true
+	}
+	return false
+}
+
+// isNotFoundLoose additionally matches rclone's stderr text, for the
+// subcommands that report a missing source with only a generic exit 1
+// (`copyto`, `deletefile`). The looseness is acceptable there: a false match
+// skips backing up a header that most likely doesn't exist, or re-deletes an
+// already-missing object — housekeeping, never a trust decision.
+func isNotFoundLoose(err error) bool {
+	if isNotFoundExit(err) {
+		return true
+	}
+	re, ok := errors.AsType[*rcloneError](err)
+	if !ok {
+		return false
+	}
 	return strings.Contains(re.stderr, "not found") || strings.Contains(re.stderr, "doesn't exist")
 }
