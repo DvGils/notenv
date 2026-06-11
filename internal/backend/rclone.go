@@ -173,19 +173,61 @@ func (s *RcloneStorage) List(ctx context.Context) ([]string, error) {
 	return namespaces, nil
 }
 
-const headerObject = ".header.json"
+const (
+	headerObject       = ".header.json"
+	headerBackupObject = headerObject + ".prev" // dot-prefixed: excluded by List's filter
+)
 
 func (s *RcloneStorage) GetHeader(ctx context.Context) ([]byte, error) {
 	return s.catObject(ctx, s.basePath()+"/"+headerObject)
 }
 
-// PutHeader writes the header object. Only called on creation today; when
-// rotation lands (`notenv key ...`) it MUST grow a previous-version backup
-// first, because a clobbered header locks the user out of every blob under
-// it.
+// PutHeader writes the header object. It does NOT back up first: the safe-write
+// protocol (internal/keymgmt) calls BackupHeader before this, because a
+// clobbered header locks the user out of every blob under it. Creation on
+// virgin storage calls PutHeader directly (nothing to back up yet).
 func (s *RcloneStorage) PutHeader(ctx context.Context, raw []byte) error {
 	_, err := runRclone(ctx, raw, "rcat", s.basePath()+"/"+headerObject)
 	return err
+}
+
+// BackupHeader copies the current header to its ".prev" sibling so a bad
+// overwrite is recoverable. It is a no-op when the remote keeps native object
+// versions (those versions are the backup) and when no header exists yet
+// (nothing to preserve). Any other copy failure is returned so the caller can
+// refuse to overwrite a header it couldn't back up.
+func (s *RcloneStorage) BackupHeader(ctx context.Context) error {
+	if s.Versioned {
+		return nil
+	}
+	src := s.basePath() + "/" + headerObject
+	dst := s.basePath() + "/" + headerBackupObject
+	if _, err := runRclone(ctx, nil, "copyto", src, dst); err != nil {
+		if isNotFound(err) {
+			return nil // no header yet, nothing to back up
+		}
+		return err
+	}
+	return nil
+}
+
+// RestoreHeaderBackup copies the ".prev" backup back over the header. Returns
+// ErrNotFound when there is no backup to restore, including on versioned
+// remotes, which keep no ".prev" (use rclone's version listing to recover a
+// prior object version there).
+func (s *RcloneStorage) RestoreHeaderBackup(ctx context.Context) error {
+	if s.Versioned {
+		return ErrNotFound
+	}
+	src := s.basePath() + "/" + headerBackupObject
+	dst := s.basePath() + "/" + headerObject
+	if _, err := runRclone(ctx, nil, "copyto", src, dst); err != nil {
+		if isNotFound(err) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *RcloneStorage) basePath() string {
@@ -239,5 +281,7 @@ func isNotFound(err error) bool {
 			return true
 		}
 	}
-	return strings.Contains(re.stderr, "not found")
+	// Exit code isn't always 3/4: a `copyto` whose source is missing reports a
+	// generic exit 1 with a "doesn't exist" message, so match the text too.
+	return strings.Contains(re.stderr, "not found") || strings.Contains(re.stderr, "doesn't exist")
 }

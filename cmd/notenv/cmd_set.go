@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/DvGils/notenv/internal/contract"
+	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keyring"
 	"github.com/DvGils/notenv/internal/ui"
 )
@@ -33,14 +34,7 @@ var setCmd = &cobra.Command{
 			return err
 		}
 
-		// Master key first: on virgin storage this runs the header
-		// ceremony (choose passphrase + escrow warning) before anything
-		// else happens.
 		ctx := cmd.Context()
-		mk, err := a.master(ctx)
-		if err != nil {
-			return err
-		}
 
 		// Fetch fresh (bypass the read cache): a read-modify-write must see
 		// current storage state, not a possibly-stale local copy.
@@ -49,12 +43,22 @@ var setCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		var mk *crypto.MasterKey
 		if found {
-			plaintext, err := mk.Decrypt(ciphertext)
-			if err != nil {
+			// decrypt recovers from a stale cached master (another machine
+			// re-keyed) and returns the master that worked, which we reuse to
+			// re-encrypt the updated blob.
+			var plaintext []byte
+			if plaintext, mk, err = a.decrypt(ctx, ciphertext); err != nil {
 				return err
 			}
 			if secrets, err = decodePayload(plaintext); err != nil {
+				return err
+			}
+		} else {
+			// Virgin namespace or virgin storage: the master ceremony runs here
+			// (choose passphrase + escrow warning) before anything is written.
+			if mk, err = a.master(ctx); err != nil {
 				return err
 			}
 		}

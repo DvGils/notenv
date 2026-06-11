@@ -28,11 +28,25 @@ jobs:
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
+      # The GitHub release body is the curated CHANGELOG.md section for this tag,
+      # not GoReleaser's auto commit list. Extract it for --release-notes below.
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+            /^## / { if (found) exit; if ($2 == ver) { found=1; next } }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            printf "Release %s. See https://github.com/DvGils/notenv/blob/%s/CHANGELOG.md\n" "$version" "$GITHUB_REF_NAME" > RELEASE_NOTES.md
+          fi
+          echo "----- release notes -----"; cat RELEASE_NOTES.md
+
       - uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
         id: goreleaser
         with:
           version: "~> v2"
-          args: release --clean
+          args: release --clean --release-notes=RELEASE_NOTES.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

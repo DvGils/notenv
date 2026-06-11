@@ -43,7 +43,18 @@ func loadApp() (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	eff, err := config.Resolve(user, cf, dir)
+	// Storage selection: --storage flag wins, else the project's local binding,
+	// else the machine default / sole storage. The committed contract never
+	// influences this.
+	storageName := storageFlag
+	if storageName == "" {
+		bound, err := config.ReadLocalBinding(dir)
+		if err != nil {
+			return nil, err
+		}
+		storageName = bound
+	}
+	eff, err := config.Resolve(user, cf, dir, storageName)
 	if err != nil {
 		return nil, err
 	}
@@ -93,23 +104,68 @@ func (a *app) getBlob(ctx context.Context, readCache, writeCache bool) (cipherte
 // fetchSecrets pulls the namespace blob and decrypts it in memory with the
 // master key. Plaintext never touches disk. refresh bypasses the read cache
 // (and repopulates it) to pull another machine's change.
+//
+// After a remote re-key (rotate-master / key rm elsewhere), a cached blob and/or
+// a cached master can be stale and fail to decrypt. fetchSecrets recovers once,
+// cheapest first: re-fetch a fresh blob (a stale blob, no master re-unlock),
+// then drop and re-unlock the master (a stale master). Only a genuine
+// master/blob mismatch surfaces an error.
 func (a *app) fetchSecrets(ctx context.Context, refresh bool) (map[string]string, error) {
-	ciphertext, found, err := a.getBlob(ctx, !refresh, true)
+	readCache := !refresh
+	ciphertext, found, err := a.getBlob(ctx, readCache, true)
 	if err != nil {
 		return nil, err
 	}
 	if !found {
 		return nil, fmt.Errorf("no secrets stored yet for namespace %q; use `notenv set KEY` first", a.namespace)
 	}
+	_, wasCached := a.cache.Get(a.cacheScope) // before master(), to know if it was already cached
 	mk, err := a.master(ctx)
 	if err != nil {
 		return nil, err
 	}
 	plaintext, err := mk.Decrypt(ciphertext)
+	if err != nil && readCache {
+		// Maybe a stale cached blob: re-fetch fresh and retry with the same master.
+		if fresh, ok, ferr := a.getBlob(ctx, false, true); ferr == nil && ok {
+			ciphertext = fresh
+			plaintext, err = mk.Decrypt(ciphertext)
+		}
+	}
+	if err != nil && wasCached {
+		// Maybe a stale cached master: drop it, re-unlock from the fresh header.
+		a.cache.Drop(a.cacheScope)
+		if mk, err = a.master(ctx); err == nil {
+			plaintext, err = mk.Decrypt(ciphertext)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 	return decodePayload(plaintext)
+}
+
+// decrypt opens an already-fresh ciphertext with the master, recovering once
+// from a stale cached master (another machine re-keyed) by dropping the cache
+// and re-unlocking. Returns the plaintext and the master that worked. Used by
+// `set`, which always fetches the blob uncached.
+func (a *app) decrypt(ctx context.Context, ciphertext []byte) ([]byte, *crypto.MasterKey, error) {
+	_, wasCached := a.cache.Get(a.cacheScope) // before master(), to know if it was already cached
+	mk, err := a.master(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	plaintext, err := mk.Decrypt(ciphertext)
+	if err != nil && wasCached {
+		a.cache.Drop(a.cacheScope)
+		if mk, err = a.master(ctx); err == nil {
+			plaintext, err = mk.Decrypt(ciphertext)
+		}
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return plaintext, mk, nil
 }
 
 // master returns the unwrapped master key: session cache first, then the

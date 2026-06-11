@@ -43,19 +43,18 @@ func ensureMaster(ctx context.Context, store backend.HeaderStore, cache keyring.
 		if err != nil {
 			return nil, false, err
 		}
-		pass, err := keyring.PromptPassphrase("Passphrase: ")
+		// Unlock with a configured age identity if present (teammate path),
+		// otherwise prompt for the escrowed passphrase. On a new machine this
+		// doubles as verification.
+		res, err := resolveUnlock(header, true) // read path: a teammate may not be added yet
 		if err != nil {
 			return nil, false, err
 		}
-		var mk *crypto.MasterKey
-		if err := ui.Spin("Unlocking key slot (scrypt)", func() error {
-			mk, err = header.Unlock(pass)
-			return err
-		}); err != nil {
+		if err := trustHeader(scope, header, res.mk); err != nil {
 			return nil, false, err
 		}
-		cacheMaster(cache, scope, mk, ttl)
-		return mk, false, nil
+		cacheMaster(cache, scope, res.mk, ttl)
+		return res.mk, false, nil
 	}
 
 	pass, err := keyring.PromptNewPassphrase("Choose a passphrase for this storage: ")
@@ -63,25 +62,27 @@ func ensureMaster(ctx context.Context, store backend.HeaderStore, cache keyring.
 		return nil, false, err
 	}
 	var mk *crypto.MasterKey
+	var header *crypto.Header
 	if err := ui.Spin("Generating master key, writing header", func() error {
-		header, key, err := crypto.NewHeader(pass, userAtHost())
+		h, key, err := crypto.NewHeader(pass, userAtHost())
 		if err != nil {
 			return err
 		}
-		raw, err := header.Marshal()
+		raw, err := h.Marshal()
 		if err != nil {
 			return err
 		}
 		if err := store.PutHeader(ctx, raw); err != nil {
 			return err
 		}
-		mk = key
+		header, mk = h, key
 		return nil
 	}); err != nil {
 		return nil, false, err
 	}
 	ui.Warnf("escrow this passphrase in your password manager NOW. It is the only key to your secrets; lose it and the ciphertext is unrecoverable by design")
 	cacheMaster(cache, scope, mk, ttl)
+	pinCurrent(scope, header, mk) // anchor the rollback pin at creation
 	return mk, true, nil
 }
 

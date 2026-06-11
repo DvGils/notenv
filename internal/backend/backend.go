@@ -31,4 +31,17 @@ type HeaderStore interface {
 	GetHeader(ctx context.Context) ([]byte, error)
 	// PutHeader stores the raw header object.
 	PutHeader(ctx context.Context, raw []byte) error
+	// BackupHeader preserves the current header before an overwrite, so a
+	// clobbered header doesn't lock the user out of every blob. It is a no-op
+	// when the remote keeps native object versions (the versions ARE the
+	// backup) or when no header exists yet; otherwise it copies the header to
+	// a sibling backup object. The safe-write protocol calls it before
+	// PutHeader and refuses to proceed if it errors.
+	BackupHeader(ctx context.Context) error
+	// RestoreHeaderBackup copies the sibling backup object back over the
+	// header, the recovery counterpart to BackupHeader. It returns
+	// ErrNotFound when no backup exists. On versioned remotes there is no
+	// ".prev" backup (restore a prior object version with rclone instead), so
+	// implementations there return ErrNotFound.
+	RestoreHeaderBackup(ctx context.Context) error
 }
