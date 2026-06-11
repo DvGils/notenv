@@ -57,7 +57,7 @@ var setCmd = &cobra.Command{
 		var updated *secrets.State
 		if err := ui.Spin("Uploading encrypted segment", func() error {
 			var aerr error
-			updated, aerr = a.secretsNamespace(mk).Append(ctx, state, seq, a.contract.StorageKey(key), value, false)
+			updated, aerr = a.appendGuarded(ctx, mk, state, seq, a.contract.StorageKey(key), value, false)
 			return aerr
 		}); err != nil {
 			return err
@@ -66,7 +66,9 @@ var setCmd = &cobra.Command{
 		// on this machine is instant and coherent.
 		a.cacheFolded(mk, updated.Secrets)
 		ui.Successf("%s set in namespace %q", key, a.namespace)
-		reportConflicts(state.Conflicts)
+		// Report from the post-write state: this write settles its own key's
+		// conflict, so only genuinely unresolved ones surface.
+		reportConflicts(updated.Conflicts)
 		a.maybeCompact(ctx, mk, state.SegmentCount())
 
 		// Convenience: keep the committed contract in sync with reality.

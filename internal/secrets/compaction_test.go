@@ -17,13 +17,13 @@ func TestCompactInterruptedKeepsData(t *testing.T) {
 	a.set(s, "B", "2")
 
 	store.FailDeleteAfter(0, errors.New("blip")) // first delete after the snapshot write fails
-	if err := a.ns().Compact(ctx); err == nil {
+	if err := a.ns().Compact(ctx, nil); err == nil {
 		t.Fatal("expected compaction to surface the delete failure")
 	}
 	if state := a.fold(); state.Secrets["A"] != "1" || state.Secrets["B"] != "2" {
 		t.Fatalf("data lost after interrupted compaction: %v", state.Secrets)
 	}
-	if err := a.ns().Compact(ctx); err != nil {
+	if err := a.ns().Compact(ctx, nil); err != nil {
 		t.Fatalf("re-run compaction: %v", err)
 	}
 	if snaps, segs := classify(t, store); snaps != 1 || segs != 0 {
@@ -42,7 +42,7 @@ func TestCompactRejectsCorruptSnapshot(t *testing.T) {
 	a.set(s, "B", "2")
 
 	store.CorruptNextBlobPut(func([]byte) []byte { return []byte("mangled") })
-	if err := a.ns().Compact(ctx); err == nil {
+	if err := a.ns().Compact(ctx, nil); err == nil {
 		t.Fatal("expected compaction to reject a corrupted snapshot")
 	}
 	if snaps, segs := classify(t, store); snaps != 0 || segs != 2 {
@@ -51,7 +51,7 @@ func TestCompactRejectsCorruptSnapshot(t *testing.T) {
 	if state := a.fold(); state.Secrets["A"] != "1" || state.Secrets["B"] != "2" {
 		t.Fatalf("data lost after a rejected compaction: %v", state.Secrets)
 	}
-	if err := a.ns().Compact(ctx); err != nil {
+	if err := a.ns().Compact(ctx, nil); err != nil {
 		t.Fatalf("clean re-run compaction: %v", err)
 	}
 }
@@ -72,7 +72,7 @@ func TestCompactKeepsConcurrentWrite(t *testing.T) {
 		b.set(bBase, "C", "3") // lands after the compaction's listing
 	})
 
-	if err := a.ns().Compact(ctx); err != nil {
+	if err := a.ns().Compact(ctx, nil); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 	state := a.fold()
@@ -94,11 +94,11 @@ func TestConcurrentCompactionCoexistsThenCollapses(t *testing.T) {
 
 	b := newFixture(t, store, mk, "m2")
 	store.BeforeNextPut(func() {
-		if err := b.ns().Compact(ctx); err != nil {
+		if err := b.ns().Compact(ctx, nil); err != nil {
 			t.Errorf("concurrent compaction (B): %v", err)
 		}
 	})
-	if err := a.ns().Compact(ctx); err != nil {
+	if err := a.ns().Compact(ctx, nil); err != nil {
 		t.Fatalf("compaction (A): %v", err)
 	}
 
@@ -108,7 +108,7 @@ func TestConcurrentCompactionCoexistsThenCollapses(t *testing.T) {
 	if state := a.fold(); state.Secrets["A"] != "1" || state.Secrets["B"] != "2" {
 		t.Fatalf("fold over two snapshots wrong: %v", state.Secrets)
 	}
-	if err := a.ns().Compact(ctx); err != nil {
+	if err := a.ns().Compact(ctx, nil); err != nil {
 		t.Fatalf("collapse compaction: %v", err)
 	}
 	if snaps, segs := classify(t, store); snaps != 1 || segs != 0 {
@@ -128,11 +128,11 @@ func TestCompactVanishedSegmentFailsCleanly(t *testing.T) {
 
 	b := newFixture(t, store, mk, "m2")
 	store.AfterNextList(func() {
-		if err := b.ns().Compact(ctx); err != nil {
+		if err := b.ns().Compact(ctx, nil); err != nil {
 			t.Errorf("concurrent compaction (B): %v", err)
 		}
 	})
-	if err := a.ns().Compact(ctx); err == nil {
+	if err := a.ns().Compact(ctx, nil); err == nil {
 		t.Fatal("expected compaction to fail when its listed segments vanished")
 	}
 	if state := a.fold(); state.Secrets["A"] != "1" || state.Secrets["B"] != "2" {
@@ -149,7 +149,7 @@ func TestEmptiedNamespaceKeepsClockAfterCompaction(t *testing.T) {
 	f := newFixture(t, store, mk, "m1")
 	s := f.set(f.fold(), "K", "v")
 	f.del(s, "K")
-	if err := f.ns().Compact(ctx); err != nil {
+	if err := f.ns().Compact(ctx, nil); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 	if !f.fold().HasHistory() {
@@ -172,7 +172,7 @@ func TestCompactionPreservesClockAcrossDelete(t *testing.T) {
 	a.del(s, "X")     // advances the clock past every surviving entry
 	bBase := b.fold() // B captures the full clock before compaction
 
-	if err := a.ns().Compact(ctx); err != nil {
+	if err := a.ns().Compact(ctx, nil); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 	a.set(a.fold(), "A", "from-a") // from the compacted state
@@ -180,6 +180,28 @@ func TestCompactionPreservesClockAcrossDelete(t *testing.T) {
 
 	if conflicts := a.fold().Conflicts; len(conflicts) == 0 {
 		t.Fatal("concurrent post-compaction writes must conflict, not silently resolve")
+	}
+}
+
+// TestCompactAbortsWhenConfirmFails covers the pre-delete confirm hook (the
+// master-epoch check): when it errors, the compaction removes its own snapshot
+// and leaves the namespace exactly as it found it.
+func TestCompactAbortsWhenConfirmFails(t *testing.T) {
+	ctx := context.Background()
+	store, mk := newStoreMaster(t)
+	a := newFixture(t, store, mk, "m1")
+	s := a.set(a.fold(), "A", "1")
+	a.set(s, "B", "2")
+
+	confirm := func() error { return errors.New("master changed under us") }
+	if err := a.ns().Compact(ctx, confirm); err == nil {
+		t.Fatal("expected compaction to surface the failed confirm")
+	}
+	if snaps, segs := classify(t, store); snaps != 0 || segs != 2 {
+		t.Fatalf("aborted compaction must undo its snapshot and keep segments, got %d/%d", snaps, segs)
+	}
+	if state := a.fold(); state.Secrets["A"] != "1" || state.Secrets["B"] != "2" {
+		t.Fatalf("data changed by an aborted compaction: %v", state.Secrets)
 	}
 }
 
@@ -191,7 +213,7 @@ func TestAppendRejectsCorruptWrite(t *testing.T) {
 	f := newFixture(t, store, mk, "m1")
 
 	store.CorruptNextBlobPut(func([]byte) []byte { return []byte("mangled") })
-	if _, err := f.ns().Append(ctx, f.fold(), 1, "K", "v", false); err == nil {
+	if _, _, err := f.ns().Append(ctx, f.fold(), 1, "K", "v", false); err == nil {
 		t.Fatal("append must reject a write that reads back corrupted")
 	}
 	if f.fold().HasHistory() {

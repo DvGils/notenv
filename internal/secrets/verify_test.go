@@ -37,7 +37,7 @@ func TestAppendKeepsLaggedWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ns.Append(ctx, prev, 1, "K", "v", false); err == nil {
+	if _, _, err := ns.Append(ctx, prev, 1, "K", "v", false); err == nil {
 		t.Fatal("append should surface the lagged read-back as an error")
 	}
 	keys, err := base.List(ctx, "proj/")

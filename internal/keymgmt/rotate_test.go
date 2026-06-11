@@ -174,3 +174,60 @@ func mustParse(t *testing.T, store *memstore.Store) *crypto.Header {
 	}
 	return h
 }
+
+// TestRotateMasterReKeysWriteLandedMidRotation injects a segment sealed under
+// the OLD master right after the rotation's first listing — a concurrent writer
+// that had not yet noticed the rotation. The narrow pass re-lists after the
+// flip and falls back to the old key, so the segment must end up readable under
+// the new master only, not stranded.
+func TestRotateMasterReKeysWriteLandedMidRotation(t *testing.T) {
+	ctx := context.Background()
+	store := memstore.New()
+	blobs := map[string]string{"proj/snap-aa.age": "a"}
+	oldMK, alice := seedVault(t, store, blobs)
+	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
+
+	store.AfterNextList(func() { // fires after the widen listing
+		sealed, err := oldMK.Encrypt([]byte("late"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Put(ctx, "proj/seg-m2-late.age", sealed); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	base := store.Header()
+	header, _ := crypto.ParseHeader(base)
+	if _, err := keymgmt.RotateMaster(ctx, store, header, base, oldMK, verify, nil); err != nil {
+		t.Fatalf("RotateMaster: %v", err)
+	}
+	assertVault(t, store, oldMK, alice, map[string]string{
+		"proj/snap-aa.age":     "a",
+		"proj/seg-m2-late.age": "late",
+	})
+}
+
+// TestRotateMasterSkipsVanishedObject deletes a listed object mid-rotation (a
+// concurrent compaction folding it away). The rotation must skip it, not fail:
+// its content lives in that compaction's snapshot.
+func TestRotateMasterSkipsVanishedObject(t *testing.T) {
+	ctx := context.Background()
+	store := memstore.New()
+	blobs := map[string]string{"proj/seg-m1-aa.age": "a", "proj/seg-m1-bb.age": "b"}
+	oldMK, alice := seedVault(t, store, blobs)
+	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
+
+	store.AfterNextList(func() {
+		if err := store.Delete(ctx, "proj/seg-m1-bb.age"); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	base := store.Header()
+	header, _ := crypto.ParseHeader(base)
+	if _, err := keymgmt.RotateMaster(ctx, store, header, base, oldMK, verify, nil); err != nil {
+		t.Fatalf("RotateMaster must tolerate a vanished object: %v", err)
+	}
+	assertVault(t, store, oldMK, alice, map[string]string{"proj/seg-m1-aa.age": "a"})
+}

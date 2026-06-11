@@ -44,14 +44,15 @@ var unsetCmd = &cobra.Command{
 		var updated *secrets.State
 		if err := ui.Spin("Uploading removal", func() error {
 			var aerr error
-			updated, aerr = a.secretsNamespace(mk).Append(ctx, state, seq, storageKey, "", true)
+			updated, aerr = a.appendGuarded(ctx, mk, state, seq, storageKey, "", true)
 			return aerr
 		}); err != nil {
 			return err
 		}
 		a.cacheFolded(mk, updated.Secrets)
 		ui.Successf("%s removed from namespace %q", key, a.namespace)
-		reportConflicts(state.Conflicts)
+		// Post-write state: this tombstone settles its own key's conflict.
+		reportConflicts(updated.Conflicts)
 		a.maybeCompact(ctx, mk, state.SegmentCount())
 
 		// The committed contract is a separate decision from the stored value, so

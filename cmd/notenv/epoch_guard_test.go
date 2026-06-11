@@ -1,0 +1,126 @@
+package main
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/DvGils/notenv/internal/backend/memstore"
+	"github.com/DvGils/notenv/internal/blobcache"
+	"github.com/DvGils/notenv/internal/crypto"
+	"github.com/DvGils/notenv/internal/secrets"
+)
+
+// mapCache is an in-memory keyring.Cache so the guard tests never touch the
+// real kernel keyring.
+type mapCache struct{ m map[string]string }
+
+func newMapCache() *mapCache { return &mapCache{m: map[string]string{}} }
+
+func (c *mapCache) Get(scope string) (string, bool) { v, ok := c.m[scope]; return v, ok }
+func (c *mapCache) Store(scope, secret string, _ time.Duration) error {
+	c.m[scope] = secret
+	return nil
+}
+func (c *mapCache) Drop(scope string) { delete(c.m, scope) }
+
+// guardApp builds an app over a memstore vault, returning it with the master.
+func guardApp(t *testing.T) (*app, *memstore.Store, *crypto.MasterKey) {
+	t.Helper()
+	store := memstore.New()
+	header, mk, err := crypto.NewHeader("pass", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := header.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetHeader(raw)
+	a := &app{
+		namespace:  "proj",
+		machine:    "m1",
+		store:      store,
+		cache:      newMapCache(),
+		blobs:      blobcache.New(0),
+		cacheScope: "test-scope",
+	}
+	a.cache.Store(a.cacheScope, mk.String(), time.Hour)
+	return a, store, mk
+}
+
+// rotateHeader simulates another machine's flip: the stored header now wraps a
+// fresh master. Returns the new master.
+func rotateHeader(t *testing.T, store *memstore.Store) *crypto.MasterKey {
+	t.Helper()
+	header, err := crypto.ParseHeader(store.Header())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newMK, err := crypto.GenerateMasterKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := header.SetMaster(newMK); err != nil {
+		t.Fatal(err)
+	}
+	header.Revision++
+	if err := header.Seal(newMK); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := header.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetHeader(raw)
+	return newMK
+}
+
+func TestAppendGuardedWritesWhenEpochUnchanged(t *testing.T) {
+	ctx := context.Background()
+	a, store, mk := guardApp(t)
+
+	prev, err := a.secretsNamespace(mk).Fold(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := a.appendGuarded(ctx, mk, prev, 1, "K", "v", false)
+	if err != nil {
+		t.Fatalf("appendGuarded: %v", err)
+	}
+	if updated.Secrets["K"] != "v" {
+		t.Fatalf("K = %q, want v", updated.Secrets["K"])
+	}
+	if keys, _ := store.List(ctx, "proj/"); len(keys) != 1 {
+		t.Fatalf("want 1 stored segment, got %d", len(keys))
+	}
+}
+
+// TestAppendGuardedRollsBackOnEpochChange is the writer's half of the
+// write-epoch protocol: the vault is re-keyed between this writer's unlock and
+// its write, so the segment — sealed under the superseded master — must be
+// removed again and the stale cache dropped, leaving the namespace clean.
+func TestAppendGuardedRollsBackOnEpochChange(t *testing.T) {
+	ctx := context.Background()
+	a, store, mk := guardApp(t)
+
+	prev, err := a.secretsNamespace(mk).Fold(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newMK := rotateHeader(t, store) // the flip lands before our write's confirm
+
+	if _, err := a.appendGuarded(ctx, mk, prev, 1, "K", "v", false); err == nil {
+		t.Fatal("appendGuarded must fail when the master changed mid-write")
+	}
+	if keys, _ := store.List(ctx, "proj/"); len(keys) != 0 {
+		t.Fatalf("rolled-back write must leave no object, got %v", keys)
+	}
+	if _, ok := a.cache.Get(a.cacheScope); ok {
+		t.Fatal("the stale cached master must be dropped")
+	}
+	// The namespace still folds cleanly for a holder of the new master.
+	if _, err := secrets.For(store, "proj", newMK, "m2").Fold(ctx); err != nil {
+		t.Fatalf("namespace must stay clean for the new master: %v", err)
+	}
+}

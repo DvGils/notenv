@@ -114,7 +114,7 @@ func runScript(t *testing.T, data []byte, allowCompact bool) {
 			m.view = st
 		case op == 1 && allowCompact: // compaction must be value-transparent
 			before := fold(step)
-			if err := m.ns.Compact(ctx); err != nil {
+			if err := m.ns.Compact(ctx, nil); err != nil {
 				break // interrupted compaction: store unchanged, still consistent
 			}
 			after := fold(step)
@@ -129,7 +129,7 @@ func runScript(t *testing.T, data []byte, allowCompact bool) {
 				value = fmt.Sprintf("%s-%s-%d", m.id, key, step)
 			}
 			m.seq++
-			updated, err := m.ns.Append(ctx, m.view, m.seq, key, value, deleted)
+			updated, _, err := m.ns.Append(ctx, m.view, m.seq, key, value, deleted)
 			if err != nil {
 				continue // interrupted upload: nothing landed, nothing recorded
 			}

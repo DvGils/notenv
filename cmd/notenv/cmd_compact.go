@@ -26,7 +26,7 @@ lost. Avoid running two compactions against the same namespace at once.`,
 		ctx := cmd.Context()
 		if _, err := a.withMaster(ctx, func(mk *crypto.MasterKey) error {
 			return ui.Spin(fmt.Sprintf("Compacting namespace %q", a.namespace), func() error {
-				return a.secretsNamespace(mk).Compact(ctx)
+				return a.secretsNamespace(mk).Compact(ctx, a.epochConfirm(ctx, mk))
 			})
 		}); err != nil {
 			return err

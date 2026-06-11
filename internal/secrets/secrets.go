@@ -146,8 +146,10 @@ func (n *Namespace) Fold(ctx context.Context) (*State, error) {
 }
 
 // Append writes one key change as a new segment and returns the resulting
-// state. prev is the fold this write builds on; its Lamport sets the new clock.
-func (n *Namespace) Append(ctx context.Context, prev *State, seq int, key, value string, deleted bool) (*State, error) {
+// state plus the object key the segment landed under, so the caller can remove
+// the write again if a post-write check (the master-epoch confirm) fails. prev
+// is the fold this write builds on; its Lamport sets the new clock.
+func (n *Namespace) Append(ctx context.Context, prev *State, seq int, key, value string, deleted bool) (*State, string, error) {
 	seg := segment{
 		Version: formatVersion,
 		Machine: n.machine,
@@ -159,20 +161,20 @@ func (n *Namespace) Append(ctx context.Context, prev *State, seq int, key, value
 	}
 	raw, err := json.Marshal(seg)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	sealed, err := n.master.Encrypt(raw)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	objKey, err := n.objectKey("seg-" + n.machine)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := n.putVerified(ctx, objKey, sealed); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return prev.with(seg), nil
+	return prev.with(seg), objKey, nil
 }
 
 // Compact folds the namespace into a single fresh snapshot and removes the
@@ -180,7 +182,14 @@ func (n *Namespace) Append(ctx context.Context, prev *State, seq int, key, value
 // only deletes objects it read, so a write that lands concurrently — under a
 // name it never listed — is never lost. Running two compactions against one
 // namespace at the same time is safe but wasteful; coordinate them.
-func (n *Namespace) Compact(ctx context.Context) error {
+//
+// confirm, if non-nil, runs after the snapshot is written and verified but
+// before anything is deleted. If it errors, Compact removes its own snapshot
+// and returns the error with the namespace untouched. The caller uses it to
+// confirm the master it sealed the snapshot with is still the vault's master:
+// without the check, a compaction racing a master rotation could collapse the
+// whole namespace into a snapshot only the superseded key can open.
+func (n *Namespace) Compact(ctx context.Context, confirm func() error) error {
 	l, err := n.load(ctx)
 	if err != nil {
 		return err
@@ -201,6 +210,12 @@ func (n *Namespace) Compact(ctx context.Context) error {
 	// botched write leaves the namespace untouched rather than half-collapsed.
 	if err := n.putVerified(ctx, key, sealed); err != nil {
 		return err
+	}
+	if confirm != nil {
+		if err := confirm(); err != nil {
+			_ = n.store.Delete(ctx, key) // undo our own snapshot; originals are intact
+			return fmt.Errorf("compaction abandoned before deleting anything: %w", err)
+		}
 	}
 	for _, folded := range append(l.snapKeys, l.segKeys...) {
 		if err := n.store.Delete(ctx, folded); err != nil {
@@ -259,7 +274,9 @@ func (n *Namespace) openInto(ctx context.Context, key string, v any) error {
 	}
 	plain, err := n.master.Decrypt(blob)
 	if err != nil {
-		return err
+		// Name the object: when one undecryptable object poisons a fold, the
+		// recovery (inspect or remove it with rclone) starts from its key.
+		return fmt.Errorf("object %s: %w", key, err)
 	}
 	if err := json.Unmarshal(plain, v); err != nil {
 		return fmt.Errorf("corrupt object %s: %w", key, err)
