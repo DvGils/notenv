@@ -33,7 +33,7 @@ type app struct {
 	cacheTTL     time.Duration
 }
 
-func loadApp() (*app, error) {
+func loadApp(ctx context.Context) (*app, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -61,10 +61,12 @@ func loadApp() (*app, error) {
 	if err != nil {
 		return nil, err
 	}
+	store := &backend.RcloneStorage{Remote: eff.Remote, Base: eff.Base, Versioned: eff.Versioned}
 	// The contract chooses the namespace — the thing that selects which secrets
 	// reach a child process — so it is held to the checkout's local pin before
-	// any storage or key is touched.
-	if err := guardNamespace(dir, binding, eff.Namespace); err != nil {
+	// any key is touched (a first-use join of an existing namespace costs one
+	// listing here; pinned checkouts skip storage entirely).
+	if err := guardNamespace(ctx, store, dir, binding, eff.Namespace); err != nil {
 		return nil, err
 	}
 	machine, err := config.MachineID()
@@ -76,7 +78,7 @@ func loadApp() (*app, error) {
 		contractPath: filepath.Join(dir, contract.FileName),
 		namespace:    eff.Namespace,
 		machine:      machine,
-		store:        &backend.RcloneStorage{Remote: eff.Remote, Base: eff.Base, Versioned: eff.Versioned},
+		store:        store,
 		cache:        keyring.DefaultCache(),
 		blobs:        blobcache.New(eff.BlobCacheTTL),
 		cacheScope:   config.CacheScope(eff.Remote, eff.Base),

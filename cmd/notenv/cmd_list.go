@@ -14,7 +14,7 @@ var listCmd = &cobra.Command{
 	Short: "List stored secret names (never values)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := loadApp()
+		a, err := loadApp(cmd.Context())
 		if err != nil {
 			return err
 		}

@@ -38,7 +38,7 @@ always move it some other way.`,
 		if runMask && runNoMask {
 			return errors.New("--mask and --no-mask are mutually exclusive")
 		}
-		a, err := loadApp()
+		a, err := loadApp(cmd.Context())
 		if err != nil {
 			return err
 		}
