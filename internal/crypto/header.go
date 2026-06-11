@@ -28,9 +28,13 @@ import (
 // attacker with storage access can brute-force a weak passphrase offline
 // (scrypt-hardened). The escrowed passphrase is the root of trust.
 
-// headerVersion is the on-storage format version. There is one format: the
-// indirect slot model with header authentication + a monotonic revision (see
-// auth.go). Bump only on a future incompatible change.
+// headerVersion is the header's on-storage format version. There is one format:
+// the indirect slot model with header authentication + a monotonic revision (see
+// auth.go). ParseHeader accepts only exactly this version with a valid auth tag,
+// with no lenient or unversioned path, since accepting an unauthenticated or
+// unknown-version header would be a security hole. The segment/snapshot payloads
+// (internal/secrets) are versioned by the same exact-match rule. Bump only on a
+// future incompatible change.
 const headerVersion = 1
 
 // Header is the parsed header object.
@@ -317,12 +321,17 @@ func EncryptToMasters(plaintext []byte, masters ...*MasterKey) ([]byte, error) {
 	return encryptTo(plaintext, recipients...)
 }
 
+// ErrNotRecipient reports that a ciphertext is valid age but was not encrypted
+// to the key that tried to open it — the key is wrong, not the data. Callers
+// (rotation's fallback read, the stale-cache retry) branch on it with errors.Is.
+var ErrNotRecipient = errors.New("blob was not encrypted under the current master key")
+
 func (m *MasterKey) Decrypt(ciphertext []byte) ([]byte, error) {
 	plaintext, err := decryptWith(ciphertext, m.identity)
 	if err != nil {
 		var noMatch *age.NoIdentityMatchError
 		if errors.As(err, &noMatch) {
-			return nil, errors.New("blob was not encrypted under the current master key. Was this storage re-initialized? Re-create it with `notenv set`")
+			return nil, fmt.Errorf("%w. Was this storage re-initialized or re-keyed? Re-create the value with `notenv set`", ErrNotRecipient)
 		}
 		return nil, err
 	}

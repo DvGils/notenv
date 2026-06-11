@@ -242,38 +242,88 @@ func SetDefault(name string) error {
 }
 
 // LocalBindingFile is the per-checkout, git-ignored file that binds a project
-// to a named storage. It lives beside the contract and is never committed.
+// to a named storage and pins its namespace. It lives beside the contract and
+// is never committed.
 const LocalBindingFile = "notenv.local.toml"
 
-type localBinding struct {
-	Storage string `toml:"storage"`
+// LocalBinding is what a checkout has locally agreed to: which configured
+// storage it uses (empty means "resolve from the machine config") and which
+// namespace it reads. The namespace pin is a security boundary, not a
+// convenience: the committed contract chooses the namespace, so without a
+// local pin a cloned repository could silently point a checkout at any other
+// project's secrets in the bound vault.
+type LocalBinding struct {
+	Storage   string `toml:"storage"`
+	Namespace string `toml:"namespace"`
 }
 
-// ReadLocalBinding returns the storage name bound to the project in dir, or ""
-// when no binding file exists.
-func ReadLocalBinding(dir string) (string, error) {
+// ReadLocalBinding returns the project's local binding in dir. A missing file
+// is a zero binding, not an error.
+func ReadLocalBinding(dir string) (LocalBinding, error) {
 	path := filepath.Join(dir, LocalBindingFile)
-	var b localBinding
+	var b LocalBinding
 	if _, err := toml.DecodeFile(path, &b); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", nil
+			return LocalBinding{}, nil
 		}
-		return "", fmt.Errorf("%s: %w", path, err)
+		return LocalBinding{}, fmt.Errorf("%s: %w", path, err)
 	}
-	return b.Storage, nil
+	return b, nil
 }
 
-// WriteLocalBinding records the storage a project uses in dir and returns the
+// WriteLocalBinding records the binding for the project in dir and returns the
 // file path. The caller is responsible for git-ignoring it.
-func WriteLocalBinding(dir, storageName string) (string, error) {
+func WriteLocalBinding(dir string, b LocalBinding) (string, error) {
 	path := filepath.Join(dir, LocalBindingFile)
-	content := fmt.Sprintf("# notenv project-local storage binding (NOT committed).\n"+
-		"# Selects which configured storage this checkout uses; see `notenv setup`.\n"+
-		"storage = %q\n", storageName)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	var content strings.Builder
+	content.WriteString("# notenv project-local binding (NOT committed).\n")
+	if b.Storage != "" {
+		content.WriteString("# storage: which configured storage this checkout uses; see `notenv setup`.\n")
+		fmt.Fprintf(&content, "storage = %q\n", b.Storage)
+	}
+	if b.Namespace != "" {
+		content.WriteString("# namespace: pinned so the committed contract can't silently retarget\n")
+		content.WriteString("# this checkout at another project's secrets. Re-run `notenv init` to change it.\n")
+		fmt.Fprintf(&content, "namespace = %q\n", b.Namespace)
+	}
+	if err := os.WriteFile(path, []byte(content.String()), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+// NamespaceDecision is CheckNamespacePin's verdict on using a contract's
+// namespace in a checkout.
+type NamespaceDecision int
+
+const (
+	// NamespaceOK: the checkout already pinned this namespace; proceed.
+	NamespaceOK NamespaceDecision = iota
+	// NamespacePin: first use and the namespace is just the directory's name
+	// (the obvious default); pin it without ceremony.
+	NamespacePin
+	// NamespaceConfirm: first use of an explicitly chosen namespace; pinning it
+	// is a decision the user should see (confirm interactively, warn in CI).
+	NamespaceConfirm
+)
+
+// CheckNamespacePin decides whether a checkout may use the contract's resolved
+// namespace. derived is the namespace the directory name would yield. A pinned
+// checkout whose contract now names a different namespace is refused: the
+// committed contract selects which secrets reach a child process, so changing
+// it underneath an existing checkout is either an attack or a rename the user
+// must explicitly re-accept (`notenv init` re-pins).
+func CheckNamespacePin(b LocalBinding, resolved, derived string) (NamespaceDecision, error) {
+	switch {
+	case b.Namespace == resolved:
+		return NamespaceOK, nil
+	case b.Namespace != "":
+		return 0, fmt.Errorf("the contract requests namespace %q but this checkout is pinned to %q; if the rename is intentional, re-run `notenv init` to re-pin, otherwise treat the contract change as suspect", resolved, b.Namespace)
+	case resolved == derived:
+		return NamespacePin, nil
+	default:
+		return NamespaceConfirm, nil
+	}
 }
 
 // Exists reports whether a user config file is present (the "is this
@@ -394,6 +444,24 @@ func WritePin(scope string, p Pin) error {
 		return err
 	}
 	pins[scope] = p
+	return savePins(pins)
+}
+
+// DeletePin removes the pin for a storage scope (`notenv key forget`, after a
+// deliberate vault reset). Removing an absent pin is a no-op.
+func DeletePin(scope string) error {
+	pins, err := loadPins()
+	if err != nil {
+		return err
+	}
+	if _, ok := pins[scope]; !ok {
+		return nil
+	}
+	delete(pins, scope)
+	return savePins(pins)
+}
+
+func savePins(pins map[string]Pin) error {
 	path, err := pinPath()
 	if err != nil {
 		return err
@@ -475,13 +543,24 @@ func MachineID() (string, error) {
 // NextSeq returns the next strictly-increasing sequence number for (scope,
 // namespace) on this machine, persisting the counter. It orders this machine's
 // segments even when a freshly listed remote is briefly stale, so two of its
-// writes never share a sequence number.
+// writes never share a sequence number. The read-modify-write is locked, so two
+// concurrent processes on the machine can't read the same counter and collide.
 func NextSeq(scope, namespace string) (int, error) {
 	dir, err := Dir()
 	if err != nil {
 		return 0, err
 	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return 0, err
+	}
 	path := filepath.Join(dir, "seq.json")
+
+	unlock, err := lockFile(path + ".lock")
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+
 	seqs := map[string]int{}
 	switch data, err := os.ReadFile(path); {
 	case err == nil:
@@ -494,9 +573,6 @@ func NextSeq(scope, namespace string) (int, error) {
 	key := scope + "\x00" + namespace
 	seqs[key]++
 	next := seqs[key]
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return 0, err
-	}
 	data, err := json.MarshalIndent(seqs, "", "  ")
 	if err != nil {
 		return 0, err
@@ -505,4 +581,35 @@ func NextSeq(scope, namespace string) (int, error) {
 		return 0, err
 	}
 	return next, nil
+}
+
+// lockFile takes an exclusive lock by atomically creating lock, spinning while
+// another process holds it and reclaiming a lock left by a crash (one older than
+// the stale window). It guards a local, low-contention counter, so a short spin
+// is fine. The returned function releases the lock.
+func lockFile(lock string) (func(), error) {
+	const (
+		spin  = 5 * time.Millisecond
+		stale = 15 * time.Second
+		wait  = 30 * time.Second
+	)
+	start := time.Now()
+	for {
+		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(lock) }, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, err
+		}
+		if info, statErr := os.Stat(lock); statErr == nil && time.Since(info.ModTime()) > stale {
+			_ = os.Remove(lock) // reclaim a lock left by a crashed process
+			continue
+		}
+		if time.Since(start) > wait {
+			return nil, fmt.Errorf("timed out acquiring %s; remove it if no notenv is running", lock)
+		}
+		time.Sleep(spin)
+	}
 }

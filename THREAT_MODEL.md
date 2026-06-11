@@ -69,11 +69,28 @@ What holds, and against whom.
 
 - **Against an adversary with write access to your storage but no key:** they cannot forge or
   silently alter the header (HMAC), and rolling it back to an older revision is detected on any
-  machine that has already seen a newer one. They cannot forge a secret value: a blob they cannot
-  encrypt under the master fails to decrypt, and reads **fail closed** (a corrupt or substituted
-  object is surfaced as an error, never silently skipped). Because writes are append-only and
-  verified on read-back, a botched or malicious write is at worst denial-of-service, not silent
-  data loss. ✅ (with caveats; see [Known limitations](#known-limitations)).
+  machine that has already seen a newer one. **Deleting the header outright is also detected**: a
+  machine that has pinned a vault refuses to treat its missing header as virgin storage (the
+  deliberate-reset escape hatch is `notenv key forget`). They cannot forge a secret value: a blob
+  they cannot encrypt under the master fails to decrypt, and reads **fail closed** (a corrupt or
+  substituted object is surfaced as an error, never silently skipped). Because writes are
+  append-only and verified on read-back, a botched or malicious write is at worst
+  denial-of-service, not silent data loss. ✅ (with caveats; see
+  [Known limitations](#known-limitations)).
+- **Against an honest race — writes concurrent with a master rotation:** every write confirms,
+  after it lands, that the master it was sealed under is still the vault's master, rolling itself
+  back otherwise; the rotation re-lists the namespace after its header flip and re-keys anything a
+  not-yet-aware writer sealed under the old master. A write that escapes both would have to land
+  after the rotation's re-list yet confirm before its flip — impossible, since the write lands
+  before it confirms. So for every non-crash interleaving, no committed write ends up readable by
+  nobody (the crash residual is in [Known limitations](#known-limitations)). ✅
+- **Against a malicious committed contract (a cloned repository):** the contract cannot choose
+  where this machine reads or writes (storage is machine-config only), and the **namespace it
+  names is pinned per checkout** on first use — pinning a namespace other than the directory's
+  name requires interactive confirmation, and a contract that later renames its namespace is
+  refused until explicitly re-accepted (`notenv init`). A malicious clone cannot silently point
+  `notenv run` at another project's secrets in your vault. ✅ (what running untrusted code does
+  with its *own* pinned namespace remains out of scope; see [Non-goals](#non-goals).)
 
 ### No-residue
 
@@ -104,6 +121,9 @@ notenv does **not** defend these, by design. Treating them as in-scope would be 
 - **A compromised live machine that holds the key.** An attacker with your running session and your
   cached/unlocked key can decrypt. notenv shrinks the window (no `.env` files; plaintext only in the
   child's environment for its lifetime) but cannot defend a fully compromised host.
+- **Code you choose to run under `notenv run`.** The child process receives the pinned namespace's
+  secrets; that is the product. Namespace pinning stops a malicious repository from *silently*
+  reaching another project's secrets, not from misusing the secrets you knowingly hand it.
 - **Storage availability.** An adversary with write/delete access can delete or corrupt objects.
   This is denial-of-service, not a confidentiality break; object versioning (default on Backblaze
   B2) recovers prior bytes, but notenv does not guarantee availability.
@@ -123,10 +143,21 @@ These are real, documented gaps, not oversights:
 
 - **Trust on first use.** On a machine's *first* contact with a vault it has no prior revision to
   compare against, so it cannot detect a rollback or substitution that predates its first sight.
+- **Warm-cache runs defer the pin checks.** With the master key cached, a run never reads the
+  header, so rollback / master-change / vanished-header detection happens on cold unlocks — at
+  most one cache TTL (default 1 hour) after the event, not instantly. Writes are unaffected: they
+  re-read the header after every write regardless.
 - **A write-capable former holder can fork history.** Someone who kept the master key and retains
   storage *write* access can fork the vault's history in a way only the owner's pinned machine
   detects. notenv advises rotating the storage credential on offboarding but, not owning the
   storage, cannot enforce it.
+- **A crash inside a rotation's flip→narrow window.** If `rotate-master` crashes after its header
+  flip but before the narrow pass completes, a write that landed during the widen window can be
+  left sealed under the replaced master. The fold then fails closed naming the object; re-set that
+  key (or recover the object's prior version on a versioned remote). The window is seconds wide
+  and requires the crash inside it. This residual is accepted deliberately: the alternative — a
+  rotation-in-progress marker writers must honor — puts a lock-like object on every write path
+  and adds a stuck-marker failure mode that blocks all writers until manually cleared.
 - **Primary-slot governance is advisory.** In shared-master team mode every slot holder has the
   master key, so "who may remove slots" is tooling-enforced, not cryptographic.
 - **Tombstone garbage collection.** Compaction drops delete-tombstones; a stale concurrent write at

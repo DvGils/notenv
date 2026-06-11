@@ -25,12 +25,13 @@ import (
 	"github.com/DvGils/notenv/internal/crypto"
 )
 
-// formatVersion is the on-storage schema version of segment and snapshot
-// objects. Every object written carries it; a read rejects any object stamped
-// with a higher version (written by a newer notenv) instead of misreading it. A
-// missing version (0) is a pre-versioning object and read as the current format,
-// so this version field was added without breaking the prior layout. Bump only
-// on an incompatible change to these payloads.
+// formatVersion is the on-storage schema version of segment and snapshot objects
+// (the secret values). Every object written carries it; a read rejects any
+// object stamped with a different version — higher means a newer notenv wrote
+// it, absent (0) means a pre-0.4 layout this notenv no longer reads (compact
+// with 0.4 first, or re-set the values). The key header (internal/crypto) is
+// versioned separately by the same exact-match rule. Bump only on an
+// incompatible change to these payloads.
 const formatVersion = 1
 
 // segment is one append: a single key write or deletion, ordered across
@@ -144,8 +145,10 @@ func (n *Namespace) Fold(ctx context.Context) (*State, error) {
 }
 
 // Append writes one key change as a new segment and returns the resulting
-// state. prev is the fold this write builds on; its Lamport sets the new clock.
-func (n *Namespace) Append(ctx context.Context, prev *State, seq int, key, value string, deleted bool) (*State, error) {
+// state plus the object key the segment landed under, so the caller can remove
+// the write again if a post-write check (the master-epoch confirm) fails. prev
+// is the fold this write builds on; its Lamport sets the new clock.
+func (n *Namespace) Append(ctx context.Context, prev *State, seq int, key, value string, deleted bool) (*State, string, error) {
 	seg := segment{
 		Version: formatVersion,
 		Machine: n.machine,
@@ -157,20 +160,20 @@ func (n *Namespace) Append(ctx context.Context, prev *State, seq int, key, value
 	}
 	raw, err := json.Marshal(seg)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	sealed, err := n.master.Encrypt(raw)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	objKey, err := n.objectKey("seg-" + n.machine)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := n.putVerified(ctx, objKey, sealed); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return prev.with(seg), nil
+	return prev.with(seg), objKey, nil
 }
 
 // Compact folds the namespace into a single fresh snapshot and removes the
@@ -178,7 +181,14 @@ func (n *Namespace) Append(ctx context.Context, prev *State, seq int, key, value
 // only deletes objects it read, so a write that lands concurrently — under a
 // name it never listed — is never lost. Running two compactions against one
 // namespace at the same time is safe but wasteful; coordinate them.
-func (n *Namespace) Compact(ctx context.Context) error {
+//
+// confirm, if non-nil, runs after the snapshot is written and verified but
+// before anything is deleted. If it errors, Compact removes its own snapshot
+// and returns the error with the namespace untouched. The caller uses it to
+// confirm the master it sealed the snapshot with is still the vault's master:
+// without the check, a compaction racing a master rotation could collapse the
+// whole namespace into a snapshot only the superseded key can open.
+func (n *Namespace) Compact(ctx context.Context, confirm func() error) error {
 	l, err := n.load(ctx)
 	if err != nil {
 		return err
@@ -199,6 +209,12 @@ func (n *Namespace) Compact(ctx context.Context) error {
 	// botched write leaves the namespace untouched rather than half-collapsed.
 	if err := n.putVerified(ctx, key, sealed); err != nil {
 		return err
+	}
+	if confirm != nil {
+		if err := confirm(); err != nil {
+			_ = n.store.Delete(ctx, key) // undo our own snapshot; originals are intact
+			return fmt.Errorf("compaction abandoned before deleting anything: %w", err)
+		}
 	}
 	for _, folded := range append(l.snapKeys, l.segKeys...) {
 		if err := n.store.Delete(ctx, folded); err != nil {
@@ -257,7 +273,9 @@ func (n *Namespace) openInto(ctx context.Context, key string, v any) error {
 	}
 	plain, err := n.master.Decrypt(blob)
 	if err != nil {
-		return err
+		// Name the object: when one undecryptable object poisons a fold, the
+		// recovery (inspect or remove it with rclone) starts from its key.
+		return fmt.Errorf("object %s: %w", key, err)
 	}
 	if err := json.Unmarshal(plain, v); err != nil {
 		return fmt.Errorf("corrupt object %s: %w", key, err)
@@ -265,11 +283,15 @@ func (n *Namespace) openInto(ctx context.Context, key string, v any) error {
 	return nil
 }
 
-// checkFormat rejects an object written by a newer notenv rather than misreading
-// it. Version 0 is a pre-versioning object and read as the current format.
+// checkFormat rejects an object this build cannot faithfully read: a higher
+// version was written by a newer notenv, and an absent version (0) by a
+// pre-0.4 one.
 func checkFormat(version int, key string) error {
-	if version > formatVersion {
+	switch {
+	case version > formatVersion:
 		return fmt.Errorf("%s was written by a newer notenv (format v%d, this build understands up to v%d); upgrade notenv", key, version, formatVersion)
+	case version < 1:
+		return fmt.Errorf("%s carries no format version (written by a pre-0.4 notenv); compact the namespace with notenv 0.4 to rewrite it, or re-add its values with `notenv set`", key)
 	}
 	return nil
 }
@@ -284,19 +306,24 @@ func (n *Namespace) objectKey(prefix string) (string, error) {
 	return fmt.Sprintf("%s%s-%s.age", n.prefix(), prefix, hex.EncodeToString(buf)), nil
 }
 
-// putVerified writes sealed at key and reads it back, removing it and failing on
-// a mismatch. Reads fail closed on any unreadable object (a dropped or tampered
-// write must not be silently skipped), so a botched write would otherwise poison
-// every later fold of the namespace; this stops one from being left behind.
+// putVerified writes sealed at key and reads it back. Because reads fail closed
+// on any unreadable object (a dropped or tampered write must not be silently
+// skipped), a botched write would otherwise poison every later fold; this stops
+// a genuinely corrupt object from being left behind. It deletes only on a real
+// byte mismatch: a read-back that merely errors could be read-after-write lag,
+// and deleting a write that may have landed is the wrong reflex, so it surfaces
+// the error and leaves the object for the caller to retry over.
 func (n *Namespace) putVerified(ctx context.Context, key string, sealed []byte) error {
 	if err := n.store.Put(ctx, key, sealed); err != nil {
 		return err
 	}
-	if got, err := n.store.Get(ctx, key); err != nil || !bytes.Equal(got, sealed) {
+	got, err := n.store.Get(ctx, key)
+	if err != nil {
+		return fmt.Errorf("verify %s after write: %w", key, err)
+	}
+	if !bytes.Equal(got, sealed) {
+		// The backend stored different bytes than we sent: a corrupt write.
 		_ = n.store.Delete(ctx, key)
-		if err != nil {
-			return err
-		}
 		return fmt.Errorf("object %s read back corrupted; write not recorded", key)
 	}
 	return nil

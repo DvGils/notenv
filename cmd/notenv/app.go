@@ -14,6 +14,7 @@ import (
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/contract"
 	"github.com/DvGils/notenv/internal/crypto"
+	"github.com/DvGils/notenv/internal/keymgmt"
 	"github.com/DvGils/notenv/internal/keyring"
 	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
@@ -45,19 +46,25 @@ func loadApp() (*app, error) {
 	if err != nil {
 		return nil, err
 	}
+	binding, err := config.ReadLocalBinding(dir)
+	if err != nil {
+		return nil, err
+	}
 	// Storage selection: --storage flag wins, else the project's local binding,
 	// else the machine default / sole storage. The committed contract never
 	// influences this.
 	storageName := storageFlag
 	if storageName == "" {
-		bound, err := config.ReadLocalBinding(dir)
-		if err != nil {
-			return nil, err
-		}
-		storageName = bound
+		storageName = binding.Storage
 	}
 	eff, err := config.Resolve(user, cf, dir, storageName)
 	if err != nil {
+		return nil, err
+	}
+	// The contract chooses the namespace — the thing that selects which secrets
+	// reach a child process — so it is held to the checkout's local pin before
+	// any storage or key is touched.
+	if err := guardNamespace(dir, binding, eff.Namespace); err != nil {
 		return nil, err
 	}
 	machine, err := config.MachineID()
@@ -80,6 +87,50 @@ func loadApp() (*app, error) {
 // secretsNamespace binds this command's namespace log to a master key.
 func (a *app) secretsNamespace(mk *crypto.MasterKey) *secrets.Namespace {
 	return secrets.For(a.store, a.namespace, mk, a.machine)
+}
+
+// headerStore returns the backend's header side, which every store this app
+// constructs implements (loadApp builds an RcloneStorage).
+func (a *app) headerStore() (backend.HeaderStore, error) {
+	hs, ok := a.store.(backend.HeaderStore)
+	if !ok {
+		return nil, errors.New("backend does not support client-side crypto")
+	}
+	return hs, nil
+}
+
+// epochConfirm returns the post-write check used by every operation that seals
+// objects under mk: it confirms mk is still the vault's master (see
+// keymgmt.VerifyEpoch). Operations that write then delete (compaction) run it
+// between the two; appendGuarded runs it after the write.
+func (a *app) epochConfirm(ctx context.Context, mk *crypto.MasterKey) func() error {
+	return func() error {
+		hs, err := a.headerStore()
+		if err != nil {
+			return err
+		}
+		return keymgmt.VerifyEpoch(ctx, hs, mk)
+	}
+}
+
+// appendGuarded writes one key change and then confirms the master it was
+// sealed under is still the vault's master. On an epoch change (a concurrent
+// rotation), it removes its own segment — leaving it would poison every fold
+// once the old master is gone — drops the now-stale local caches, and reports
+// what happened. The user re-runs the command, which unlocks the new master
+// (running the pin checks) and writes cleanly.
+func (a *app) appendGuarded(ctx context.Context, mk *crypto.MasterKey, prev *secrets.State, seq int, key, value string, deleted bool) (*secrets.State, error) {
+	updated, objKey, err := a.secretsNamespace(mk).Append(ctx, prev, seq, key, value, deleted)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.epochConfirm(ctx, mk)(); err != nil {
+		_ = a.store.Delete(ctx, objKey)
+		a.cache.Drop(a.cacheScope)
+		a.blobs.Drop(a.cacheScope, a.namespace)
+		return nil, fmt.Errorf("%w; the write was rolled back, nothing was stored. Re-run the command to write under the current key (verify the rotation is legitimate if it surprises you)", err)
+	}
+	return updated, nil
 }
 
 // withMaster resolves the master key and runs fn with it, recovering once from
@@ -198,7 +249,7 @@ func (a *app) maybeCompact(ctx context.Context, mk *crypto.MasterKey, priorSegme
 		return
 	}
 	if err := ui.Spin(fmt.Sprintf("Compacting namespace %q", a.namespace), func() error {
-		return a.secretsNamespace(mk).Compact(ctx)
+		return a.secretsNamespace(mk).Compact(ctx, a.epochConfirm(ctx, mk))
 	}); err != nil {
 		ui.Warnf("auto-compaction skipped (harmless; run `notenv compact` later): %v", err)
 	}
@@ -214,9 +265,9 @@ func (a *app) master(ctx context.Context) (*crypto.MasterKey, error) {
 		}
 		a.cache.Drop(a.cacheScope) // unparseable cached value, treat as stale and drop it
 	}
-	hs, ok := a.store.(backend.HeaderStore)
-	if !ok {
-		return nil, errors.New("backend does not support client-side crypto")
+	hs, err := a.headerStore()
+	if err != nil {
+		return nil, err
 	}
 	mk, _, err := ensureMaster(ctx, hs, a.cache, a.cacheScope, a.cacheTTL)
 	return mk, err

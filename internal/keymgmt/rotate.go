@@ -2,6 +2,7 @@ package keymgmt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -30,6 +31,19 @@ type Vault interface {
 //  1. widen  — re-encrypt every blob to {old, new}, header still yields old.
 //  2. flip   — write the new header (yields new); every blob already has new.
 //  3. narrow — re-encrypt every blob to {new} only; old can no longer decrypt.
+//
+// Writes racing the rotation are handled from both sides. The narrow pass
+// re-lists the namespace after the flip, so any object that landed before the
+// flip — sealed under the old master by a writer that had not yet noticed the
+// rotation — is found and re-keyed (the old-master fallback read below). Any
+// object that lands after the flip is the writer's job: its post-write epoch
+// check (VerifyEpoch) sees the new master and rolls the write back. An object
+// escapes both only if the rotation crashes in the window between the flip and
+// the end of the narrow pass; that residual is documented in the threat model.
+//
+// Objects deleted while rotating (a concurrent compaction folding them away)
+// are skipped: their content lives in that compaction's snapshot, which either
+// the re-list sees or the compactor's own epoch check rolls back.
 //
 // A crash loses the in-memory new master, but the operation is re-runnable from
 // any state: a re-run re-keys from whatever the header currently yields.
@@ -70,9 +84,15 @@ func RotateMaster(ctx context.Context, store Vault, hdr *crypto.Header, base []b
 		onFlip(newMK)
 	}
 
-	// Phase 3: narrow — every object readable under the new master only.
+	// Phase 3: narrow — every object readable under the new master only. Listed
+	// afresh so writes that landed during widen (sealed old-only, hence the
+	// fallback) are caught, not stranded.
+	objects, err = blobObjects(ctx, store)
+	if err != nil {
+		return nil, fmt.Errorf("re-list secrets after the flip: %w; the vault is re-keyed but some secrets still carry the old key, re-run `notenv key rotate-master`", err)
+	}
 	for _, key := range objects {
-		if err := reencrypt(ctx, store, key, newMK, newMK); err != nil {
+		if err := reencryptFallback(ctx, store, key, newMK, oldMK); err != nil {
 			return nil, fmt.Errorf("re-encrypt %q (narrow): %w; the vault is re-keyed but some secrets still carry the old key, re-run `notenv key rotate-master`", key, err)
 		}
 	}
@@ -99,9 +119,14 @@ func blobObjects(ctx context.Context, store Vault) ([]string, error) {
 }
 
 // reencrypt reads the object at key, decrypts it with readMK, and re-encrypts
-// it to writeMKs in place.
+// it to writeMKs in place. An object that vanished since it was listed (folded
+// away by a concurrent compaction) is skipped, not an error: its content lives
+// in the compaction's snapshot.
 func reencrypt(ctx context.Context, store Vault, key string, readMK *crypto.MasterKey, writeMKs ...*crypto.MasterKey) error {
 	blob, err := store.Get(ctx, key)
+	if errors.Is(err, backend.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -114,4 +139,15 @@ func reencrypt(ctx context.Context, store Vault, key string, readMK *crypto.Mast
 		return err
 	}
 	return store.Put(ctx, key, sealed)
+}
+
+// reencryptFallback narrows the object at key to {newMK}, reading with newMK
+// first (the widened common case) and falling back to oldMK for an object a
+// concurrent writer sealed under the old master mid-rotation.
+func reencryptFallback(ctx context.Context, store Vault, key string, newMK, oldMK *crypto.MasterKey) error {
+	err := reencrypt(ctx, store, key, newMK, newMK)
+	if errors.Is(err, crypto.ErrNotRecipient) {
+		return reencrypt(ctx, store, key, oldMK, newMK)
+	}
+	return err
 }

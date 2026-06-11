@@ -13,9 +13,9 @@ import (
 // TestRcloneConformance runs the shared conformance contracts against a real
 // rclone remote, proving the in-memory fake models the real backend. It is
 // skipped unless a remote is provided, so the default `go test` stays
-// offline:
+// offline (`:local` is rclone's on-the-fly local backend; no config needed):
 //
-//	NOTENV_TEST_REMOTE=local NOTENV_TEST_BASE=/tmp/notenv-conformance go test ./internal/backend/...
+//	NOTENV_TEST_REMOTE=:local NOTENV_TEST_BASE=/tmp/notenv-conformance go test ./internal/backend/...
 //
 // The base path is wiped of all objects before each subtest's store so runs
 // don't bleed into each other.

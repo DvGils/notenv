@@ -1,11 +1,49 @@
 package config_test
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/contract"
 )
+
+// TestNextSeqConcurrent hammers NextSeq from many goroutines at once; with the
+// read-modify-write locked, every returned sequence number must be distinct.
+func TestNextSeqConcurrent(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const workers, perWorker = 16, 5
+
+	results := make(chan int, workers*perWorker)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range perWorker {
+				n, err := config.NextSeq("scope", "ns")
+				if err != nil {
+					t.Errorf("NextSeq: %v", err)
+					return
+				}
+				results <- n
+			}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	seen := map[int]bool{}
+	for n := range results {
+		if seen[n] {
+			t.Fatalf("duplicate sequence number %d under concurrency", n)
+		}
+		seen[n] = true
+	}
+	if len(seen) != workers*perWorker {
+		t.Fatalf("got %d distinct sequence numbers, want %d", len(seen), workers*perWorker)
+	}
+}
 
 func TestSelectStorage(t *testing.T) {
 	two := &config.User{
@@ -150,17 +188,77 @@ func TestPinRoundTripAndCheck(t *testing.T) {
 	}
 }
 
-func TestLocalBindingRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	if name, err := config.ReadLocalBinding(dir); err != nil || name != "" {
-		t.Fatalf("empty dir: name=%q err=%v", name, err)
-	}
-	if _, err := config.WriteLocalBinding(dir, "acme"); err != nil {
+func TestDeletePin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := config.WritePin("s1", config.Pin{Revision: 3, MasterPub: "age1x"}); err != nil {
 		t.Fatal(err)
 	}
-	name, err := config.ReadLocalBinding(dir)
-	if err != nil || name != "acme" {
-		t.Fatalf("round trip: name=%q err=%v", name, err)
+	if err := config.WritePin("s2", config.Pin{Revision: 7, MasterPub: "age1y"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.DeletePin("s1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, have, _ := config.ReadPin("s1"); have {
+		t.Fatal("s1 pin should be gone")
+	}
+	if p, have, _ := config.ReadPin("s2"); !have || p.Revision != 7 {
+		t.Fatalf("s2 pin must survive: have=%v %+v", have, p)
+	}
+	if err := config.DeletePin("absent"); err != nil {
+		t.Fatalf("deleting an absent pin is a no-op, got %v", err)
+	}
+}
+
+func TestLocalBindingRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	if b, err := config.ReadLocalBinding(dir); err != nil || b != (config.LocalBinding{}) {
+		t.Fatalf("empty dir: binding=%+v err=%v", b, err)
+	}
+	want := config.LocalBinding{Storage: "acme", Namespace: "proj"}
+	if _, err := config.WriteLocalBinding(dir, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.ReadLocalBinding(dir)
+	if err != nil || got != want {
+		t.Fatalf("round trip: binding=%+v err=%v", got, err)
+	}
+
+	// A storage-only binding (the pre-pin layout, or a multi-storage bind
+	// before first use) reads back with an empty namespace.
+	if _, err := config.WriteLocalBinding(dir, config.LocalBinding{Storage: "acme"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = config.ReadLocalBinding(dir)
+	if err != nil || got.Storage != "acme" || got.Namespace != "" {
+		t.Fatalf("storage-only binding: %+v err=%v", got, err)
+	}
+}
+
+func TestCheckNamespacePin(t *testing.T) {
+	// Already pinned to the resolved namespace: proceed.
+	d, err := config.CheckNamespacePin(config.LocalBinding{Namespace: "proj"}, "proj", "proj")
+	if err != nil || d != config.NamespaceOK {
+		t.Fatalf("pinned match: %v %v", d, err)
+	}
+	// Pinned to something else: the contract changed underneath the checkout.
+	if _, err := config.CheckNamespacePin(config.LocalBinding{Namespace: "proj"}, "other-project", "proj"); err == nil {
+		t.Fatal("a pinned checkout must refuse a contract that renames the namespace")
+	}
+	// First use, namespace is the directory default: pin silently.
+	d, err = config.CheckNamespacePin(config.LocalBinding{}, "proj", "proj")
+	if err != nil || d != config.NamespacePin {
+		t.Fatalf("first use, derived: %v %v", d, err)
+	}
+	// First use, explicitly chosen namespace: needs the user to see it.
+	d, err = config.CheckNamespacePin(config.LocalBinding{}, "other-project", "proj")
+	if err != nil || d != config.NamespaceConfirm {
+		t.Fatalf("first use, explicit: %v %v", d, err)
+	}
+	// A storage-only binding does not count as a namespace pin.
+	d, err = config.CheckNamespacePin(config.LocalBinding{Storage: "acme"}, "proj", "proj")
+	if err != nil || d != config.NamespacePin {
+		t.Fatalf("storage-only binding: %v %v", d, err)
 	}
 }
 

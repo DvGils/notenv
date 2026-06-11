@@ -45,9 +45,10 @@ func TestFoldRejectsNewerFormat(t *testing.T) {
 	}
 }
 
-// TestFoldAcceptsVersionlessObject: a segment written before the version field
-// existed (no "v" key, so version 0) must still read as the current format.
-func TestFoldAcceptsVersionlessObject(t *testing.T) {
+// TestFoldRejectsVersionlessObject: a segment with no version field (a pre-0.4
+// layout) is refused with a pointer at the upgrade path, not guessed at. The
+// lenient read it used to get was migration logic with no remaining users.
+func TestFoldRejectsVersionlessObject(t *testing.T) {
 	ctx := context.Background()
 	mk := newMaster(t)
 	store := memstore.New()
@@ -55,11 +56,7 @@ func TestFoldAcceptsVersionlessObject(t *testing.T) {
 	if err := store.Put(ctx, "proj/seg-m1-legacy.age", sealedAt(t, mk, raw)); err != nil {
 		t.Fatal(err)
 	}
-	st, err := For(store, "proj", mk, "m1").Fold(ctx)
-	if err != nil {
-		t.Fatalf("a pre-versioning object must remain readable: %v", err)
-	}
-	if st.Secrets["K"] != "v" {
-		t.Fatalf("legacy object folded wrong: %v", st.Secrets)
+	if _, err := For(store, "proj", mk, "m1").Fold(ctx); err == nil {
+		t.Fatal("fold must reject a versionless (pre-0.4) object")
 	}
 }

@@ -41,7 +41,7 @@ func (f *fixture) fold() *secrets.State {
 func (f *fixture) set(prev *secrets.State, key, value string) *secrets.State {
 	f.t.Helper()
 	f.seq++
-	next, err := f.ns().Append(context.Background(), prev, f.seq, key, value, false)
+	next, _, err := f.ns().Append(context.Background(), prev, f.seq, key, value, false)
 	if err != nil {
 		f.t.Fatalf("append: %v", err)
 	}
@@ -51,7 +51,7 @@ func (f *fixture) set(prev *secrets.State, key, value string) *secrets.State {
 func (f *fixture) del(prev *secrets.State, key string) *secrets.State {
 	f.t.Helper()
 	f.seq++
-	next, err := f.ns().Append(context.Background(), prev, f.seq, key, "", true)
+	next, _, err := f.ns().Append(context.Background(), prev, f.seq, key, "", true)
 	if err != nil {
 		f.t.Fatalf("append delete: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestCompactCollapsesAndPreserves(t *testing.T) {
 	s = f.set(s, "A", "1b") // overwrite
 	f.del(s, "B")           // tombstone
 
-	if err := f.ns().Compact(ctx); err != nil {
+	if err := f.ns().Compact(ctx, nil); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 
@@ -211,7 +211,7 @@ func TestWriteAfterCompactFoldsOnSnapshot(t *testing.T) {
 	store, mk := newStoreMaster(t)
 	f := newFixture(t, store, mk, "m1")
 	f.set(f.fold(), "A", "1")
-	if err := f.ns().Compact(ctx); err != nil {
+	if err := f.ns().Compact(ctx, nil); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 	f.set(f.fold(), "C", "3") // append on top of the snapshot
@@ -232,7 +232,7 @@ func TestSegmentCountTracksUncompacted(t *testing.T) {
 	if got := f.fold().SegmentCount(); got != 3 {
 		t.Fatalf("SegmentCount = %d, want 3 (drives auto-compaction)", got)
 	}
-	if err := f.ns().Compact(context.Background()); err != nil {
+	if err := f.ns().Compact(context.Background(), nil); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 	if got := f.fold().SegmentCount(); got != 0 {
