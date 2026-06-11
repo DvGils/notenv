@@ -46,19 +46,25 @@ func loadApp() (*app, error) {
 	if err != nil {
 		return nil, err
 	}
+	binding, err := config.ReadLocalBinding(dir)
+	if err != nil {
+		return nil, err
+	}
 	// Storage selection: --storage flag wins, else the project's local binding,
 	// else the machine default / sole storage. The committed contract never
 	// influences this.
 	storageName := storageFlag
 	if storageName == "" {
-		bound, err := config.ReadLocalBinding(dir)
-		if err != nil {
-			return nil, err
-		}
-		storageName = bound
+		storageName = binding.Storage
 	}
 	eff, err := config.Resolve(user, cf, dir, storageName)
 	if err != nil {
+		return nil, err
+	}
+	// The contract chooses the namespace — the thing that selects which secrets
+	// reach a child process — so it is held to the checkout's local pin before
+	// any storage or key is touched.
+	if err := guardNamespace(dir, binding, eff.Namespace); err != nil {
 		return nil, err
 	}
 	machine, err := config.MachineID()

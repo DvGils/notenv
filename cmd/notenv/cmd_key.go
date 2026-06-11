@@ -51,11 +51,11 @@ func loadHeaderStore() (*backend.RcloneStorage, error) {
 			return nil, err
 		}
 		if _, dir, err := contract.Find(cwd); err == nil {
-			bound, err := config.ReadLocalBinding(dir)
+			binding, err := config.ReadLocalBinding(dir)
 			if err != nil {
 				return nil, err
 			}
-			storageName = bound
+			storageName = binding.Storage
 		}
 	}
 	_, st, err := user.SelectStorage(storageName)

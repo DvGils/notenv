@@ -62,8 +62,8 @@ func TestSelectProjectStorage(t *testing.T) {
 	if err != nil || got != "acme" {
 		t.Fatalf("flag select: got %q err %v", got, err)
 	}
-	if bound, _ := config.ReadLocalBinding(dir); bound != "acme" {
-		t.Fatalf("binding not written: %q", bound)
+	if binding, _ := config.ReadLocalBinding(dir); binding.Storage != "acme" {
+		t.Fatalf("binding not written: %q", binding.Storage)
 	}
 
 	// An unknown --storage is rejected.

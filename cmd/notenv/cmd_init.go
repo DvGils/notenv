@@ -83,6 +83,18 @@ var initCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// init IS the explicit acceptance of the contract's namespace, so it
+		// (re)pins without the first-use confirmation other commands run.
+		binding, err := config.ReadLocalBinding(dir)
+		if err != nil {
+			return err
+		}
+		if binding.Namespace != eff.Namespace {
+			if binding.Namespace != "" {
+				ui.Notef("re-pinning this checkout from namespace %q to %q", binding.Namespace, eff.Namespace)
+			}
+			pinNamespace(dir, binding, eff.Namespace)
+		}
 		store := &backend.RcloneStorage{Remote: eff.Remote, Base: eff.Base, Versioned: eff.Versioned}
 		var joined bool
 		if err := ui.Spin(fmt.Sprintf("Checking for existing secrets (namespace %q)", eff.Namespace), func() error {
@@ -186,10 +198,15 @@ func selectProjectStorage(user *config.User, dir string) (string, error) {
 	return selected, nil
 }
 
-// bindProject writes the local storage binding and keeps it out of version
-// control.
+// bindProject writes the local storage binding (preserving an existing
+// namespace pin) and keeps it out of version control.
 func bindProject(dir, name string) error {
-	path, err := config.WriteLocalBinding(dir, name)
+	existing, err := config.ReadLocalBinding(dir)
+	if err != nil {
+		return err
+	}
+	existing.Storage = name
+	path, err := config.WriteLocalBinding(dir, existing)
 	if err != nil {
 		return err
 	}
