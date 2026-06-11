@@ -30,6 +30,9 @@ go.work.sum
 # Build artifacts
 /notenv
 /dist/
+# Generated in CI by the release workflow (extracted CHANGELOG section); keep it
+# out of git so GoReleaser's clean-tree check passes.
+/RELEASE_NOTES.md
 
 # Editor/IDE
 # .idea/
