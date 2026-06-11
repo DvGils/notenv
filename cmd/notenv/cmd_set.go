@@ -66,18 +66,8 @@ var setCmd = &cobra.Command{
 		// on this machine is instant and coherent.
 		a.cacheFolded(mk, updated.Secrets)
 		ui.Successf("%s set in namespace %q", key, a.namespace)
-
-		// Keep the segment log short: once enough have accumulated, fold them
-		// into a snapshot. Best-effort housekeeping — the write already landed,
-		// so a compaction failure never fails the command.
-		if state.SegmentCount()+1 >= secrets.DefaultCompactThreshold {
-			cErr := ui.Spin(fmt.Sprintf("Compacting namespace %q", a.namespace), func() error {
-				return a.secretsNamespace(mk).Compact(ctx)
-			})
-			if cErr != nil {
-				ui.Warnf("auto-compaction skipped (harmless; run `notenv compact` later): %v", cErr)
-			}
-		}
+		reportConflicts(state.Conflicts)
+		a.maybeCompact(ctx, mk, state.SegmentCount())
 
 		// Convenience: keep the committed contract in sync with reality.
 		if _, declared := a.contract.Secrets[key]; !declared {

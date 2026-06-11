@@ -189,6 +189,21 @@ func reportConflicts(conflicts []secrets.Conflict) {
 	}
 }
 
+// maybeCompact folds the segment log into a fresh snapshot once enough segments
+// have accumulated, keeping cold reads fast. priorSegments is the count from the
+// fold this write was based on. Best-effort: the write already landed, so a
+// compaction failure never fails the command.
+func (a *app) maybeCompact(ctx context.Context, mk *crypto.MasterKey, priorSegments int) {
+	if priorSegments+1 < secrets.DefaultCompactThreshold {
+		return
+	}
+	if err := ui.Spin(fmt.Sprintf("Compacting namespace %q", a.namespace), func() error {
+		return a.secretsNamespace(mk).Compact(ctx)
+	}); err != nil {
+		ui.Warnf("auto-compaction skipped (harmless; run `notenv compact` later): %v", err)
+	}
+}
+
 // master returns the unwrapped master key: session cache first, then the
 // header ceremony (unlock with the escrowed passphrase, or, on virgin
 // storage, generate the key and write the header).
