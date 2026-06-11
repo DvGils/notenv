@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -73,7 +74,11 @@ var initCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		eff, err := config.Resolve(user, cf, dir)
+		selected, err := selectProjectStorage(user, dir)
+		if err != nil {
+			return err
+		}
+		eff, err := config.Resolve(user, cf, dir, selected)
 		if err != nil {
 			return err
 		}
@@ -138,6 +143,98 @@ func writeContract(cwd string) error {
 	return nil
 }
 
+// selectProjectStorage decides which storage this project uses and persists the
+// choice as a local binding when the machine has more than one storage. A
+// single storage needs no binding (it resolves on its own). --storage always
+// wins and is persisted so future runs need no flag.
+func selectProjectStorage(user *config.User, dir string) (string, error) {
+	if storageFlag != "" {
+		if _, _, err := user.SelectStorage(storageFlag); err != nil {
+			return "", err
+		}
+		if len(user.Storage) > 1 {
+			if err := bindProject(dir, storageFlag); err != nil {
+				return "", err
+			}
+		}
+		return storageFlag, nil
+	}
+
+	names := user.StorageNames()
+	switch len(names) {
+	case 0:
+		path, _ := config.Path()
+		return "", fmt.Errorf("no storage configured; run `notenv setup` (config: %s)", path)
+	case 1:
+		return names[0], nil // sole storage resolves on its own; no binding needed
+	}
+
+	if !ui.Interactive() {
+		return "", fmt.Errorf("multiple storages configured (%s); pass --storage NAME", strings.Join(names, ", "))
+	}
+	options := make([]ui.Option, len(names))
+	for i, name := range names {
+		detail := "configured storage"
+		if name == user.Default {
+			detail = "configured storage (default)"
+		}
+		options[i] = ui.Option{Label: name, Detail: detail}
+	}
+	choice, err := ui.Select("Which storage should this project use?", options)
+	if err != nil {
+		return "", err
+	}
+	selected := names[choice]
+	if err := bindProject(dir, selected); err != nil {
+		return "", err
+	}
+	return selected, nil
+}
+
+// bindProject writes the local storage binding and keeps it out of version
+// control.
+func bindProject(dir, name string) error {
+	path, err := config.WriteLocalBinding(dir, name)
+	if err != nil {
+		return err
+	}
+	ui.Successf("bound this project to storage %q (%s)", name, filepath.Base(path))
+	if err := ensureGitignore(dir, config.LocalBindingFile); err != nil {
+		ui.Warnf("could not update .gitignore (add %q yourself): %v", config.LocalBindingFile, err)
+	}
+	return nil
+}
+
+// ensureGitignore makes sure entry is ignored in dir/.gitignore, creating the
+// file if needed and leaving an existing one otherwise untouched.
+func ensureGitignore(dir, entry string) error {
+	path := filepath.Join(dir, ".gitignore")
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == entry {
+			return nil // already ignored
+		}
+	}
+	var b strings.Builder
+	if len(data) > 0 {
+		b.Write(data)
+		if !strings.HasSuffix(string(data), "\n") {
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString("# notenv project-local storage binding\n")
+	b.WriteString(entry + "\n")
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return err
+	}
+	ui.Notef("added %q to .gitignore", entry)
+	return nil
+}
+
 // writeUserConfigFromFlags is init's non-interactive machine setup.
 func writeUserConfigFromFlags(ctx context.Context) error {
 	base := initBase
@@ -151,11 +248,16 @@ func writeUserConfigFromFlags(ctx context.Context) error {
 	if err := store.Probe(ctx); err != nil {
 		return err
 	}
-	path, err := config.WriteUser(initRemote, base, remoteIsVersioned(ctx, initRemote))
+	name := storageFlag
+	if name == "" {
+		name = config.DefaultStorage
+	}
+	entry := config.StorageEntry{Remote: initRemote, Base: base, Versioned: remoteIsVersioned(ctx, initRemote)}
+	path, err := config.UpsertStorage(name, entry, false)
 	if err != nil {
 		return err
 	}
-	ui.Successf("wrote %s", path)
+	ui.Successf("wrote storage %q to %s", name, path)
 	return nil
 }
 

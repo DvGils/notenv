@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +16,11 @@ import (
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/keyring"
 	"github.com/DvGils/notenv/internal/ui"
+)
+
+var (
+	setupName    string
+	setupDefault bool
 )
 
 var setupCmd = &cobra.Command{
@@ -26,26 +32,17 @@ var setupCmd = &cobra.Command{
 	},
 }
 
-// setupFlow is the machine installer. Also chained into by
-// `notenv init` on an unconfigured machine. Storage-only by design: the
-// passphrase doesn't exist until the first `set` of a namespace creates it.
-func setupFlow(ctx context.Context) error {
-	if config.Exists() {
-		user, err := config.LoadUser()
-		if err != nil {
-			return err
-		}
-		ui.Notef("this machine is already set up: remote %q, base %q",
-			user.Storage.Remote, user.Storage.Base)
-		redo, err := ui.Confirm("Reconfigure?", false)
-		if err != nil {
-			return err
-		}
-		if !redo {
-			return nil
-		}
-	}
+func init() {
+	setupCmd.Flags().StringVar(&setupName, "name", config.DefaultStorage, "name for this storage (use distinct names for separate vaults)")
+	setupCmd.Flags().BoolVar(&setupDefault, "default", false, "make this the default storage")
+}
 
+// setupFlow is the machine installer. Also chained into by `notenv init` on an
+// unconfigured machine. It adds one or more named storages: each is an
+// independent vault with its own master key, so each gets its own key ceremony.
+// Storage-only by design beyond that: a namespace's secrets don't exist until
+// the first `set`.
+func setupFlow(ctx context.Context) error {
 	// Tier 0: no rclone at all.
 	if !backend.RcloneInstalled() {
 		ui.Failf("rclone is not installed; notenv moves ciphertext through it")
@@ -54,14 +51,58 @@ func setupFlow(ctx context.Context) error {
 		return errors.New("rclone missing")
 	}
 
-	remote, err := chooseRemote(ctx)
+	user, err := config.LoadUser()
 	if err != nil {
 		return err
 	}
+	if len(user.Storage) > 0 {
+		ui.Notef("configured storages: %s (default: %s)", strings.Join(user.StorageNames(), ", "), user.Default)
+	}
 
+	first := true
+	for {
+		added, err := addStorage(ctx, user, first)
+		if err != nil {
+			return err
+		}
+		if added {
+			first = false
+			if user, err = config.LoadUser(); err != nil { // reflect the new storage
+				return err
+			}
+		}
+		if !ui.Interactive() {
+			break // non-interactive callers add at most one and rely on flags
+		}
+		more, err := ui.Confirm("Add another storage?", false)
+		if err != nil {
+			return err
+		}
+		if !more {
+			break
+		}
+	}
+
+	ui.Infof("next: `notenv init` inside a project (it will let you pick which storage to use)")
+	return nil
+}
+
+// addStorage runs one storage's setup: name, remote, base, probe, write, and
+// key ceremony. first seeds the name suggestion. Returns false (no error) when
+// the user declines to replace an existing storage, so the loop can continue.
+func addStorage(ctx context.Context, user *config.User, first bool) (bool, error) {
+	name, ok, err := chooseStorageName(user, first)
+	if err != nil || !ok {
+		return false, err
+	}
+
+	remote, err := chooseRemote(ctx)
+	if err != nil {
+		return false, err
+	}
 	base, err := requireInput("Bucket/path for encrypted blobs", "e.g. my-bucket/notenv")
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// Fail here, with context, not at the first real `set` days later.
@@ -71,32 +112,81 @@ func setupFlow(ctx context.Context) error {
 		return store.Probe(ctx)
 	}); err != nil {
 		ui.Infof("check the credentials and that the bucket/path exists and is writable")
-		return err
+		return false, err
 	}
 
-	path, err := config.WriteUser(remote, base, versioned)
+	makeDefault := setupDefault && first
+	path, err := config.UpsertStorage(name, config.StorageEntry{Remote: remote, Base: base, Versioned: versioned}, makeDefault)
 	if err != nil {
-		return err
+		return false, err
 	}
-	ui.Successf("wrote %s", path)
+	ui.Successf("wrote storage %q to %s", name, path)
 
 	// Key ceremony (LUKS2-style header): virgin storage gets a master key
-	// wrapped under a newly chosen passphrase; existing storage verifies
-	// the escrowed passphrase by unlocking a slot, which is exactly the
-	// new-machine recovery flow.
+	// wrapped under a newly chosen passphrase; existing storage verifies the
+	// escrowed passphrase by unlocking a slot, the new-machine recovery flow.
 	scope := config.CacheScope(remote, base)
 	_, created, err := ensureMaster(ctx, store, keyring.DefaultCache(), scope, config.DefaultCacheTTL)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if created {
-		ui.Successf("storage initialized: master key generated, locked by your passphrase")
+		ui.Successf("storage %q initialized: master key generated, locked by your passphrase", name)
 	} else {
-		ui.Successf("passphrase verified; this machine can decrypt your secrets")
+		ui.Successf("storage %q: passphrase verified; this machine can decrypt its secrets", name)
 	}
 
-	ui.Infof("next: `notenv init` inside a project, then `notenv set KEY`")
-	return nil
+	// Offer to promote a non-default storage when others already exist.
+	if cur, _ := config.LoadUser(); cur != nil && cur.Default != name && ui.Interactive() {
+		promote, err := ui.Confirm(fmt.Sprintf("Make %q the default storage (currently %q)?", name, cur.Default), false)
+		if err != nil {
+			return false, err
+		}
+		if promote {
+			if err := config.SetDefault(name); err != nil {
+				return false, err
+			}
+			ui.Successf("default storage is now %q", name)
+		}
+	}
+	return true, nil
+}
+
+// chooseStorageName prompts for a valid, non-colliding storage name. ok is
+// false (no error) when the user declines to replace an existing one.
+func chooseStorageName(user *config.User, first bool) (name string, ok bool, err error) {
+	suggested := ""
+	if first && len(user.Storage) == 0 {
+		suggested = config.DefaultStorage
+	}
+	if first && setupName != "" {
+		suggested = setupName
+	}
+	for {
+		n, err := ui.Input("Name for this storage", suggested)
+		if err != nil {
+			return "", false, err
+		}
+		n = strings.TrimSpace(n)
+		if n == "" {
+			ui.Warnf("a storage name is required")
+			continue
+		}
+		if !config.ValidStorageName(n) {
+			ui.Warnf("storage name %q must be letters, digits, '-' or '_' (no dots or spaces)", n)
+			continue
+		}
+		if existing, exists := user.Storage[n]; exists {
+			replace, err := ui.Confirm(fmt.Sprintf("Storage %q already exists (remote %q, base %q). Replace it?", n, existing.Remote, existing.Base), false)
+			if err != nil {
+				return "", false, err
+			}
+			if !replace {
+				return "", false, nil
+			}
+		}
+		return n, true, nil
+	}
 }
 
 // chooseRemote is the tiered remote picker: existing remotes first (the
