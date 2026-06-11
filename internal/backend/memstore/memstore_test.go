@@ -21,6 +21,12 @@ func TestConformanceVersioned(t *testing.T) {
 	}, true)
 }
 
+func TestBackendConformance(t *testing.T) {
+	backendtest.BackendContract(t, func(t *testing.T) backend.Backend {
+		return memstore.New()
+	})
+}
+
 // TestCorruptNextPut covers the fault-injection hook the conformance suite
 // can't reach through the interface: it must change only the next write.
 func TestCorruptNextPut(t *testing.T) {

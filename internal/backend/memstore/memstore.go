@@ -1,5 +1,5 @@
 // Package memstore is an in-memory backend.HeaderStore (and backend.Backend)
-// for tests. It keeps the header, its ".prev" backup, and namespace blobs in
+// for tests. It keeps the header, its ".prev" backup, and stored objects in
 // maps instead of talking to rclone, so the safe-write protocol and any code
 // that mutates the header can be tested without storage or network.
 //
@@ -10,6 +10,7 @@ package memstore
 
 import (
 	"context"
+	"strings"
 
 	"github.com/DvGils/notenv/internal/backend"
 )
@@ -20,16 +21,26 @@ import (
 type Store struct {
 	versioned bool
 
-	header   []byte // nil means no header object exists
-	prev     []byte // nil means no ".prev" backup exists
-	blobs    map[string][]byte
-	corrupt  func([]byte) []byte // applied to PutHeader bytes when set, then cleared
-	putCount int
+	header      []byte // nil means no header object exists
+	prev        []byte // nil means no ".prev" backup exists
+	blobs       map[string][]byte
+	corrupt     func([]byte) []byte // applied to PutHeader bytes when set, then cleared
+	corruptBlob func([]byte) []byte // applied to the next Put's bytes, then cleared
+	putCount    int
 
 	// blob-Put fault injection: allow putOK successful Puts, then fail one with
 	// putErr (one-shot). Used to simulate a crash mid-rotation.
 	putOK  int
 	putErr error
+	// blob-Delete fault injection, same shape: allow delOK deletes then fail one.
+	delOK  int
+	delErr error
+
+	// one-shot concurrency hooks for interleaving tests: afterList fires after
+	// List captures its keys (to inject a write a compaction won't see);
+	// beforePut fires just before Put stores (to inject a racing compaction).
+	afterList func()
+	beforePut func()
 }
 
 // Option configures a Store.
@@ -97,15 +108,20 @@ func (s *Store) RestoreHeaderBackup(_ context.Context) error {
 	return nil
 }
 
-func (s *Store) Get(_ context.Context, namespace string) ([]byte, error) {
-	blob, ok := s.blobs[namespace]
+func (s *Store) Get(_ context.Context, key string) ([]byte, error) {
+	blob, ok := s.blobs[key]
 	if !ok {
 		return nil, backend.ErrNotFound
 	}
 	return clone(blob), nil
 }
 
-func (s *Store) Put(_ context.Context, namespace string, ciphertext []byte) error {
+func (s *Store) Put(_ context.Context, key string, data []byte) error {
+	if s.beforePut != nil {
+		fn := s.beforePut
+		s.beforePut = nil // one-shot
+		fn()
+	}
 	if s.putErr != nil {
 		if s.putOK > 0 {
 			s.putOK--
@@ -115,20 +131,62 @@ func (s *Store) Put(_ context.Context, namespace string, ciphertext []byte) erro
 			return err
 		}
 	}
-	s.blobs[namespace] = clone(ciphertext)
+	stored := clone(data)
+	if s.corruptBlob != nil {
+		stored = s.corruptBlob(stored)
+		s.corruptBlob = nil // one-shot
+	}
+	s.blobs[key] = stored
 	return nil
 }
 
-// FailPutAfter makes the (n+1)th blob Put return err once (simulating a crash
+func (s *Store) Delete(_ context.Context, key string) error {
+	if s.delErr != nil {
+		if s.delOK > 0 {
+			s.delOK--
+		} else {
+			err := s.delErr
+			s.delErr = nil // one-shot
+			return err
+		}
+	}
+	delete(s.blobs, key)
+	return nil
+}
+
+// FailPutAfter makes the (n+1)th object Put return err once (simulating a crash
 // mid-rotation); earlier and later Puts succeed.
 func (s *Store) FailPutAfter(n int, err error) { s.putOK, s.putErr = n, err }
 
-func (s *Store) List(_ context.Context) ([]string, error) {
-	names := make([]string, 0, len(s.blobs))
-	for name := range s.blobs {
-		names = append(names, name)
+// FailDeleteAfter makes the (n+1)th Delete return err once (simulating a crash
+// after a compaction's snapshot is written but before it finishes deleting).
+func (s *Store) FailDeleteAfter(n int, err error) { s.delOK, s.delErr = n, err }
+
+// CorruptNextBlobPut mangles the bytes the next Put stores, so a test can assert
+// a compaction detects a botched snapshot write on read-back.
+func (s *Store) CorruptNextBlobPut(fn func([]byte) []byte) { s.corruptBlob = fn }
+
+// AfterNextList runs fn once, right after the next List captures its keys, so a
+// test can inject an object the in-flight operation will not see.
+func (s *Store) AfterNextList(fn func()) { s.afterList = fn }
+
+// BeforeNextPut runs fn once, right before the next Put stores, so a test can
+// interleave a racing operation just ahead of a write.
+func (s *Store) BeforeNextPut(fn func()) { s.beforePut = fn }
+
+func (s *Store) List(_ context.Context, prefix string) ([]string, error) {
+	keys := make([]string, 0, len(s.blobs))
+	for key := range s.blobs {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
 	}
-	return names, nil
+	if s.afterList != nil {
+		fn := s.afterList
+		s.afterList = nil // one-shot
+		fn()
+	}
+	return keys, nil
 }
 
 // CorruptNextPut arms a one-shot transform applied to the bytes the next
