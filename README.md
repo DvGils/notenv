@@ -328,6 +328,44 @@ that the key it was sealed under is still the vault's master, rolling itself bac
 you to re-run) if a teammate re-keyed mid-flight, while the rotation re-keys anything written
 under the old master during its run. No write ever ends up encrypted to a key nobody holds.
 
+## Using notenv with AI agents
+
+Coding agents read everything: files, tool output, logs. A `.env` file on disk *will*
+eventually enter the model's context — `cat`-ed while debugging, swept up by a glob, or
+extracted by a prompt-injected instruction — and anything that enters context persists in
+transcripts and whatever the conversation touches next. notenv removes the file and gives the
+agent a verb that separates *using* credentials from *knowing* them:
+
+- **`notenv run -- cmd`** injects secrets into the child only; the value never appears in
+  anything the model reads.
+- **`notenv list`** tells the agent *which* credentials exist (to decide what's runnable)
+  without showing values.
+- **Captured output is masked.** When stdout/stderr is not a terminal — which is exactly how
+  agents and CI read output — any injected value a child prints (a server echoing its
+  connection string on boot, a debug dump) is replaced with `<notenv-masked:NAME>` before the
+  model sees it.
+- **Unlock prompts reach the human, not the model.** Passphrase prompts read the terminal
+  device directly, so when an agent's command needs an unlock, the question goes to whoever is
+  at the keyboard.
+
+Drop this in your `AGENTS.md` / `CLAUDE.md`:
+
+```markdown
+This project manages secrets with notenv (https://github.com/DvGils/notenv).
+- Run anything needing credentials via `notenv run -- <cmd>`; the env vars in
+  notenv.toml are injected automatically.
+- `notenv list` shows which secret names exist. Never print, ask for, or store
+  secret values; never create .env files.
+- If a command prompts for a passphrase, stop and let the user answer it.
+```
+
+**Honest limits:** this is accident-proofing, not a security boundary. An agent running as
+your user can still extract a value deliberately (`notenv run -- printenv KEY`) or read the
+session key cache, and a child process that legitimately holds a secret can always send it
+somewhere — masking catches accidents, not intent. A broker mode that keeps the unlocked key
+in a separate trust domain (so agents can *use* but provably not *extract*) is on the
+roadmap; see [Status](#status) and the [threat model](./THREAT_MODEL.md).
+
 ## Security
 
 - **At rest, anywhere:** only age ciphertext exists (on your storage and in any local
