@@ -163,6 +163,7 @@ fresh key while keeping all slots; see [Teams and key management](#teams-and-key
 | `notenv init` | Set up the current project (writes `notenv.toml`). Runs setup first if needed. |
 | `notenv set KEY` | Set a secret. Prompted hidden, encrypted, uploaded, and declared in `notenv.toml`. |
 | `notenv set KEY --stdin` | Read the value from stdin (for multiline or piped values). |
+| `notenv unset KEY` | Remove a stored secret value. |
 | `notenv list` | List stored secret names (never values). |
 | `notenv run -- cmd` | Run a command with secrets injected as environment variables. |
 | `notenv run --refresh -- cmd` | Same, but bypass the local cache and pull the latest secrets first. |
@@ -276,15 +277,31 @@ To keep the workflow snappy, notenv caches two things on Linux:
 - **The encrypted blob** in `XDG_RUNTIME_DIR` (tmpfs), so a warm `notenv run` needs no
   network at all (default 1 hour, configurable via `storage.cache_ttl`).
 
-Both caches are RAM-backed and cleared on logout or reboot, so encrypted secrets never
-linger on persistent disk. Only ciphertext is ever cached, never plaintext.
+Both caches are RAM-backed and cleared on logout or reboot. This is not only a speed-up but a
+**security property**: when the process exits there is no persistent cache for someone to
+discover later. Only ciphertext is ever cached, never plaintext.
 
 Changes you make on this machine refresh the cache immediately. To pull a change made on
 another machine before the cache expires, use `notenv run --refresh` (or `notenv cache
 clear`). Set either `cache_ttl` to `"0"` to disable caching.
 
-On macOS and Windows the caches are not yet wired up, so those platforms prompt and fetch on
-every run; the cache lands together with their native key stores (see [Status](#status)).
+### Caching is Linux-only, by design
+
+| Platform | Cache | Persistence |
+|---|---|---|
+| Linux | RAM-backed (kernel keyring + tmpfs) | removed automatically on logout/reboot |
+| macOS | **none, by design** | n/a |
+| Windows | **none, by design** | n/a |
+
+The Linux cache relies on the kernel keyring and `tmpfs`: secret material lives in RAM that the
+OS reclaims on logout, so "the process exits and nothing is left behind" is a real guarantee.
+We investigated the platform-native stores (macOS Keychain, Windows Credential Manager / DPAPI)
+and none give that cleanup guarantee: they persist to disk, and with no daemon there is nothing
+to evict them. Rather than ship a weaker cache under the same name and quietly break the
+"nothing left behind" property, notenv **does not cache on macOS or Windows**. Those platforms
+prompt and fetch on each run; for a prompt-free workflow there, use a configured
+[age identity](#teams-and-key-management) (`NOTENV_IDENTITY`), an on-disk credential you place
+and control, with no lifecycle managed by us.
 
 **Concurrent writes.** `notenv set` never overwrites a shared object. Each change is appended
 as its own uniquely named, encrypted segment, and reads fold a namespace's segments together,
@@ -330,6 +347,10 @@ The only irreplaceable secret is your passphrase, which you store somewhere safe
 password manager), not on the storage backend. A lost or dead machine loses nothing: retrieve the passphrase on
 a new machine and notenv works again.
 
+For the full analysis (assets, adversaries, the properties that hold against each, and the
+explicit non-goals), see [THREAT_MODEL.md](./THREAT_MODEL.md). To report a vulnerability, see
+[SECURITY.md](./SECURITY.md).
+
 ## Building from source
 
 ```sh
@@ -347,9 +368,9 @@ full set of release artifacts locally without publishing.
 
 Actively developed and being tested.
 
-**Working today:** `setup`, `init`, `set`, `list`, `run`, `compact`, and `cache`; full key and
-slot management (`notenv key …`); team access by age recipient, passphrase and master-key
-rotation, offboarding by re-key, advisory primary governance, and authenticated +
+**Working today:** `setup`, `init`, `set`, `unset`, `list`, `run`, `compact`, and `cache`; full
+key and slot management (`notenv key …`); team access by age recipient, passphrase and
+master-key rotation, offboarding by re-key, advisory primary governance, and authenticated +
 version-pinned headers; append-only writes so concurrent `set`s never lose each other, with
 automatic compaction keeping reads fast; multiple storages per machine; passphrase or identity
 unlock; Linux key/blob caching. Releases are reproducible, cosign-signed, and carry SLSA build
@@ -361,7 +382,9 @@ provenance.
 - Per-blob manifest (detect rollback of an individual secret's value).
 - `notenv edit` for bulk edits in `$EDITOR`.
 - Homebrew / AUR / Scoop packages.
-- Native key/blob caching on macOS (Keychain) and Windows (DPAPI).
+
+**Non-goals:** secret caching on macOS and Windows; see
+[Caching is Linux-only, by design](#caching-is-linux-only-by-design).
 
 ## License
 

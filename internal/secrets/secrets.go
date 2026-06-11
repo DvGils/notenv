@@ -25,9 +25,18 @@ import (
 	"github.com/DvGils/notenv/internal/crypto"
 )
 
+// formatVersion is the on-storage schema version of segment and snapshot
+// objects. Every object written carries it; a read rejects any object stamped
+// with a higher version (written by a newer notenv) instead of misreading it. A
+// missing version (0) is a pre-versioning object and read as the current format,
+// so this version field was added without breaking the prior layout. Bump only
+// on an incompatible change to these payloads.
+const formatVersion = 1
+
 // segment is one append: a single key write or deletion, ordered across
 // machines by a Lamport clock and, within a machine, by Seq.
 type segment struct {
+	Version int    `json:"v"`
 	Machine string `json:"machine"`
 	Seq     int    `json:"seq"`
 	Lamport int    `json:"lamport"`
@@ -48,6 +57,7 @@ type entry struct {
 // snapshot is a folded namespace state: every live key with its provenance, and
 // the highest Lamport it folded in.
 type snapshot struct {
+	Version int              `json:"v"`
 	Lamport int              `json:"lamport"`
 	Entries map[string]entry `json:"entries"`
 }
@@ -137,6 +147,7 @@ func (n *Namespace) Fold(ctx context.Context) (*State, error) {
 // state. prev is the fold this write builds on; its Lamport sets the new clock.
 func (n *Namespace) Append(ctx context.Context, prev *State, seq int, key, value string, deleted bool) (*State, error) {
 	seg := segment{
+		Version: formatVersion,
 		Machine: n.machine,
 		Seq:     seq,
 		Lamport: prev.lamport + 1,
@@ -219,11 +230,17 @@ func (n *Namespace) load(ctx context.Context) (*loaded, error) {
 			if err := n.openInto(ctx, key, &s); err != nil {
 				return nil, err
 			}
+			if err := checkFormat(s.Version, key); err != nil {
+				return nil, err
+			}
 			l.snapshots = append(l.snapshots, s)
 			l.snapKeys = append(l.snapKeys, key)
 		case strings.HasPrefix(base, "seg-"):
 			var s segment
 			if err := n.openInto(ctx, key, &s); err != nil {
+				return nil, err
+			}
+			if err := checkFormat(s.Version, key); err != nil {
 				return nil, err
 			}
 			l.segments = append(l.segments, s)
@@ -244,6 +261,15 @@ func (n *Namespace) openInto(ctx context.Context, key string, v any) error {
 	}
 	if err := json.Unmarshal(plain, v); err != nil {
 		return fmt.Errorf("corrupt object %s: %w", key, err)
+	}
+	return nil
+}
+
+// checkFormat rejects an object written by a newer notenv rather than misreading
+// it. Version 0 is a pre-versioning object and read as the current format.
+func checkFormat(version int, key string) error {
+	if version > formatVersion {
+		return fmt.Errorf("%s was written by a newer notenv (format v%d, this build understands up to v%d); upgrade notenv", key, version, formatVersion)
 	}
 	return nil
 }
@@ -332,7 +358,7 @@ func accumulate(l *loaded) (map[string]*winner, int) {
 // dropping tombstones (their job is done once nothing older survives).
 func foldSnapshot(l *loaded) snapshot {
 	acc, maxLamport := accumulate(l)
-	s := snapshot{Lamport: maxLamport, Entries: map[string]entry{}}
+	s := snapshot{Version: formatVersion, Lamport: maxLamport, Entries: map[string]entry{}}
 	for key, w := range acc {
 		if w.deleted {
 			continue

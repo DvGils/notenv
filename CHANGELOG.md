@@ -4,6 +4,42 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.4.0 (unreleased)
+
+A hardening release: more command coverage, and much deeper testing of the storage and
+concurrency model under imperfect conditions.
+
+### Added
+
+- **`notenv unset KEY`** removes a stored secret value. It appends a tombstone the fold honors,
+  never edits the committed contract, and warns if `notenv run` will now report the key missing.
+- Same-key conflicts are now also reported on `set` and `unset`, not only on `run`/`list`.
+- **Explicit on-storage format versioning.** Every segment and snapshot now carries a format
+  version. A read refuses an object written by a newer notenv with a clear "upgrade notenv"
+  message rather than misreading it. Objects written by 0.3.0 (which had no version field) read
+  unchanged, so **0.3.0 → 0.4.0 is the first upgrade with no storage break.**
+
+### Changed
+
+- **Caching is documented as Linux-only by design.** macOS and Windows deliberately do not cache:
+  no platform-native store (Keychain, Credential Manager/DPAPI) matches the RAM-backed,
+  removed-on-logout cleanup guarantee the Linux cache gives, and notenv refuses to ship a weaker
+  cache under the same name. This is a stated decision, not a pending feature. (No behavior
+  change; caching was never implemented on those platforms.)
+
+### Documentation
+
+- **`THREAT_MODEL.md`**: a full statement of assets, adversaries, the properties that hold
+  against each, and the explicit non-goals, plus **`SECURITY.md`** for private vulnerability
+  reporting.
+
+### Testing
+
+- A fault-injecting `chaos` storage backend and a seeded, fuzzable multi-machine simulation
+  (`go test -fuzz=FuzzSecretLog`) that check the fold and compaction invariants (no lost or
+  wrong secrets, correct conflict reporting, transparent compaction) under concurrent, stale,
+  and interrupted writes. A short fuzz run is part of CI.
+
 ## 0.3.0
 
 This release makes concurrent writes safe: two machines changing secrets at the same time no
@@ -20,7 +56,7 @@ longer overwrite each other. There is no automatic upgrade from 0.2.x; see Break
 
 - **Safe concurrent writes.** `notenv set` appends a uniquely named, encrypted segment instead
   of rewriting a shared blob, so two machines setting different keys at the same time never lose
-  each other's change — on any remote, with no locking. Reads fold a namespace's segments over
+  each other's change, on any remote, with no locking. Reads fold a namespace's segments over
   its snapshot, last write wins per key, ordered by a Lamport clock.
 - **Conflict reporting.** Setting the *same* key concurrently on two machines is a genuine
   conflict: one value wins deterministically and the other is reported on the next read and kept
@@ -29,7 +65,7 @@ longer overwrite each other. There is no automatic upgrade from 0.2.x; see Break
   into a single fresh snapshot so cold reads stay fast. It is best-effort (a compaction failure
   never fails the write) and write-path only (reads never mutate storage). `notenv compact`
   forces it on demand. Compaction writes the new snapshot before removing what it folded and
-  only removes objects it read, so a write — or another compaction — that lands concurrently is
+  only removes objects it read, so a write (or another compaction) that lands concurrently is
   never lost.
 
 ### Known limitations and planned work

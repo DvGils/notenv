@@ -29,5 +29,5 @@ func init() {
 	rootCmd.Version = versionString()
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 	rootCmd.PersistentFlags().StringVar(&storageFlag, "storage", "", "named storage to use (overrides the project binding and default)")
-	rootCmd.AddCommand(setupCmd, initCmd, setCmd, listCmd, runCmd, compactCmd, cacheCmd, keyCmd)
+	rootCmd.AddCommand(setupCmd, initCmd, setCmd, unsetCmd, listCmd, runCmd, compactCmd, cacheCmd, keyCmd)
 }

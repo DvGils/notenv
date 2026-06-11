@@ -1,0 +1,151 @@
+# notenv threat model
+
+This document states what notenv protects, against whom, and (just as importantly) what it
+deliberately does **not** protect. It is meant to make the security assumptions legible enough to
+review. It describes the design as of the current release; where reality is weaker than the ideal,
+that is called out rather than glossed.
+
+If you find a discrepancy between this document and the code, treat it as a bug in whichever is
+wrong and please report it (see [Reporting](#reporting-a-vulnerability)).
+
+## Assets
+
+In priority order, the things notenv exists to protect:
+
+1. **Secret values (plaintext).** The whole point. They must never be readable by the storage
+   provider, never written to disk, and never exposed beyond the process that needs them.
+2. **The master key.** A random X25519 key that encrypts every secret. Compromise of the master
+   key compromises every secret in that vault.
+3. **The unlocking credentials.** A passphrase (escrowed by the user in a password manager) or a
+   teammate's age identity. These unwrap the master key.
+
+The passphrase and age identities live **outside** notenv's storage: in the user's password
+manager or on the user's machine. notenv never stores them on the backend.
+
+## Architecture and trust boundaries
+
+notenv is client-side-encryption-on-dumb-storage. The boundary is sharp: **everything on the
+storage backend is ciphertext or key-wrapping metadata; plaintext exists only in RAM, only on the
+machine running the command, only for as long as the command runs.**
+
+- Secrets are encrypted with [age](https://github.com/FiloSottile/age) (X25519) under a random
+  **master key**.
+- The master key is stored once, in a **header** object, age-encrypted to one or more **key
+  slots**. A slot is either a passphrase (the master is reachable via a slot keypair whose private
+  key is scrypt-wrapped under the passphrase) or a teammate's age public key. This is the LUKS /
+  restic pattern: changing a passphrase or adding/removing a teammate rewraps only the header, not
+  the secrets.
+- The header is **authenticated** with an HMAC keyed from the master, and carries a **monotonic
+  revision** that each machine pins locally.
+- Secret values for a namespace are stored as an **append-only set of encrypted segments** over
+  periodic **snapshots**; reads fold them, last-write-wins per key. Every write is read back and
+  verified before it is trusted.
+- Storage is reached through [rclone](https://rclone.org); notenv treats it as a dumb object store
+  and assumes nothing about its consistency or honesty beyond "stores and returns bytes."
+- On Linux, the master key (kernel keyring) and ciphertext blobs (tmpfs) may be cached in RAM, both
+  reclaimed by the OS on logout/reboot. macOS and Windows do **not** cache (see
+  [README](./README.md#caching-is-linux-only-by-design)).
+
+## Security properties
+
+What holds, and against whom.
+
+### Confidentiality of secret values
+
+- **Against the storage provider, or anyone with read access to your storage** (a stolen read-only
+  credential, a subpoenaed provider, a leaked bucket): they see ciphertext and the header only. The
+  header contains no plaintext key, only the master wrapped to slots. Without a slot credential
+  they cannot decrypt. ✅
+- **Against a network adversary on the storage transport:** rclone uses TLS to the provider, but
+  notenv does not rely on it. The payload is already ciphertext, so a broken transport still leaks
+  only ciphertext. ✅
+- **Against a local adversary with your disk but not a live session** (lost/stolen laptop, a
+  forensic image, an old backup): no plaintext and no persistent secret cache exist on disk. On
+  Linux the caches are RAM-only and gone after logout; macOS/Windows cache nothing. A disk image
+  yields ciphertext, which is useless without the key (the key lives in your password manager, not
+  on the disk). ✅
+
+### Integrity
+
+- **Against an adversary with write access to your storage but no key:** they cannot forge or
+  silently alter the header (HMAC), and rolling it back to an older revision is detected on any
+  machine that has already seen a newer one. They cannot forge a secret value: a blob they cannot
+  encrypt under the master fails to decrypt, and reads **fail closed** (a corrupt or substituted
+  object is surfaced as an error, never silently skipped). Because writes are append-only and
+  verified on read-back, a botched or malicious write is at worst denial-of-service, not silent
+  data loss. ✅ (with caveats; see [Known limitations](#known-limitations)).
+
+### No-residue
+
+- When a `notenv run` exits, the plaintext (which lived only in the child process's environment) is
+  gone, and on Linux the RAM caches are reclaimed on logout. "The process exits and nothing secret
+  is left behind to discover later" is a real property, and is the reason caching is refused on
+  platforms that cannot guarantee it. ✅
+
+## Adversaries and outcomes (summary)
+
+| Adversary | Confidentiality | Integrity | Notes |
+|---|---|---|---|
+| Storage provider / read-only credential | Holds (ciphertext only) | n/a | Metadata leaks (below) |
+| Network MITM on storage | Holds | Holds | Payload is ciphertext regardless of TLS |
+| Storage **write** credential, no key | Holds | Holds, with caveats | Can DoS / fork history; detected, not prevented |
+| Former key holder (had the master) | **Lost for past secrets** | n/a | Rotate master + storage credential to limit future |
+| Local attacker, no live session | Holds | Holds | Nothing secret on disk |
+| Local attacker **with** live session + cached key | **Lost** | n/a | Out of scope (see below) |
+| Malicious notenv build / supply chain | n/a | n/a | Mitigated by reproducible + signed releases |
+
+## Non-goals
+
+notenv does **not** defend these, by design. Treating them as in-scope would be misleading.
+
+- **Metadata.** Anyone with read access to your storage learns which namespaces exist, roughly how
+  many secrets each holds and their sizes, and when writes happened (object names, counts, sizes,
+  timestamps). Only the *values* are confidential.
+- **A compromised live machine that holds the key.** An attacker with your running session and your
+  cached/unlocked key can decrypt. notenv shrinks the window (no `.env` files; plaintext only in the
+  child's environment for its lifetime) but cannot defend a fully compromised host.
+- **Storage availability.** An adversary with write/delete access can delete or corrupt objects.
+  This is denial-of-service, not a confidentiality break; object versioning (default on Backblaze
+  B2) recovers prior bytes, but notenv does not guarantee availability.
+- **A weak passphrase.** Someone with read access to your storage can attempt an offline brute-force
+  against the scrypt-wrapped passphrase slot. scrypt raises the cost, but a weak passphrase is the
+  weak link. The passphrase is the root of trust; use a strong one.
+- **The passphrase / identity files themselves.** Protecting your password manager and any on-disk
+  age identity (`NOTENV_IDENTITY`) is the user's responsibility.
+- **Traffic analysis / timing side channels** beyond the metadata noted above.
+- **Revoking access to secrets a person has already seen.** Cryptography cannot un-share a value
+  someone already decrypted. Offboarding (`notenv key rm` + master rotation) prevents decrypting
+  *future* values; rotate the underlying secret if a person should lose access to its current value.
+
+## Known limitations
+
+These are real, documented gaps, not oversights:
+
+- **Trust on first use.** On a machine's *first* contact with a vault it has no prior revision to
+  compare against, so it cannot detect a rollback or substitution that predates its first sight.
+- **A write-capable former holder can fork history.** Someone who kept the master key and retains
+  storage *write* access can fork the vault's history in a way only the owner's pinned machine
+  detects. notenv advises rotating the storage credential on offboarding but, not owning the
+  storage, cannot enforce it.
+- **Primary-slot governance is advisory.** In shared-master team mode every slot holder has the
+  master key, so "who may remove slots" is tooling-enforced, not cryptographic.
+- **Tombstone garbage collection.** Compaction drops delete-tombstones; a stale concurrent write at
+  an equal/lower logical clock can resurrect a deleted key that the tombstone would otherwise have
+  shadowed. (Reachable only once `notenv unset` is in use; a "defer GC by one generation" mitigation
+  is planned.)
+- **Eventual-consistency reads.** On a storage backend with weak listing consistency, a fold can
+  briefly read a stale value just after a compaction (never a lost write). Strongly-consistent
+  remotes (Backblaze B2, S3) are unaffected.
+
+## Supply chain
+
+Releases are built reproducibly with GoReleaser, signed with [cosign](https://github.com/sigstore/cosign)
+(keyless), and carry SLSA build provenance; the [README](./README.md#install) shows how to verify a
+download. The client-side-crypto core is intentionally small and auditable: the tool never needs to
+be trusted with anything at rest.
+
+## Reporting a vulnerability
+
+Please report security issues privately via GitHub's
+[private vulnerability reporting](https://github.com/DvGils/notenv/security/advisories/new) rather
+than a public issue. See [SECURITY.md](./SECURITY.md).
