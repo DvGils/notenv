@@ -430,14 +430,20 @@ key and slot management (`notenv key …`); team access by age recipient, passph
 master-key rotation, offboarding by re-key, advisory primary governance, and authenticated +
 version-pinned headers (vanished-header detection included); append-only writes so concurrent
 `set`s never lose each other — including against a concurrent master rotation — with automatic
-compaction keeping reads fast; per-checkout namespace pinning; multiple storages per machine;
+compaction keeping reads fast; per-checkout namespace pinning with join confirmation;
+[masked captured output](#using-notenv-with-ai-agents); multiple storages per machine;
 passphrase or identity unlock; Linux key/blob caching. Releases are reproducible,
 cosign-signed, and carry SLSA build provenance.
 
 **Planned:**
 - Signed rotation transitions (multi-machine key continuity, so legitimate rotations don't
-  need a manual `notenv key trust`).
+  need a manual `notenv key trust`) — the centerpiece of v1, and the prerequisite for
+  fleet/agent vault sharing.
 - Per-blob manifest (detect rollback of an individual secret's value).
+- An MCP server mode, so agents discover and use notenv through their native tooling.
+- A broker mode: the unlocked key lives in a separate trust domain and execs children on
+  behalf of agents, turning "agents shouldn't see credentials" from a convention into a
+  boundary.
 - `notenv edit` for bulk edits in `$EDITOR`.
 - Homebrew / AUR / Scoop packages.
 

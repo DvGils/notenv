@@ -69,10 +69,11 @@ func RemoteType(ctx context.Context, name string) (string, error) {
 }
 
 // CreateRemote drives `rclone config create` into the user's global rclone
-// config. Params pass via argv: briefly visible in /proc, but with no shell
-// nothing lands in history. This is acceptable because storage credentials
-// only ever guard ciphertext. Revisit if rclone grows a stdin-based config
-// path.
+// config. Params pass via argv: briefly visible in /proc to same-user
+// processes, but with no shell nothing lands in history. Acceptable for
+// bucket credentials, which guard only ciphertext; weigh it for SFTP/WebDAV
+// passwords, which may guard a whole server (prefer key-based SFTP auth).
+// Revisit if rclone grows a stdin-based config path.
 func CreateRemote(ctx context.Context, name, kind string, params map[string]string) error {
 	args := []string{"config", "create", name, kind}
 	for key, value := range params {

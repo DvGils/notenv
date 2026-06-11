@@ -215,7 +215,10 @@ func (h *Header) rewrapMaster(mk *MasterKey) error {
 // wrapped private key the passphrase decrypts, then decrypts the master with
 // that slot key. Returns the master, the matched slot index, and the slot
 // private key (needed to rotate that passphrase). ErrWrongPassphrase if none
-// opens.
+// opens. Cost note: each trial is a full scrypt derivation, so unlock latency
+// scales with the number of passphrase slots tried before a match (and a wrong
+// passphrase always pays for all of them). Fine at the intended 2–3 slots;
+// a vault with many passphrase slots will feel it.
 func (h *Header) Unlock(passphrase string) (*MasterKey, int, *age.X25519Identity, error) {
 	cipher := NewPassphraseCipher(passphrase)
 	for i, slot := range h.Slots {
