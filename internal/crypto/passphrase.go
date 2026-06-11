@@ -48,9 +48,9 @@ func (c *PassphraseCipher) Decrypt(ciphertext []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-func encryptTo(plaintext []byte, recipient age.Recipient) ([]byte, error) {
+func encryptTo(plaintext []byte, recipients ...age.Recipient) ([]byte, error) {
 	var buf bytes.Buffer
-	w, err := age.Encrypt(&buf, recipient)
+	w, err := age.Encrypt(&buf, recipients...)
 	if err != nil {
 		return nil, fmt.Errorf("age encrypt: %w", err)
 	}
