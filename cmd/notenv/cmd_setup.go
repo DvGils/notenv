@@ -136,20 +136,28 @@ func addStorage(ctx context.Context, user *config.User, first bool) (bool, error
 		ui.Successf("storage %q: passphrase verified; this machine can decrypt its secrets", name)
 	}
 
-	// Offer to promote a non-default storage when others already exist.
-	if cur, _ := config.LoadUser(); cur != nil && cur.Default != name && ui.Interactive() {
-		promote, err := ui.Confirm(fmt.Sprintf("Make %q the default storage (currently %q)?", name, cur.Default), false)
-		if err != nil {
-			return false, err
-		}
-		if promote {
-			if err := config.SetDefault(name); err != nil {
-				return false, err
-			}
-			ui.Successf("default storage is now %q", name)
-		}
+	if err := offerPromoteDefault(name); err != nil {
+		return false, err
 	}
 	return true, nil
+}
+
+// offerPromoteDefault asks, when other storages exist, whether this one should
+// become the machine default.
+func offerPromoteDefault(name string) error {
+	cur, _ := config.LoadUser()
+	if cur == nil || cur.Default == name || !ui.Interactive() {
+		return nil
+	}
+	promote, err := ui.Confirm(fmt.Sprintf("Make %q the default storage (currently %q)?", name, cur.Default), false)
+	if err != nil || !promote {
+		return err
+	}
+	if err := config.SetDefault(name); err != nil {
+		return err
+	}
+	ui.Successf("default storage is now %q", name)
+	return nil
 }
 
 // chooseStorageName prompts for a valid, non-colliding storage name. ok is

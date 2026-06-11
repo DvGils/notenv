@@ -5,6 +5,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -437,4 +439,70 @@ func firstOf(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// MachineID returns this machine's stable identifier, creating it on first use.
+// It names and orders the segments this machine writes, so two machines never
+// produce the same segment. It is random, not secret, and lives in local state.
+func MachineID() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "machine")
+	switch data, err := os.ReadFile(path); {
+	case err == nil:
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id, nil
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return "", err
+	}
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	id := hex.EncodeToString(buf)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// NextSeq returns the next strictly-increasing sequence number for (scope,
+// namespace) on this machine, persisting the counter. It orders this machine's
+// segments even when a freshly listed remote is briefly stale, so two of its
+// writes never share a sequence number.
+func NextSeq(scope, namespace string) (int, error) {
+	dir, err := Dir()
+	if err != nil {
+		return 0, err
+	}
+	path := filepath.Join(dir, "seq.json")
+	seqs := map[string]int{}
+	switch data, err := os.ReadFile(path); {
+	case err == nil:
+		if err := json.Unmarshal(data, &seqs); err != nil {
+			return 0, fmt.Errorf("%s: %w", path, err)
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return 0, err
+	}
+	key := scope + "\x00" + namespace
+	seqs[key]++
+	next := seqs[key]
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return 0, err
+	}
+	data, err := json.MarshalIndent(seqs, "", "  ")
+	if err != nil {
+		return 0, err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return 0, err
+	}
+	return next, nil
 }
