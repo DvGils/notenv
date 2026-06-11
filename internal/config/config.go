@@ -444,6 +444,24 @@ func WritePin(scope string, p Pin) error {
 		return err
 	}
 	pins[scope] = p
+	return savePins(pins)
+}
+
+// DeletePin removes the pin for a storage scope (`notenv key forget`, after a
+// deliberate vault reset). Removing an absent pin is a no-op.
+func DeletePin(scope string) error {
+	pins, err := loadPins()
+	if err != nil {
+		return err
+	}
+	if _, ok := pins[scope]; !ok {
+		return nil
+	}
+	delete(pins, scope)
+	return savePins(pins)
+}
+
+func savePins(pins map[string]Pin) error {
 	path, err := pinPath()
 	if err != nil {
 		return err

@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
 	"github.com/DvGils/notenv/internal/backend"
+	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/crypto"
+	"github.com/DvGils/notenv/internal/keymgmt"
 	"github.com/DvGils/notenv/internal/keyring"
 	"github.com/DvGils/notenv/internal/ui"
 )
@@ -57,22 +60,36 @@ func ensureMaster(ctx context.Context, store backend.HeaderStore, cache keyring.
 		return res.mk, false, nil
 	}
 
+	// No header. If this machine has pinned one for this storage before, its
+	// absence is the loudest alarm the pin system can raise — a wiped or
+	// replaced vault — not an invitation to quietly initialize a fresh one
+	// (which would also overwrite the pin and silence the alarm forever).
+	if pin, have, err := config.ReadPin(scope); err != nil {
+		return nil, false, err
+	} else if have {
+		return nil, false, fmt.Errorf("no key header found, but this machine pinned one for this storage (revision %d, master %s): the vault may have been wiped or replaced. Restore the header (`notenv key restore-backup`, or the remote's version history), or, ONLY if you deliberately reset this storage, run `notenv key forget` and set up again", pin.Revision, pin.MasterPub)
+	}
+
 	pass, err := keyring.PromptNewPassphrase("Choose a passphrase for this storage: ")
 	if err != nil {
 		return nil, false, err
 	}
 	var mk *crypto.MasterKey
 	var header *crypto.Header
-	if err := ui.Spin("Generating master key, writing header", func() error {
+	if err := ui.Spin("Generating master key, writing and verifying header", func() error {
 		h, key, err := crypto.NewHeader(pass, userAtHost())
 		if err != nil {
 			return err
 		}
-		raw, err := h.Marshal()
-		if err != nil {
-			return err
-		}
-		if err := store.PutHeader(ctx, raw); err != nil {
+		// Creation goes through the same safe-write protocol as every other
+		// header write: read back, authenticate, and re-unlock with the new
+		// passphrase before the user walks away believing escrow is done.
+		// SafePut owns the revision (reset so the stored header starts at 1);
+		// its freshness check also refuses to clobber a header another setup
+		// wrote in the meantime.
+		h.Revision = 0
+		verify := func(hh *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := hh.Unlock(pass); return m, e }
+		if err := keymgmt.SafePut(ctx, store, h, nil, key, verify); err != nil {
 			return err
 		}
 		header, mk = h, key

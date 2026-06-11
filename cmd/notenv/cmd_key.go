@@ -588,6 +588,59 @@ func resolveSlot(h *crypto.Header, sel string) (int, error) {
 	return match, nil
 }
 
+var (
+	keyTrustYes    bool
+	keyForgetForce bool
+)
+
+var keyForgetCmd = &cobra.Command{
+	Use:   "forget",
+	Short: "Forget this machine's local trust state for a storage (pin + cached key)",
+	Long: `Remove this machine's rollback pin and cached master key for a storage.
+
+Use it ONLY after you have deliberately deleted or re-initialized the vault on
+that storage, so the next setup starts from a clean trust-on-first-use state.
+If the header vanished and you did NOT delete it, do not run this: that absence
+is the alarm. Restore the header instead ('notenv key restore-backup' or the
+remote's version history).`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		store, err := loadHeaderStore()
+		if err != nil {
+			return err
+		}
+		scope := storeScope(store)
+		pin, have, err := config.ReadPin(scope)
+		if err != nil {
+			return err
+		}
+		if !have {
+			keyring.DefaultCache().Drop(scope)
+			ui.Notef("no pin recorded for this storage; dropped any cached key")
+			return nil
+		}
+		ui.Warnf("this forgets the pinned header (revision %d, master %s); a substituted vault would then be trusted on next contact", pin.Revision, pin.MasterPub)
+		if !keyForgetForce {
+			if !ui.Interactive() {
+				return errors.New("refusing to forget non-interactively without --force")
+			}
+			ok, err := ui.Confirm("Forget this storage's trust state?", false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errors.New("aborted; trust state kept")
+			}
+		}
+		if err := config.DeletePin(scope); err != nil {
+			return err
+		}
+		keyring.DefaultCache().Drop(scope)
+		ui.Successf("forgot the pin and cached key for this storage; the next unlock is trust-on-first-use")
+		return nil
+	},
+}
+
 var keyTrustCmd = &cobra.Command{
 	Use:   "trust",
 	Short: "Trust the vault's current header (clear a rollback / master-change alarm)",
@@ -628,7 +681,38 @@ authentication tag must still verify.`,
 		if err := header.Verify(res.mk); err != nil {
 			return fmt.Errorf("%w; refusing to trust an unauthenticated header", err)
 		}
-		pinCurrent(storeScope(store), header, res.mk)
+		// Show exactly what is being traded before the alarm is cleared: this
+		// command exists to override a security check, so the decision must be
+		// visible, deliberate, and never the path of least resistance.
+		scope := storeScope(store)
+		stored, have, err := config.ReadPin(scope)
+		if err != nil {
+			return err
+		}
+		if have {
+			ui.Notef("pinned now:  revision %d, master %s", stored.Revision, stored.MasterPub)
+			ui.Notef("trusting:    revision %d, master %s", header.Revision, res.mk.PublicKey())
+			if stored.MasterPub != res.mk.PublicKey() {
+				ui.Warnf("this is a MASTER KEY change; only proceed if you confirmed the rotation out of band (e.g. with the teammate who ran it)")
+			} else if header.Revision < stored.Revision {
+				ui.Warnf("this is a ROLLBACK to an older header; trusting it re-exposes you to whatever it undid")
+			}
+		} else {
+			ui.Notef("no pin recorded yet; this is this machine's first pin for the storage")
+		}
+		if !keyTrustYes {
+			if !ui.Interactive() {
+				return errors.New("refusing to trust non-interactively without --yes")
+			}
+			ok, err := ui.Confirm("Pin this header as trusted?", false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errors.New("aborted; the existing pin is unchanged")
+			}
+		}
+		pinCurrent(scope, header, res.mk)
 		ui.Successf("trusted header revision %d (master %s)", header.Revision, res.mk.PublicKey())
 		return nil
 	},
@@ -639,5 +723,7 @@ func init() {
 	keyAddCmd.Flags().StringVar(&keyAddRecipient, "recipient", "", "add a teammate by their age1… public key")
 	keyAddCmd.Flags().StringVar(&keyAddName, "name", "", "name for the new slot (passphrase slots default to user@host)")
 	keyGenIdentityCmd.Flags().BoolVar(&keyGenIdentityForce, "force", false, "overwrite an existing identity (the old one is lost forever)")
-	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyGenIdentityCmd, keyTrustCmd, keyRestoreBackupCmd)
+	keyTrustCmd.Flags().BoolVar(&keyTrustYes, "yes", false, "pin without the interactive confirmation (for scripts; you have verified the change out of band)")
+	keyForgetCmd.Flags().BoolVar(&keyForgetForce, "force", false, "forget without the interactive confirmation")
+	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyGenIdentityCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd)
 }

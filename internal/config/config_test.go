@@ -188,6 +188,28 @@ func TestPinRoundTripAndCheck(t *testing.T) {
 	}
 }
 
+func TestDeletePin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := config.WritePin("s1", config.Pin{Revision: 3, MasterPub: "age1x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.WritePin("s2", config.Pin{Revision: 7, MasterPub: "age1y"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.DeletePin("s1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, have, _ := config.ReadPin("s1"); have {
+		t.Fatal("s1 pin should be gone")
+	}
+	if p, have, _ := config.ReadPin("s2"); !have || p.Revision != 7 {
+		t.Fatalf("s2 pin must survive: have=%v %+v", have, p)
+	}
+	if err := config.DeletePin("absent"); err != nil {
+		t.Fatalf("deleting an absent pin is a no-op, got %v", err)
+	}
+}
+
 func TestLocalBindingRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	if b, err := config.ReadLocalBinding(dir); err != nil || b != (config.LocalBinding{}) {
