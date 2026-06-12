@@ -154,6 +154,8 @@ func recacheMaster(store *headerTarget, mk *crypto.MasterKey) {
 	cacheMaster(cache, scope, mk, ttl)
 }
 
+var keyListJSON bool
+
 var keyListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List the key slots in the storage header",
@@ -178,9 +180,45 @@ var keyListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if keyListJSON {
+			return printJSON(keyListOutput(header))
+		}
 		printSlots(header)
 		return nil
 	},
+}
+
+// keyListJSONOutput is the frozen shape of `key list --json`. Slots carry
+// their index because the rm/set-primary selectors accept one; public_key
+// appears only on recipient slots (a passphrase slot's key is internal).
+// Extensions are additive fields only.
+type keyListJSONOutput struct {
+	VaultID  string       `json:"vault_id"`
+	Revision int          `json:"revision"`
+	Slots    []slotOutput `json:"slots"`
+}
+
+type slotOutput struct {
+	Index     int    `json:"index"`
+	Name      string `json:"name,omitempty"`
+	Type      string `json:"type"`
+	Primary   bool   `json:"primary,omitempty"`
+	PublicKey string `json:"public_key,omitempty"`
+}
+
+func keyListOutput(h *crypto.Header) keyListJSONOutput {
+	out := keyListJSONOutput{VaultID: h.VaultID, Revision: h.Revision, Slots: make([]slotOutput, 0, len(h.Slots))}
+	for i, slot := range h.Slots {
+		s := slotOutput{Index: i, Name: slot.Name, Type: slot.Type, Primary: slot.Primary}
+		if s.Type == "" {
+			s.Type = crypto.SlotPassphrase
+		}
+		if slot.Type == crypto.SlotRecipient {
+			s.PublicKey = slot.PublicKey
+		}
+		out.Slots = append(out.Slots, s)
+	}
+	return out
 }
 
 // printSlots renders the slots as a table. The fingerprint column shows a
@@ -764,6 +802,7 @@ func init() {
 	keyAddCmd.Flags().StringVar(&keyAddRecipient, "recipient", "", "add a teammate by their age1… public key")
 	keyAddCmd.Flags().StringVar(&keyAddName, "name", "", "name for the new slot (passphrase slots default to user@host)")
 	keyGenIdentityCmd.Flags().BoolVar(&keyGenIdentityForce, "force", false, "overwrite an existing identity (the old one is lost forever)")
+	keyListCmd.Flags().BoolVar(&keyListJSON, "json", false, "machine-readable output: vault id, revision, slots")
 	keyTrustCmd.Flags().BoolVar(&keyTrustYes, "yes", false, "pin without the interactive confirmation (for scripts; you have verified the change out of band)")
 	keyForgetCmd.Flags().BoolVar(&keyForgetForce, "force", false, "forget without the interactive confirmation")
 	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyGenIdentityCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd)

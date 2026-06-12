@@ -13,7 +13,10 @@ import (
 	"github.com/DvGils/notenv/internal/secrets"
 )
 
-var listRefresh bool
+var (
+	listRefresh bool
+	listJSON    bool
+)
 
 var listCmd = &cobra.Command{
 	Use:   "list",
@@ -33,6 +36,9 @@ var listCmd = &cobra.Command{
 			names = append(names, name)
 		}
 		sort.Strings(names)
+		if listJSON {
+			return printJSON(listOutput{Namespace: a.namespace, Secrets: listedSecrets(names, res.meta)})
+		}
 		// Piped output is the stable scripting surface: one name per line,
 		// nothing else. The table with descriptions is for human eyes only.
 		if !term.IsTerminal(int(os.Stdout.Fd())) {
@@ -44,6 +50,36 @@ var listCmd = &cobra.Command{
 		printSecretsTable(names, res.meta)
 		return nil
 	},
+}
+
+// listOutput is the frozen shape of `list --json`. Values never appear; the
+// metadata fields are omitted when absent so consumers need no sentinel
+// handling. Extensions are additive fields only.
+type listOutput struct {
+	Namespace string         `json:"namespace"`
+	Secrets   []listedSecret `json:"secrets"`
+}
+
+type listedSecret struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Modified is the winning write's advisory wall-clock time (RFC 3339,
+	// UTC); absent when the write predates timestamps. Clocks lie: it is
+	// informational, never an ordering claim.
+	Modified string `json:"modified,omitempty"`
+}
+
+func listedSecrets(names []string, meta map[string]secrets.Meta) []listedSecret {
+	out := make([]listedSecret, 0, len(names))
+	for _, name := range names {
+		m := meta[name]
+		s := listedSecret{Name: name, Description: m.Description}
+		if m.TS != 0 {
+			s.Modified = time.Unix(m.TS, 0).UTC().Format(time.RFC3339)
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func printSecretsTable(names []string, meta map[string]secrets.Meta) {
@@ -67,4 +103,5 @@ func modifiedLabel(ts int64) string {
 
 func init() {
 	listCmd.Flags().BoolVar(&listRefresh, "refresh", false, "bypass the local cache and pull the latest secrets")
+	listCmd.Flags().BoolVar(&listJSON, "json", false, "machine-readable output: names, descriptions, modified times (never values)")
 }

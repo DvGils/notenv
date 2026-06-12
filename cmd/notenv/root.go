@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -16,10 +18,35 @@ into the environment of the process you run. Plaintext never touches disk.`,
 	SilenceErrors: true,
 }
 
-// exitCodeError carries a child process's exit code up to main.
-type exitCodeError struct{ code int }
+// exitCodeError carries a specific exit code up to main: a child's code
+// passed through silently (err nil), or a classified failure whose message
+// still must be printed. `run` follows docker's convention so scripts and
+// agents can tell whose failure an exit is: 125 = notenv's own failure,
+// 126 = the command was found but cannot run, 127 = the command was not
+// found; anything else is the child's own exit code.
+type exitCodeError struct {
+	code int
+	err  error
+}
 
-func (e *exitCodeError) Error() string { return fmt.Sprintf("exit code %d", e.code) }
+func (e *exitCodeError) Error() string {
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return fmt.Sprintf("exit code %d", e.code)
+}
+
+// printJSON writes one indented JSON document to stdout — the machine-facing
+// data surface (everything human-facing goes to stderr, so a --json stdout is
+// always exactly one parseable document).
+func printJSON(v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(os.Stdout, string(data))
+	return err
+}
 
 // storageFlag selects which configured storage to use, overriding a project's
 // local binding and the machine default. Persistent so every command honors it.
