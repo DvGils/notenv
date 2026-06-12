@@ -216,10 +216,14 @@ func writeUserConfig(u *User) (string, error) {
 		if st.ReadOnly {
 			b.WriteString("read_only = true   # refuse mutating commands here (policy for cooperating clients, not enforcement)\n")
 		}
-		if st.CacheTTL != "" {
-			fmt.Fprintf(&b, "cache_ttl = %q\n", st.CacheTTL)
-		} else {
-			b.WriteString("# cache_ttl = \"1h\"   # local ciphertext cache lifetime (tmpfs, Linux only); \"0\" disables\n")
+		// The ciphertext cache is remote-only: a local vault is its own disk,
+		// so its reads always verify the manifest and cache nothing.
+		if st.Path == "" {
+			if st.CacheTTL != "" {
+				fmt.Fprintf(&b, "cache_ttl = %q\n", st.CacheTTL)
+			} else {
+				b.WriteString("# cache_ttl = \"1h\"   # local ciphertext cache lifetime (tmpfs, Linux only); \"0\" disables\n")
+			}
 		}
 		b.WriteString("\n")
 	}
@@ -493,6 +497,17 @@ func cryptoEffective(u *User, eff Effective, st StorageEntry, name string) (Effe
 		return eff, fmt.Errorf("invalid crypto.cache_ttl %q: %w", u.Crypto.CacheTTL, err)
 	}
 	eff.CacheTTL = ttl
+	// Local vaults never blob-cache. The cache exists to skip a network
+	// round-trip plus a fold, and its warm path skips header and manifest
+	// verification entirely — a trade justified against a network, not
+	// against the same disk. A local vault verifies the manifest on every
+	// read and keeps no second ciphertext copy; cache_ttl is remote-only.
+	// (The master-key cache is untouched: it avoids re-prompting the
+	// passphrase, equally valuable locally.)
+	if eff.Local() {
+		eff.BlobCacheTTL = 0
+		return eff, nil
+	}
 	eff.BlobCacheTTL = DefaultBlobCacheTTL
 	if st.CacheTTL != "" {
 		ttl, err := time.ParseDuration(st.CacheTTL)

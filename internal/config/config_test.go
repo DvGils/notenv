@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/contract"
@@ -515,5 +516,32 @@ func TestReadOnlyEnv(t *testing.T) {
 		if got := config.ReadOnlyEnv(); got != want {
 			t.Fatalf("NOTENV_READONLY=%q: got %v, want %v", value, got, want)
 		}
+	}
+}
+
+// TestLocalVaultsNeverBlobCache: a local vault's reads must always verify
+// the manifest, so its Effective disables the ciphertext cache even when the
+// entry sets cache_ttl; remote storages keep honoring it.
+func TestLocalVaultsNeverBlobCache(t *testing.T) {
+	u := &config.User{
+		Default: "local",
+		Storage: map[string]config.StorageEntry{
+			"local":  {Path: "/tmp/vault", CacheTTL: "2h"},
+			"remote": {Remote: "b2", Base: "x", CacheTTL: "2h"},
+		},
+	}
+	eff, err := config.ResolveNamespace(u, "local", "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eff.BlobCacheTTL != 0 {
+		t.Fatalf("local BlobCacheTTL = %v, want 0", eff.BlobCacheTTL)
+	}
+	eff, err = config.ResolveNamespace(u, "remote", "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eff.BlobCacheTTL != 2*time.Hour {
+		t.Fatalf("remote BlobCacheTTL = %v, want 2h", eff.BlobCacheTTL)
 	}
 }
