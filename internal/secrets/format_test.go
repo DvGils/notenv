@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
@@ -76,5 +77,30 @@ func TestFoldRejectsRelocatedObject(t *testing.T) {
 	}
 	if _, err := For(store, "proj", mk, "m1", nil).Fold(ctx); err == nil {
 		t.Fatal("fold must reject an object that declares a different name")
+	}
+}
+
+// TestMetadataOmittedWhenEmpty: a write with no description or timestamp
+// marshals without the metadata keys at all. This is what makes the fields a
+// no-bump change: a metadata-less 0.11 segment is byte-compatible with what
+// 0.10 wrote, and older readers see nothing new to mishandle.
+func TestMetadataOmittedWhenEmpty(t *testing.T) {
+	raw, err := json.Marshal(segment{Version: formatVersion, Object: "proj/seg-m1-aaaaaaaaaaaa.age", Machine: "m1", Seq: 1, Lamport: 1, Key: "K", Value: "v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"desc", "ts"} {
+		if bytes.Contains(raw, []byte(`"`+field+`"`)) {
+			t.Fatalf("empty %s must be omitted from the segment payload: %s", field, raw)
+		}
+	}
+	entryRaw, err := json.Marshal(entry{Value: "v", Lamport: 1, Machine: "m1", Seq: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"desc", "ts"} {
+		if bytes.Contains(entryRaw, []byte(`"`+field+`"`)) {
+			t.Fatalf("empty %s must be omitted from snapshot entries: %s", field, entryRaw)
+		}
 	}
 }

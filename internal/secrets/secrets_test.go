@@ -78,7 +78,7 @@ func (f *fixture) del(prev *secrets.State, key string) *secrets.State {
 func (f *fixture) append(prev *secrets.State, key, value string, deleted bool) *secrets.State {
 	f.t.Helper()
 	f.seq++
-	next, objKey, entry, err := f.ns().Append(context.Background(), prev, f.seq, key, value, deleted)
+	next, objKey, entry, err := f.ns().Append(context.Background(), prev, f.seq, secrets.Write{Key: key, Value: value, Deleted: deleted})
 	if err != nil {
 		f.t.Fatalf("append: %v", err)
 	}

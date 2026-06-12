@@ -42,17 +42,17 @@ always move it some other way.`,
 		if err != nil {
 			return err
 		}
-		secrets, err := a.fetchSecrets(cmd.Context(), runRefresh)
+		res, err := a.fetchSecrets(cmd.Context(), runRefresh)
 		if err != nil {
 			return err
 		}
-		env, err := a.contract.BuildEnv(os.Environ(), secrets)
+		env, err := a.contract.BuildEnv(os.Environ(), res.secrets)
 		if err != nil {
 			return err
 		}
 
-		stdout, outMask := maskedStream(os.Stdout, a.contract, secrets)
-		stderr, errMask := maskedStream(os.Stderr, a.contract, secrets)
+		stdout, outMask := maskedStream(os.Stdout, a.contract, res.secrets)
+		stderr, errMask := maskedStream(os.Stderr, a.contract, res.secrets)
 
 		code, err := runner.Run(args, env, stdout, stderr)
 		flushMasker(outMask)

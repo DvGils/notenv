@@ -137,7 +137,7 @@ func runImport(cmd *cobra.Command, a *app, file string, items []importItem, skip
 	}); err != nil {
 		return err
 	}
-	a.cacheFolded(view.mk, updated.Secrets)
+	a.cacheFolded(view.mk, updated)
 	reportConflicts(updated.Conflicts)
 	a.maybeCompact(ctx, view.mk, state.SegmentCount()+len(items)-1)
 

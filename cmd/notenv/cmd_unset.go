@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -44,12 +45,12 @@ var unsetCmd = &cobra.Command{
 		var updated *secrets.State
 		if err := ui.Spin("Uploading removal", func() error {
 			var aerr error
-			updated, aerr = a.appendGuarded(ctx, view, state, seq, storageKey, "", true)
+			updated, aerr = a.appendGuarded(ctx, view, state, seq, secrets.Write{Key: storageKey, Deleted: true, TS: time.Now().Unix()})
 			return aerr
 		}); err != nil {
 			return err
 		}
-		a.cacheFolded(view.mk, updated.Secrets)
+		a.cacheFolded(view.mk, updated)
 		ui.Successf("%s removed from namespace %q", key, a.namespace)
 		// Post-write state: this tombstone settles its own key's conflict.
 		reportConflicts(updated.Conflicts)

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/DvGils/notenv/internal/crypto"
+	"github.com/DvGils/notenv/internal/secrets"
 )
 
 // TestCompactInterruptedKeepsData simulates a crash after the snapshot is
@@ -187,7 +188,7 @@ func TestCompactAdoptsInFlightWrite(t *testing.T) {
 	s := a.set(a.fold(), "A", "1")
 
 	// A crashed writer: the segment landed, the manifest update never ran.
-	if _, _, _, err := a.ns().Append(ctx, s, a.seq+1, "B", "2", false); err != nil {
+	if _, _, _, err := a.ns().Append(ctx, s, a.seq+1, secrets.Write{Key: "B", Value: "2"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -258,7 +259,7 @@ func TestAppendRejectsCorruptWrite(t *testing.T) {
 	f := newFixture(t, v, "m1")
 
 	v.store.CorruptNextBlobPut(func([]byte) []byte { return []byte("mangled") })
-	if _, _, _, err := f.ns().Append(ctx, f.fold(), 1, "K", "v", false); err == nil {
+	if _, _, _, err := f.ns().Append(ctx, f.fold(), 1, secrets.Write{Key: "K", Value: "v"}); err == nil {
 		t.Fatal("append must reject a write that reads back corrupted")
 	}
 	if f.fold().HasHistory() {

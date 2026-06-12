@@ -130,7 +130,7 @@ func (s *secretSim) fold(step int) *State {
 // compaction makes it durable.
 func (s *secretSim) write(m *simMachine, key, value string, deleted, crash bool) {
 	m.seq++
-	updated, objKey, entry, err := s.ns(m.id).Append(s.ctx, m.view, m.seq, key, value, deleted)
+	updated, objKey, entry, err := s.ns(m.id).Append(s.ctx, m.view, m.seq, Write{Key: key, Value: value, Deleted: deleted})
 	if err != nil {
 		return // interrupted upload: nothing landed, nothing recorded
 	}
