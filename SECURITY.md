@@ -13,6 +13,6 @@ a recent version.
 
 ## Scope
 
-[THREAT_MODEL.md](./THREAT_MODEL.md) describes what notenv defends and, explicitly, what it does
-not. A report that a documented **non-goal** is undefended is not a vulnerability; a report that a
-**stated guarantee** does not hold is, and is welcome.
+The [threat model](https://dvgils.github.io/notenv/security/threat-model/) describes what notenv
+defends and, explicitly, what it does not. A report that a documented **non-goal** is undefended is
+not a vulnerability; a report that a **stated guarantee** does not hold is, and is welcome.
