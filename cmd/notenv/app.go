@@ -63,7 +63,7 @@ func loadApp(ctx context.Context) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &backend.RcloneStorage{Remote: eff.Remote, Base: eff.Base, Versioned: eff.Versioned}
+	store := openStorage(eff)
 	// The contract chooses the namespace — the thing that selects which secrets
 	// reach a child process — so it is held to the checkout's local pin before
 	// any key is touched (a first-use join of an existing namespace costs one
@@ -83,7 +83,7 @@ func loadApp(ctx context.Context) (*app, error) {
 		store:        store,
 		cache:        keyring.DefaultCache(),
 		blobs:        blobcache.New(eff.BlobCacheTTL),
-		cacheScope:   config.CacheScope(eff.Remote, eff.Base),
+		cacheScope:   eff.Scope(),
 		cacheTTL:     eff.CacheTTL,
 	}, nil
 }
