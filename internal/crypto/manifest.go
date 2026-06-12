@@ -21,7 +21,7 @@ import (
 // header is stored in the clear, so an unkeyed digest of a secret's payload
 // would be an offline guessing oracle (hash candidate values, compare). And
 // rotation re-encrypts objects in place, so a ciphertext digest would go stale
-// mid-rotation, while plaintext is stable across re-encryption — the MAC key
+// mid-rotation, while plaintext is stable across re-encryption. The MAC key
 // changes exactly at the header flip, which rewrites the manifest anyway. The
 // payload itself records the object key it was written under, so the MAC
 // transitively binds the name as well as the content.

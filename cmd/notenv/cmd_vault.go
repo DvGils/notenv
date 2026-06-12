@@ -29,7 +29,7 @@ var vaultCmd = &cobra.Command{
 var vaultCopyCmd = &cobra.Command{
 	Use:   "copy",
 	Short: "Replicate this vault to new storage (the local→cloud ramp) and register it",
-	Long: `Copy the selected vault — header, every encrypted object — to a new storage
+	Long: `Copy the selected vault (header, every encrypted object) to a new storage
 location, verify the copy byte for byte, and register it as a named storage on
 this machine. The typical move: a vault that started on this machine, copied
 to a cloud remote once syncing across machines matters.
@@ -44,7 +44,7 @@ not already hold a vault (copies never merge).`,
 		// The destination is always a freshly named storage (never one with a
 		// read_only entry), so only the process-wide switch applies here.
 		if config.ReadOnlyEnv() {
-			return errors.New("NOTENV_READONLY is set; refusing to copy — a vault copy writes a full vault to the destination")
+			return errors.New("NOTENV_READONLY is set; refusing to copy: a vault copy writes a full vault to the destination")
 		}
 		src, err := loadHeaderStore()
 		if err != nil {
@@ -80,8 +80,8 @@ not already hold a vault (copies never merge).`,
 	},
 }
 
-// copyDestination resolves where the copy goes — flags first, prompts when
-// interactive — and the storage name it will be registered under.
+// copyDestination resolves where the copy goes (flags first, prompts when
+// interactive) and the storage name it will be registered under.
 func copyDestination(ctx context.Context) (string, config.StorageEntry, error) {
 	if vaultCopyToPath != "" && vaultCopyToRemote != "" {
 		return "", config.StorageEntry{}, errors.New("--to-path and --to-remote are mutually exclusive")
@@ -181,8 +181,8 @@ func destinationEffective(name string, entry config.StorageEntry, srcScope strin
 }
 
 // copyVault replicates src's vault into dst: every object byte-verified, the
-// header installed last — the destination holds a live vault only once it is
-// complete — and the source header re-checked afterwards so a copy that raced
+// header installed last (the destination holds a live vault only once it is
+// complete) and the source header re-checked afterwards so a copy that raced
 // a write is redone rather than registered torn. The destination must hold no
 // vault yet; leftover objects from an interrupted earlier copy are overwritten
 // or reconciled away.
@@ -195,7 +195,7 @@ func copyVault(ctx context.Context, src, dst vaultStorage) error {
 		return err
 	}
 	if _, err := dst.GetHeader(ctx); err == nil {
-		return errors.New("the destination already holds a vault; copies never merge or overwrite — pick an empty destination")
+		return errors.New("the destination already holds a vault; copies never merge or overwrite; pick an empty destination")
 	} else if !errors.Is(err, backend.ErrNotFound) {
 		return err
 	}

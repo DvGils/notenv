@@ -9,7 +9,7 @@ import (
 )
 
 // The master can sign as well as decrypt. Its Ed25519 key is derived from the
-// master secret with HKDF under its own label — the same construction as the
+// master secret with HKDF under its own label: the same construction as the
 // header-MAC key, a different domain. Deriving (rather than storing a second
 // key in the header's Master blob) means the signing key exists wherever the
 // master does, rotates with it, and adds nothing to the on-storage format
@@ -32,7 +32,7 @@ func (m *MasterKey) signingKey() (ed25519.PrivateKey, error) {
 	return ed25519.NewKeyFromSeed(seed), nil
 }
 
-// SignPub returns the master's Ed25519 public key, hex-encoded — the form the
+// SignPub returns the master's Ed25519 public key, hex-encoded: the form the
 // header carries and pins store.
 func (m *MasterKey) SignPub() (string, error) {
 	key, err := m.signingKey()

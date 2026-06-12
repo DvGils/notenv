@@ -46,12 +46,12 @@ machine running the command, only for as long as the command runs.**
   of the confidentiality story**: it is the same ciphertext that would sit on a provider, on a
   strictly less-exposed medium, and the lost-laptop case below covers ciphertext at rest (the
   offline passphrase brute-force note applies verbatim). What changes is durability and
-  recovery — no off-device copy and no object versioning — so back the directory up, or
+  recovery (no off-device copy and no object versioning), so back the directory up, or
   replicate it to a remote with `notenv vault copy`; the header keeps its `.prev` backup like
   any non-versioned remote. Local vaults are single-machine by design: their header writes get
-  a true compare-and-swap (an OS file lock), which is cooperative and same-machine only — a
+  a true compare-and-swap (an OS file lock), which is cooperative and same-machine only: a
   vault directory inside Dropbox/syncthing/NFS gets no cross-machine exclusion; concurrent
-  multi-machine use is what remotes are for."
+  multi-machine use is what remotes are for.
 - On Linux, the master key (kernel keyring) and ciphertext blobs (tmpfs) may be cached in RAM, both
   reclaimed by the OS on logout/reboot. macOS and Windows do **not** cache (see
   [README](./README.md#caching-is-linux-only-by-design)).
@@ -83,10 +83,10 @@ What holds, and against whom.
   machine that has pinned a vault refuses to treat its missing header as virgin storage (the
   deliberate-reset escape hatch is `notenv key forget`). **Replacing the vault wholesale is
   detected**: each storage location is bound locally to the vault identity it held, so a
-  different vault appearing there — however internally consistent — is refused. **Every stored
+  different vault appearing there, however internally consistent, is refused. **Every stored
   object is bound to that authenticated header**: the header carries a manifest (object key →
   keyed MAC of its plaintext; keyed so the public header is no guessing oracle against secret
-  values), each payload names the object key it was written under, and reads check both — so
+  values), each payload names the object key it was written under, and reads check both, so
   deleting a recorded object, reverting it to a different value, resurrecting a compacted one,
   or copying a real object to another name or namespace alarms with the object named. They
   cannot forge a secret value: a blob they cannot encrypt under the master fails to decrypt, and
@@ -97,14 +97,14 @@ What holds, and against whom.
 - **Master rotations carry their own proof.** Each rotation records a transition signed by the
   outgoing master; a machine still pinned at that master verifies the chain and follows the
   change silently. The master-changed alarm therefore fires only for a change that **no holder
-  of the pinned master authorized** — it is no longer the routine cost of a teammate rotating,
+  of the pinned master authorized**: it is no longer the routine cost of a teammate rotating,
   which had trained the `notenv key trust` reflex that defeats the alarm's purpose. A non-holder
   cannot forge a transition (no old signing key); an **ex-holder can**, which is why offboarding
   still ends with rotating the storage credential (see
   [Known limitations](#known-limitations)). ✅
-- **Against an honest race — writes concurrent with a master rotation:** every write records
+- **Against an honest race, writes concurrent with a master rotation:** every write records
   itself in the vault manifest through the header compare-and-swap, which re-reads and verifies
-  the header first — a rotation that landed since the writer unlocked surfaces right there, and
+  the header first: a rotation that landed since the writer unlocked surfaces right there, and
   the writer rolls its object back. The rotation's flip goes through the same swap, so it aborts
   if any write recorded itself after the rotation began. Either the write records first (the
   rotation aborts and a re-run re-keys it) or the flip lands first (the write's swap sees the
@@ -112,7 +112,7 @@ What holds, and against whom.
   readable by nobody (the crash residual is in [Known limitations](#known-limitations)). ✅
 - **Against a malicious committed contract (a cloned repository):** the contract cannot choose
   where this machine reads or writes (storage is machine-config only), and the **namespace it
-  names is pinned per checkout** on first use — pinning a namespace other than the directory's
+  names is pinned per checkout** on first use: pinning a namespace other than the directory's
   name requires interactive confirmation, and a contract that later renames its namespace is
   refused until explicitly re-accepted (`notenv init`). A malicious clone cannot silently point
   `notenv run` at another project's secrets in your vault. ✅ (what running untrusted code does
@@ -122,14 +122,14 @@ What holds, and against whom.
 
 - **Against accidental disclosure through a child's output:** `notenv run` scrubs the exact
   values it injected from the child's stdout/stderr whenever the stream is captured (not a
-  terminal), replacing them with named placeholders — so a server that echoes its connection
+  terminal), replacing them with named placeholders, so a server that echoes its connection
   string on boot does not hand it to the CI log, the shell pipeline, or the LLM reading the
   tool output. Best-effort by construction: exact byte matching (an encoded or transformed
   value passes through), values shorter than 6 bytes are skipped, and a live terminal is wired
   through untouched unless `--mask` is given. This is **accident-proofing for the dominant
-  real-world leak, not a boundary** — see [Non-goals](#non-goals). ✅ (qualified)
+  real-world leak, not a boundary**. See [Non-goals](#non-goals). ✅ (qualified)
 - The experimental MCP server (`notenv mcp`) keeps the same line: its tools list names and
-  descriptions or run commands with secrets injected, always masking the captured output —
+  descriptions or run commands with secrets injected, always masking the captured output:
   no tool returns a secret value to the model. The same qualification applies: this bounds
   what an honest agent sees, not what code running as your user can do. ✅ (qualified)
 
@@ -171,16 +171,16 @@ notenv does **not** defend these, by design. Treating them as in-scope would be 
   any encoding walks around it; the child's own file and network writes never pass through the
   masker at all) or read the session key cache; output masking catches
   accidents, not intent. The same trust model as ssh-agent. A broker that holds the unlocked key
-  in a separate trust domain — agents *use*, provably cannot *extract* — is planned, and until it
+  in a separate trust domain (agents *use*, provably cannot *extract*) is planned, and until it
   exists notenv makes no agent-containment claim.
 - **Read-only mode as containment.** `read_only = true` and `NOTENV_READONLY` make notenv refuse
-  mutating commands — accident-proofing for cooperating clients, same family as masking. They do
+  mutating commands: accident-proofing for cooperating clients, same family as masking. They do
   not constrain an adversary: with a single master key, **read capability is write capability**
   (the manifest MACs that authenticate objects derive from the master), so anyone who can decrypt
   can author valid writes with their own tooling. *Enforced* read-only comes from the storage
   credential (a read-only B2 application key behind the remote; read-only directory permissions
   on a local vault). Cryptographic read-only identities require splitting decrypt from
-  manifest-signing — a header redesign, explicitly v2 territory.
+  manifest-signing: a header redesign, explicitly v2 territory.
 - **Exfiltration by a process legitimately holding a secret.** A child handed `$KEY` can send it
   anywhere it has network access to. No secrets manager fixes egress; that is sandbox and
   network-policy territory.
@@ -204,10 +204,10 @@ These are real, documented gaps, not oversights:
 - **Trust on first use.** On a machine's *first* contact with a vault it has no prior revision to
   compare against, so it cannot detect a rollback or substitution that predates its first sight.
 - **Warm-cache runs defer the pin checks.** With the master key cached, a run never reads the
-  header, so rollback / master-change / vanished-header detection happens on cold unlocks — at
+  header, so rollback / master-change / vanished-header detection happens on cold unlocks, at
   most one cache TTL (default 1 hour) after the event, not instantly. Writes are unaffected: they
   re-read the header after every write regardless.
-- **A write-capable former holder can fork history — and signed transitions make the fork
+- **A write-capable former holder can fork history, and signed transitions make the fork
   *quiet* for machines behind the fork point.** Someone who kept a previous master had full
   authority while they held it, including its signing key: they can author transitions onto
   their own fork that verify exactly like legitimate ones. A machine whose pin predates the fork
@@ -219,16 +219,16 @@ These are real, documented gaps, not oversights:
 - **A write that crashed mid-protocol and was then orphaned by a rotation.** A `set` lands its
   object, then records it in the vault manifest; a writer that dies between the two leaves an
   unrecorded object. Folds still include it (with a warning) and the next compaction records it
-  durably — but a master rotation deliberately leaves unrecorded objects alone (touching one
+  durably, but a master rotation deliberately leaves unrecorded objects alone (touching one
   would race its writer's own rollback), so an orphan that meets a rotation first is left sealed
   under the replaced master. The fold then fails closed naming the object; remove it and re-set
-  that key. This residual is accepted deliberately: the alternative — a rotation-in-progress
-  marker writers must honor — puts a lock-like object on every write path and adds a
+  that key. This residual is accepted deliberately: the alternative, a rotation-in-progress
+  marker writers must honor, puts a lock-like object on every write path and adds a
   stuck-marker failure mode that blocks all writers until manually cleared.
 - **The manifest swap on rclone is a windowed compare-and-swap, not an atomic one.** Object
   stores expose no conditional write through rclone, so two machines recording writes in the
   same sub-second window can race. A detected loss retries cleanly; the one undetectable
-  ordering leaves an unrecorded-but-still-included object that the next compaction adopts —
+  ordering leaves an unrecorded-but-still-included object that the next compaction adopts:
   never a lost value, never an alarm against an honest writer. A backend with native
   conditional writes can close the window for real.
 - **Primary-slot governance is advisory.** In shared-master team mode every slot holder has the

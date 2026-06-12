@@ -10,8 +10,8 @@ import (
 
 // lockExclusive takes an exclusive advisory lock on path, blocking until it
 // is available, and returns the release. flock locks belong to the open file
-// description, so the kernel releases them when the process dies — no stale
-// lock can outlive its holder — and two calls in one process exclude each
+// description, so the kernel releases them when the process dies (no stale
+// lock can outlive its holder), and two calls in one process exclude each
 // other because each opens its own descriptor.
 func lockExclusive(path string) (func(), error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)

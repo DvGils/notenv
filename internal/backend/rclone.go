@@ -339,7 +339,7 @@ func isNotFoundExit(err error) bool {
 // subcommands that report a missing source with only a generic exit 1
 // (`copyto`, `deletefile`). The looseness is acceptable there: a false match
 // skips backing up a header that most likely doesn't exist, or re-deletes an
-// already-missing object — housekeeping, never a trust decision.
+// already-missing object: housekeeping, never a trust decision.
 func isNotFoundLoose(err error) bool {
 	if isNotFoundExit(err) {
 		return true

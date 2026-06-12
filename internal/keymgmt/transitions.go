@@ -13,7 +13,7 @@ import (
 // transitionsObject is where a vault's rotation history lives: one JSON array
 // of crypto.Transition records at the vault root, appended on every master
 // change. Entries are individually signed, so the object itself needs no
-// integrity protection — a reader that cannot assemble a valid chain from it
+// integrity protection: a reader that cannot assemble a valid chain from it
 // alarms and falls back to `notenv key trust`, never silently accepts. Entries
 // are a few hundred bytes and rotations are rare, so the history is kept
 // whole: truncating it would only strand long-offline machines.
@@ -36,7 +36,7 @@ func loadTransitions(ctx context.Context, store backend.Backend) ([]crypto.Trans
 
 // appendTransition records one master change. It re-reads the current history
 // rather than trusting a cached copy, so concurrent rotations lose at most
-// their own entry (and a rotation whose flip fails leaves a harmless orphan —
+// their own entry (and a rotation whose flip fails leaves a harmless orphan,
 // an entry no chain ever walks through).
 func appendTransition(ctx context.Context, store backend.Backend, t *crypto.Transition) error {
 	ts, err := loadTransitions(ctx, store)
@@ -65,7 +65,7 @@ func appendTransition(ctx context.Context, store backend.Backend, t *crypto.Tran
 //
 // A nil error means the pin may advance to the observed header silently. Any
 // failure returns ErrNoPath: the caller falls back to the alarm it would have
-// raised anyway — walking can clear an alarm, never create one.
+// raised anyway: walking can clear an alarm, never create one.
 func FollowRotations(ctx context.Context, store backend.Backend, h *crypto.Header, pinned string, pinnedRevision int, mk *crypto.MasterKey) error {
 	ts, err := loadTransitions(ctx, store)
 	if err != nil {

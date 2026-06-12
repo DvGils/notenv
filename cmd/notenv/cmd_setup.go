@@ -85,9 +85,9 @@ func setupFlow(ctx context.Context) error {
 	return nil
 }
 
-// addStorage runs one storage's setup. The structural question comes first —
-// a local vault on this machine (the default) or a cloud remote — and the
-// local path asks nothing further: name, directory, then straight into the
+// addStorage runs one storage's setup. The structural question comes first:
+// a local vault on this machine (the default) or a cloud remote. The local
+// path asks nothing further: name, directory, then straight into the
 // key ceremony. first seeds name suggestions. Returns false (no error) when
 // the user declines to replace an existing storage, so the loop can continue.
 func addStorage(ctx context.Context, user *config.User, first bool) (bool, error) {
@@ -102,7 +102,7 @@ func addStorage(ctx context.Context, user *config.User, first bool) (bool, error
 }
 
 // chooseVaultKind decides local vs remote: flags first, then the prompt, and
-// promptless runs default to local — the zero-account, zero-dependency path.
+// promptless runs default to local: the zero-account, zero-dependency path.
 func chooseVaultKind() (bool, error) {
 	switch {
 	case setupLocal && setupRemote:
@@ -184,7 +184,7 @@ func sameLocalTarget(existing config.StorageEntry, name string) (bool, string) {
 }
 
 // addLocalStorage creates a local vault: directory, probe, config entry, key
-// ceremony. With no name conflict there is nothing to ask — the credential
+// ceremony. With no name conflict there is nothing to ask: the credential
 // prompt inside the ceremony is the whole interaction.
 func addLocalStorage(ctx context.Context, user *config.User, first bool) (bool, error) {
 	name, path, ok, err := localStorageTarget(user, first)
@@ -224,7 +224,7 @@ func addLocalStorage(ctx context.Context, user *config.User, first bool) (bool, 
 	} else {
 		ui.Successf("existing vault at %s: credential verified; this machine can decrypt its secrets", path)
 	}
-	ui.Notef("this vault is encrypted at rest but exists on this machine only — back up the directory, or attach a cloud remote later with `notenv vault copy`")
+	ui.Notef("this vault is encrypted at rest but exists on this machine only. Back up the directory, or attach a cloud remote later with `notenv vault copy`")
 
 	if err := offerPromoteDefault(name); err != nil {
 		return false, err

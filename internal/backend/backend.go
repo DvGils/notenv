@@ -44,7 +44,7 @@ type HeaderStore interface {
 	// recovery paths that must overwrite no matter what.
 	PutHeader(ctx context.Context, raw []byte) error
 	// SwapHeader stores updated iff the current header bytes equal base (nil
-	// base: no header may exist yet), and returns ErrHeaderChanged otherwise —
+	// base: no header may exist yet), and returns ErrHeaderChanged otherwise:
 	// the compare-and-swap every concurrent header mutation serializes on.
 	// Implementations make this as atomic as their storage allows; see each
 	// implementation for the guarantee it actually provides.

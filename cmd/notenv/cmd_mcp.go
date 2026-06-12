@@ -21,7 +21,7 @@ var mcpCmd = &cobra.Command{
 	Short: "Serve this machine's vaults to MCP clients over stdio (experimental)",
 	Long: `Run a Model Context Protocol server on stdin/stdout, giving an agent a
 narrow window into your vaults: it can discover what secrets exist and what
-they are for, and run commands with secrets injected — it can never read a
+they are for, and run commands with secrets injected. It can never read a
 value. Tool output is masked the same way captured 'run' output is.
 
 Tools: list_secrets (names, descriptions, modified times) and
@@ -142,7 +142,7 @@ func mcpRunWithSecrets(ctx context.Context, raw json.RawMessage) (string, error)
 	}
 
 	// Tool output is headed for a model's context: always mask, and clip so a
-	// chatty child can't flood it. The child's stdin is empty — ours carries
+	// chatty child can't flood it. The child's stdin is empty; ours carries
 	// the protocol.
 	injected := a.injectedSecrets(res.secrets)
 	var stdout, stderr bytes.Buffer

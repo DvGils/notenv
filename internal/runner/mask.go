@@ -12,7 +12,7 @@ import (
 // captured output: anything a child process prints can end up in an agent's
 // context window, a CI log, or a shell pipeline, and a server that echoes its
 // connection string on boot would otherwise hand the secret to whatever is
-// reading. Masking is accident-proofing, not a boundary — code that already
+// reading. Masking is accident-proofing, not a boundary: code that already
 // holds the secret can always move it some other way.
 //
 // Matching is exact byte matching, streamed: a value split across two writes
@@ -100,7 +100,7 @@ func (m *Masker) Write(p []byte) (int, error) {
 }
 
 // Flush emits the held tail. No more bytes are coming, so a partial prefix
-// can no longer complete — but a shorter secret inside the tail still can,
+// can no longer complete, but a shorter secret inside the tail still can,
 // so the tail is re-scanned for complete matches rather than emitted raw.
 func (m *Masker) Flush() error {
 	buf := m.carry
@@ -125,7 +125,7 @@ func (m *Masker) Flush() error {
 }
 
 // partialAt reports whether rest, in its entirety, is a proper prefix of some
-// secret — i.e. bytes still to come could complete a match. This deliberately
+// secret, i.e. bytes still to come could complete a match. This deliberately
 // outranks a shorter complete match at the same position: holding is always
 // safe (the next Write or Flush resolves it), while emitting early could split
 // a longer secret in two and leak its tail.

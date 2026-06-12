@@ -36,7 +36,7 @@ func (e *exitCodeError) Error() string {
 	return fmt.Sprintf("exit code %d", e.code)
 }
 
-// printJSON writes one indented JSON document to stdout — the machine-facing
+// printJSON writes one indented JSON document to stdout: the machine-facing
 // data surface (everything human-facing goes to stderr, so a --json stdout is
 // always exactly one parseable document).
 func printJSON(v any) error {
@@ -54,7 +54,7 @@ var storageFlag string
 
 // namespaceFlag addresses a vault namespace directly, with no project
 // checkout: the contract walk is skipped entirely, so it works from any
-// directory (or none — an MCP server has no meaningful cwd).
+// directory (or none, an MCP server has no meaningful cwd).
 var namespaceFlag string
 
 func init() {

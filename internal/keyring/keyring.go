@@ -17,7 +17,7 @@ import (
 )
 
 // Cache is a session-scoped cache for the unwrapped master key (its identity
-// string — never the passphrase, which unlocks every future rewrap and is
+// string: never the passphrase, which unlocks every future rewrap and is
 // strictly more valuable). Keyed by an opaque scope string (notenv uses a
 // length-prefixed remote+base, one entry per storage base, see
 // config.CacheScope). Implementations must never persist the key to disk.

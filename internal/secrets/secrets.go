@@ -2,13 +2,13 @@
 // holds for it: an append-only set of per-write segments over zero or more
 // folded snapshots. Each write appends a new, uniquely named segment, so
 // concurrent writers never overwrite one another. Reads fold the snapshots and
-// segments together by a Lamport clock — last write per key wins, ties between
+// segments together by a Lamport clock: last write per key wins, ties between
 // machines are reported as conflicts. Compaction collapses what it reads into a
 // fresh snapshot and deletes the objects it folded.
 //
 // Every object is one age message sealed under the master key, and every
 // object is bound to the vault's authenticated header by a manifest entry (a
-// keyed MAC of its plaintext — see internal/crypto). A fold trusts the
+// keyed MAC of its plaintext, see internal/crypto). A fold trusts the
 // manifest, not the storage listing: a manifest-listed object that is missing,
 // altered, or relocated is an alarm, and an object the manifest does not know
 // is folded in only when it can be nothing but an honest in-flight write.
@@ -33,7 +33,7 @@ import (
 
 // formatVersion is the on-storage schema version of segment and snapshot
 // objects (the secret values). Every object written carries it; a read rejects
-// any object stamped with a different version — higher means a newer notenv
+// any object stamped with a different version: higher means a newer notenv
 // wrote it, lower means an older layout this notenv no longer reads. The key
 // header (internal/crypto) is versioned separately by the same exact-match
 // rule. Bump only on an incompatible change to these payloads.
@@ -46,7 +46,7 @@ const formatVersion = 2
 // segment is one append: a single key write or deletion, ordered across
 // machines by a Lamport clock and, within a machine, by Seq. Description and
 // TS are advisory metadata riding the write: TS is wall-clock Unix seconds
-// (clocks lie, so it is never used for ordering — Lamport is the truth), and
+// (clocks lie, so it is never used for ordering; Lamport is the truth), and
 // both are carried into snapshot entries so compaction preserves them.
 type segment struct {
 	Version     int    `json:"v"`
@@ -63,7 +63,7 @@ type segment struct {
 
 // entry is one key's winning write in a snapshot, carrying the provenance
 // needed to merge the snapshot deterministically against later segments, plus
-// the write's advisory metadata — without it here, the first compaction would
+// the write's advisory metadata; without it here, the first compaction would
 // destroy every description and timestamp.
 type entry struct {
 	Value       string `json:"value"`
@@ -112,7 +112,7 @@ const DefaultCompactThreshold = 16
 
 // Meta is a live key's advisory metadata: what the secret is for and when its
 // winning write happened (wall-clock Unix seconds; 0 means the write predates
-// timestamps). Advisory means exactly that — nothing orders or trusts by it.
+// timestamps). Advisory means exactly that: nothing orders or trusts by it.
 type Meta struct {
 	Description string
 	TS          int64
@@ -255,7 +255,7 @@ func (n *Namespace) Append(ctx context.Context, prev *State, seq int, w Write) (
 // Compact folds the namespace into a single fresh snapshot and removes the
 // objects it folded, adopting any in-flight writes it found along the way. It
 // writes the new snapshot before deleting anything and only deletes objects it
-// read, so a write that lands concurrently — under a name it never listed — is
+// read, so a write that lands concurrently (under a name it never listed) is
 // never lost.
 //
 // commit makes the snapshot authoritative: it must apply the given manifest
@@ -322,7 +322,7 @@ func (n *Namespace) sweep(ctx context.Context, l *loaded, needFold bool, commit 
 // writeSnapshot folds l into a fresh verified snapshot object and extends the
 // delta that makes it authoritative: the snapshot's entry, plus every subsumed
 // object marked folded (adopted in-flight writes get their first entry already
-// folded — the snapshot subsumes them the moment it is recorded).
+// folded: the snapshot subsumes them the moment it is recorded).
 func (n *Namespace) writeSnapshot(ctx context.Context, l *loaded, delta *crypto.ManifestDelta) (string, error) {
 	snapKey, err := n.objectKey("snap")
 	if err != nil {
@@ -466,7 +466,7 @@ func (n *Namespace) openRecorded(ctx context.Context, l *loaded, key string) err
 // crashed): such a segment opens under the current master and carries a seq
 // above its machine's folded high-water mark, and is folded in and reported
 // adoptable. A stray segment at or below the mark can only be a deleted object
-// someone put back — the machine's own seqs already moved past it, and every
+// someone put back: the machine's own seqs already moved past it, and every
 // honest write is preceded by a fold that adopts whatever in-flight segments
 // exist before the seq can advance over them. Stray snapshots are reported for
 // cleanup without any further judgment, undecipherable ones included: no fold
@@ -562,7 +562,7 @@ func checkPayload(version int, object, key string) error {
 	case version > formatVersion:
 		return fmt.Errorf("%s was written by a newer notenv (format v%d, this build understands up to v%d); upgrade notenv", key, version, formatVersion)
 	case version < formatVersion:
-		return fmt.Errorf("%s was written by an older notenv (format v%d), and this version no longer reads it; upgrade the vault with notenv 0.8 (`notenv key migrate`) first", key, version)
+		return fmt.Errorf("%s was written in an older storage format (v%d) that this version of notenv no longer reads", key, version)
 	case object != key:
 		return fmt.Errorf("object %s declares it was written as %s: it was copied or renamed, and is not trusted", key, object)
 	}
@@ -669,8 +669,8 @@ func accumulate(l *loaded) (map[string]*winner, int) {
 
 // foldSnapshot accumulates a namespace into a snapshot of its live keys,
 // dropping tombstones (their job is done once nothing older survives). The
-// per-machine seq marks fold in everything — prior snapshots' marks and every
-// segment, tombstones included — so the marks never regress.
+// per-machine seq marks fold in everything (prior snapshots' marks and every
+// segment, tombstones included), so the marks never regress.
 func foldSnapshot(l *loaded) snapshot {
 	acc, maxLamport := accumulate(l)
 	s := snapshot{Version: formatVersion, Lamport: maxLamport, Seqs: map[string]int{}, Entries: map[string]entry{}}
@@ -714,7 +714,7 @@ func (w *winner) conflict(key string) Conflict {
 
 // with returns the state after applying one freshly written segment: the
 // segment is now the sole leader for its key, clearing any prior conflict there.
-// The classification slices are dropped on purpose — the caller's manifest
+// The classification slices are dropped on purpose: the caller's manifest
 // update consumes them alongside the new segment's own entry.
 func (s *State) with(seg segment) *State {
 	next := &State{Secrets: make(map[string]string, len(s.Secrets)), Meta: make(map[string]Meta, len(s.Meta)), lamport: seg.Lamport}

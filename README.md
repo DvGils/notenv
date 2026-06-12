@@ -21,7 +21,7 @@ notenv run -- npm run dev      # secrets injected as env vars, gone when the pro
 ```
 
 There is no server to run, no SaaS to sign up for, and nothing to install beyond notenv
-itself to get started. You hold the key; storage only ever sees ciphertext — and when
+itself to get started. You hold the key; storage only ever sees ciphertext, and when
 syncing across machines starts to matter, `notenv vault copy` moves the same vault to a
 cloud remote in one command.
 
@@ -32,7 +32,7 @@ cloud remote in one command.
 - Linux, macOS, or Windows. On Linux, notenv also caches your key and secrets in RAM for a
   faster, prompt-free workflow (see [Caching](#caching-and-performance)).
 - For **cloud remotes only**: [rclone](https://rclone.org/install/) on your `PATH` and a
-  storage remote you control (Backblaze B2, S3, and so on — notenv can create the remote
+  storage remote you control (Backblaze B2, S3, and so on; notenv can create the remote
   for you during setup). A local vault needs neither.
 
 ## Install
@@ -62,7 +62,7 @@ Homebrew and AUR packages are planned (see [Status](#status)).
 
 ## Quick start
 
-**1. Set up this machine once.** The default is a local vault — no accounts, no rclone,
+**1. Set up this machine once.** The default is a local vault: no accounts, no rclone,
 nothing but a passphrase (picking a cloud remote instead is the second option in the same
 prompt, and a local vault can move to one later):
 
@@ -80,8 +80,8 @@ cd my-project
 notenv init          # writes notenv.toml, which you commit
 ```
 
-**3. Add secrets.** Have a `.env` already? Import it whole — every value encrypted, every
-key declared — then delete it:
+**3. Add secrets.** Have a `.env` already? Import it whole (every value encrypted, every
+key declared), then delete it:
 
 ```sh
 notenv import .env && rm .env
@@ -186,7 +186,7 @@ fresh key while keeping all slots; see [Teams and key management](#teams-and-key
 | `notenv --version` | Print the version, commit, and build date. |
 
 Add `--storage NAME` to any command to target a specific [vault](#multiple-vaults). Add
-`--namespace NAME` to address a vault namespace directly from anywhere — no project, no
+`--namespace NAME` to address a vault namespace directly from anywhere: no project, no
 checkout; the contract (and its declarations) is bypassed entirely, so `run` injects every
 secret in the namespace.
 
@@ -244,8 +244,8 @@ mode = "passphrase"
 ```
 
 Storage settings are deliberately machine-only: a committed `notenv.toml` cannot redirect
-where your machine reads and writes secrets. A third, git-ignored file — **`notenv.local.toml`**,
-written by `notenv init` — records what this *checkout* has agreed to: which storage it uses
+where your machine reads and writes secrets. A third, git-ignored file (**`notenv.local.toml`**,
+written by `notenv init`) records what this *checkout* has agreed to: which storage it uses
 (when the machine has several) and which **namespace** it reads. The namespace pin matters: the
 committed contract chooses the namespace, so without it a cloned repository could silently point
 your machine at another project's secrets in the same vault. Using a namespace other than the
@@ -280,7 +280,7 @@ decrypt. All surviving slots keep working.
 **Other operations:** `notenv key rotate-master` re-keys the vault while keeping every slot (a
 precaution if a machine may be compromised). `notenv key rotate` changes your own passphrase.
 `notenv key list` shows the slots; `notenv key set-primary` transfers the advisory governance
-slot (the one `key rm` refuses to remove). Re-keys — including offboarding — propagate to the
+slot (the one `key rm` refuses to remove). Re-keys, including offboarding, propagate to the
 other machines automatically: each rotation is signed by the key it replaces, so everyone else
 verifies and follows without prompts or alarms.
 
@@ -295,7 +295,7 @@ add more; the first becomes the default.
 - `--storage NAME` overrides the choice for any command; use it in CI to pin the vault from
   outside the repo.
 - The committed `notenv.toml` never names a storage, and the namespace it names is pinned per
-  checkout — so cloning an untrusted project can't point your machine at a different vault, or
+  checkout, so cloning an untrusted project can't point your machine at a different vault, or
   silently at a different project's secrets within your vault.
 
 ## Caching and performance
@@ -307,7 +307,7 @@ To keep the workflow snappy, notenv caches two things on Linux:
 - **The encrypted blob** in `XDG_RUNTIME_DIR` (tmpfs), so a warm `notenv run` needs no
   network at all (default 1 hour, configurable via `storage.cache_ttl`). **Remote vaults
   only**: a local vault is its own disk, so its reads skip the cache and verify the vault
-  manifest every time — no second ciphertext copy, nothing to go stale.
+  manifest every time: no second ciphertext copy, nothing to go stale.
 
 Both caches are RAM-backed and cleared on logout or reboot. This is not only a speed-up but a
 **security property**: when the process exits there is no persistent cache for someone to
@@ -356,25 +356,25 @@ under the old master during its run. No write ever ends up encrypted to a key no
 ## Using notenv with AI agents
 
 Coding agents read everything: files, tool output, logs. A `.env` file on disk *will*
-eventually enter the model's context — `cat`-ed while debugging, swept up by a glob, or
-extracted by a prompt-injected instruction — and anything that enters context persists in
+eventually enter the model's context (`cat`-ed while debugging, swept up by a glob, or
+extracted by a prompt-injected instruction), and anything that enters context persists in
 transcripts and whatever the conversation touches next. notenv removes the file and gives the
 agent a verb that separates *using* credentials from *knowing* them:
 
 - **`notenv run -- cmd`** injects secrets into the child only; the value never appears in
   anything the model reads.
-- **`notenv list`** tells the agent *which* credentials exist — and, with per-secret
+- **`notenv list`** tells the agent *which* credentials exist, and, with per-secret
   descriptions (`set KEY --description "…"`), *what they are for*, so it can decide what's
   runnable without ever seeing a value. `notenv list --json` gives it a stable shape to parse.
-- **Captured output is masked.** When stdout/stderr is not a terminal — which is exactly how
-  agents and CI read output — any injected value a child prints (a server echoing its
+- **Captured output is masked.** When stdout/stderr is not a terminal (which is exactly how
+  agents and CI read output), any injected value a child prints (a server echoing its
   connection string on boot, a debug dump) is replaced with `<notenv-masked:NAME>` before the
   model sees it.
 - **Exit codes say whose failure it was.** `run` follows docker's convention: the child's
   code passes through; 125 is notenv's own failure, 126 found-but-can't-run, 127 not found.
   An agent retrying a flaky test never mistakes a vault problem for a code problem.
 - **No checkout needed.** `--namespace` (with `--storage`) addresses a vault directly from
-  anywhere — an agent wired to a database needs credentials, not a git repository.
+  anywhere: an agent wired to a database needs credentials, not a git repository.
 - **Read-only by policy.** Start an agent with `NOTENV_READONLY=1` (or mark a storage
   `read_only = true`) and every mutating command is refused. This constrains a cooperating
   client from having an accident; for *enforced* read-only, use a read-only storage
@@ -403,16 +403,16 @@ aren't shell-first (or machines with no checkout at all):
 claude mcp add notenv -- notenv mcp        # or any MCP client, stdio transport
 ```
 
-Two tools: `list_secrets` (names, descriptions, modified times — never values) and
+Two tools: `list_secrets` (names, descriptions, modified times, never values) and
 `run_with_secrets` (inject and execute; the agent gets the exit code and masked output).
-The vault must unlock without a prompt — set `NOTENV_IDENTITY`, or rely on a session-cached
+The vault must unlock without a prompt: set `NOTENV_IDENTITY`, or rely on a session-cached
 key. It is experimental: the tool surface may still change before it is frozen.
 
 **Honest limits:** this is accident-proofing, not a security boundary. An agent running as
 your user can still extract a value deliberately (any encoding defeats exact-byte masking:
 `notenv run -- sh -c 'printenv KEY | base64'`) or read the
 session key cache, and a child process that legitimately holds a secret can always send it
-somewhere — masking catches accidents, not intent. The same goes for read-only mode: with a
+somewhere; masking catches accidents, not intent. The same goes for read-only mode: with a
 single master key, anyone who can decrypt could author writes with their own tooling, so the
 flag stops accidents while the storage credential is what stops adversaries. A broker mode
 that keeps the unlocked key in a separate trust domain (so agents can *use* but provably not
@@ -433,27 +433,27 @@ that keeps the unlocked key in a separate trust domain (so agents can *use* but 
   different vault at the same location are all detected and refused (`notenv key forget` is
   the deliberate-reset escape hatch). **Legitimate master rotations need no ceremony on other
   machines**: each rotation is signed by the outgoing master, and a machine pinned at it
-  verifies the chain and follows silently — `notenv key trust` (which shows what changed and
+  verifies the chain and follows silently. `notenv key trust` (which shows what changed and
   asks) remains only for changes that carry no such proof. **Every stored secret object is
   bound to that authenticated header**: the header carries a manifest of the vault's objects
-  (a keyed fingerprint of each), and every object names the key it was written under — so
+  (a keyed fingerprint of each), and every object names the key it was written under, so
   deleting a stored write, reverting it, resurrecting a compacted one, or copying a real
   object into another namespace alarms with the object named, instead of silently changing
   what `notenv run` injects. They still cannot forge plaintext: a substituted blob they don't
   hold the key for fails to decrypt. Two honest limits: on *first* contact with a vault a
   machine has no prior pin to compare against (trust on first use), and a *former key holder*
-  who kept the master key and retains storage *write* can fork history — including signing
-  transitions onto the fork — in a way only machines pinned past the fork detect; rotate the
+  who kept the master key and retains storage *write* can fork history (including signing
+  transitions onto the fork) in a way only machines pinned past the fork detect; rotate the
   storage credential to cut them off (notenv advises this on `key rm` but, not owning the
   storage, can't enforce it). Deletion of blobs remains an availability concern: detection
-  doesn't recover bytes — object versioning (the default on B2) does.
+  doesn't recover bytes; object versioning (the default on B2) does.
 - **A cloned, untrusted project:** the committed `notenv.toml` can redirect neither your
-  storage (machine-only) nor — silently — your namespace: the namespace is pinned per
+  storage (machine-only) nor, silently, your namespace: the namespace is pinned per
   checkout, an unusual one is confirmed before first use, and a contract that changes its
   namespace later is refused (see [Configuration](#configuration)). Explicit `--namespace`
   use gets the same first-use confirmation, recorded per user instead of per checkout.
 - **Read-only mode is policy, not crypto:** `read_only` / `NOTENV_READONLY` make notenv
-  refuse writes — protection against a cooperating client's accident, never against an
+  refuse writes: protection against a cooperating client's accident, never against an
   adversary (with a single master key, read capability is write capability: anyone who can
   decrypt can author valid writes with their own tooling). Enforced read-only is the
   storage credential's job; cryptographic read-only identities require a key split and are
@@ -499,8 +499,8 @@ version-pinned headers (vanished-header and vault-replacement detection included
 rotation transitions**, so legitimate re-keys propagate to every machine without prompts; a
 **header manifest binding every stored object** to the authenticated header, so storage-level
 tamper with any single secret (revert, delete, replay, relocate) alarms naming the object;
-append-only writes so concurrent `set`s never lose each other — including against a concurrent
-master rotation — with automatic compaction keeping reads fast; per-checkout namespace pinning
+append-only writes so concurrent `set`s never lose each other (including against a concurrent
+master rotation) with automatic compaction keeping reads fast; per-checkout namespace pinning
 with join confirmation; [masked captured output](#using-notenv-with-ai-agents); multiple
 storages per machine; passphrase or identity unlock; Linux key/blob caching. Releases are
 reproducible, cosign-signed, and carry SLSA build provenance.

@@ -1,5 +1,5 @@
 // Package dotenv parses the subset of .env syntax `notenv import` accepts.
-// The dialect is documented and deliberately small — an importer for secrets
+// The dialect is documented and deliberately small. An importer for secrets
 // must never guess:
 //
 //   - blank lines and full-line `#` comments are skipped; an unquoted value
@@ -11,7 +11,7 @@
 //   - there is no variable expansion of any kind: a secrets file is not a
 //     shell script, and silently expanding `$X` would corrupt real values
 //
-// Anything else — a line without `=`, an unterminated quote, a stray escape —
+// Anything else (a line without `=`, an unterminated quote, a stray escape)
 // fails the parse with its line number, so an import is all-or-nothing.
 package dotenv
 
