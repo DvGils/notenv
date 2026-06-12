@@ -56,15 +56,54 @@ matter, `notenv vault copy` moves the same vault to a cloud remote in one comman
 
 ## Why notenv
 
-The secrets-tooling space is good, but there is a specific gap:
+Your secrets are probably in a `.env` file right now. That means:
 
-- **[SOPS](https://getsops.io) + age** nail client-side encryption and process injection, but you
-  hand-roll the storage and the onboarding.
-- **[Teller](https://github.com/tellerops/teller)** brokers cloud secret managers (Vault, AWS / GCP
-  Secret Manager), but it is per-provider code and the provider holds your secrets.
+- **Everything on your machine can read them.** Your test runner, some package's postinstall
+  script, and any coding agent working in your checkout are one read away. An agent that opens
+  your `.env` while debugging has just copied your production credentials into a model context and
+  a transcript you don't control.
+- **Sharing them means pasting them.** A teammate needs the project's secrets, so the file goes
+  over chat. Now it lives in message history, in a downloads folder, on a laptop that will
+  eventually be sold. And when someone leaves, nothing expires: there is nothing to revoke.
+- **The official fixes want you to become an operator.** Run a Vault server, or create and manage
+  a cloud account just to have somewhere to put five secrets: a subscription, IAM wiring, an SDK
+  in your app, and a provider sitting between you and your own credentials.
 
-notenv is the middle ground: SOPS-style client-side encryption, the storage reach of rclone, and
-dotenv ergonomics, with zero infrastructure.
+notenv removes the file instead of guarding it. Secrets are encrypted on your machine, live as
+ciphertext in a local vault or on storage you already own, and exist in plaintext only inside the
+environment of the process you run, for as long as it runs. Storage means **anything
+[rclone](https://rclone.org) speaks**: Backblaze B2, S3, Google Drive, Dropbox, SFTP, WebDAV,
+dozens more. Your vault can live on the NAS under your desk, and nobody can stop you from keeping
+it on the SFTP server in your smart fridge. There is nothing to operate and nobody else to trust:
+you hold the key, storage holds ciphertext, and the
+[threat model](security/threat-model.md) says precisely what that
+does and does not protect.
+
+Reach for it when:
+
+- **you're one developer who wants to do this right**, without standing up an account at a cloud
+  provider and managing it forever just to have a key vault: `notenv setup` is one passphrase,
+  zero accounts, and you're done;
+- **a coding agent works in your repository**, and "the agent can run the app without ever seeing
+  the database password" should be a property, not a hope;
+- **a teammate needs in**: onboarding is one command and a string over chat, their first use
+  replaces it with a credential only they know, and offboarding re-encrypts everything, so leaving
+  actually revokes;
+- **CI needs thirty secrets**, and the CI secret store should hold one;
+- **a laptop dies**, and the recovery plan should be "the passphrase in my password manager", not
+  "which machine had the newest .env".
+
+And honestly, when not: notenv is not a platform. There is no web console, no SSO, and access is
+scoped per vault rather than per secret: everyone in a vault can read that vault, and you scope by
+making vaults (one per project or per environment is one `setup` away). If your organization has a
+platform team running Vault, keep Vault.
+
+### How it compares
+
+For readers who know the space: [SOPS](https://getsops.io) + age nail client-side encryption and
+process injection but leave storage and onboarding to you; [Teller](https://github.com/tellerops/teller)
+brokers cloud secret managers, where the provider holds your secrets. notenv is client-side
+encryption with the storage and the onboarding built in, and no provider in the loop.
 
 | | notenv | teller | SOPS + age (DIY) |
 |---|---|---|---|
