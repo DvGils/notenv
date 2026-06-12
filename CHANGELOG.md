@@ -4,7 +4,28 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
-## 0.8.0 (unreleased)
+## 0.9.0 (unreleased)
+
+The no-shims release: 0.8.0's one-shot migration has done its job and is gone, and the
+project's scarcest quality resource — fuzzer-hours — now accumulates every night.
+
+### Added
+
+- **Nightly fuzzing.** All three simulation targets (the secret log, rotation interleavings,
+  storage-level attacks) run twenty minutes each every night with full input minimization,
+  against the in-memory store for maximum path throughput. The working corpus persists
+  between nights and compounds on top of the committed seeds; a crashing input is uploaded
+  as an artifact, ready to be committed as a regression seed alongside its fix. (A separate
+  nightly soak against a real remote is planned next.)
+
+### Removed
+
+- **`notenv key migrate`** and the version-1 payload reading path, per the rule that
+  migration logic lives exactly one release. A vault still on the old formats upgrades by
+  running notenv 0.8's `notenv key migrate` once, then returning here; this version's errors
+  say exactly that.
+
+## 0.8.0
 
 Every stored secret is now bound to the vault's authenticated header. Until now the header was
 tamper-evident but the objects holding the values were not: a party with storage write access
