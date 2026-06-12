@@ -21,8 +21,9 @@ Nothing else to restore. The committed `notenv.toml` and your password manager a
 If you are joining a vault someone else owns (rather than restoring your own), you still end up
 with a passphrase only you know; the owner just opens the door:
 
-1. The owner runs `notenv key add you` and sends you the **one-time onboarding passphrase** it
-   prints, over a private channel.
+1. The owner runs `notenv key add you` and sends you the **one-time onboarding string** it
+   prints (a generated passphrase plus a code that fingerprints the vault), over a private
+   channel.
 
 2. Point this machine at the same storage and run:
 
@@ -30,8 +31,9 @@ with a passphrase only you know; the owner just opens the door:
     notenv setup
     ```
 
-    Enter the one-time passphrase. notenv immediately makes you replace it with your own; the
-    one-time passphrase stops working, and from then on the owner knows no credential of yours.
+    Enter the whole string. notenv verifies you reached the vault you were invited to (not a
+    substitute), then immediately makes you replace the passphrase with your own; the one-time
+    passphrase stops working, and from then on the owner knows no credential of yours.
 
 3. Escrow your new passphrase in your password manager and you are ready: `notenv run -- ...`
 

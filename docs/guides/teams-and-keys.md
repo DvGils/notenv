@@ -21,10 +21,11 @@ session. Adding or removing a slot rewraps only the header, never the secrets.
     notenv key add alice
     ```
 
-    notenv generates a high-entropy **one-time onboarding passphrase** and prints it once.
+    notenv prints a **one-time onboarding string**: a generated high-entropy passphrase plus a
+    short code that fingerprints your vault, like `pupil-spend-fresh-flap-skit-shun/5pa7xxh6xspq`.
 
-2. Send that passphrase to Alice over a private channel (a chat message is fine; see the note below
-   on what an interceptor would need).
+2. Send that string to Alice over a private channel (a chat message is fine; see the note below on
+   what an interceptor would need).
 
 3. **Alice** points her machine at the same storage and runs:
 
@@ -32,8 +33,11 @@ session. Adding or removing a slot rewraps only the header, never the secrets.
     notenv setup
     ```
 
-    She enters the one-time passphrase, and notenv immediately makes her replace it with a
-    passphrase only she knows. The one-time passphrase stops working at that moment. Until she does
+    She enters the whole string at the passphrase prompt. notenv verifies the code against the
+    vault the storage actually served, so a substituted vault is refused before her machine trusts
+    anything (a legitimate re-key between your invite and her first contact proves itself through
+    the signed rotation chain and passes). Then it immediately makes her replace the passphrase
+    with one only she knows; the one-time passphrase stops working at that moment. Until she does
     this, no notenv command will proceed for her, and `notenv key list` shows her slot as
     **provisional** so you can see the onboarding is not finished.
 
@@ -45,9 +49,10 @@ yours.
 
     The one-time passphrase alone decrypts nothing: the vault lives on your storage, not in the
     chat. An adversary would need the passphrase **and** read access to your storage **during the
-    minutes before Alice replaces it**. If you ever suspect that window was compromised, or a slot
-    stays provisional suspiciously long, run `notenv key rotate-master` (and `notenv key rm` the
-    slot): a fresh master key makes anything an interceptor captured useless.
+    minutes before Alice replaces it**, and to defeat the fingerprint they would additionally need
+    your vault's master key. If you ever suspect that window was compromised, or a slot stays
+    provisional suspiciously long (`notenv doctor` flags it), run `notenv key rotate-master` (and
+    `notenv key rm` the slot): a fresh master key makes anything an interceptor captured useless.
 
 !!! note "Onboarding needs write access"
 

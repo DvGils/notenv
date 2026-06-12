@@ -26,6 +26,12 @@ the conversation touches next. notenv removes the file and gives the agent a ver
 - **Unlock prompts reach the human, not the model.** Passphrase prompts read the terminal device
   directly, so when an agent's command needs an unlock, the question goes to whoever is at the
   keyboard.
+- **Unmasked output needs a human.** `run --no-mask` asks for a freshly typed passphrase even when
+  the session key is cached, so an agent cannot turn masking off by itself.
+- **First use of an existing namespace needs a human too.** Headless, notenv refuses to expose a
+  namespace that already holds secrets unless the harness's environment names it
+  (`NOTENV_ACCEPT_NAMESPACE=name`), so neither a cloned repository's contract nor a misdirected
+  `--namespace` can silently reach another project's secrets.
 
 ## Drop this in your `AGENTS.md` / `CLAUDE.md`
 
