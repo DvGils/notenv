@@ -42,6 +42,8 @@ jobs:
         # A bounded run: the seed corpus always executes, plus brief mutation.
         # Deterministic, so a correct tree always passes; any broken invariant fails.
         run: go test -run='^$' -fuzz='^FuzzSecretLog$' -fuzztime=30s ./internal/secrets/
+      - name: fuzz rotation interleavings (short smoke)
+        run: go test -run='^$' -fuzz='^FuzzRotationLog$' -fuzztime=30s ./internal/secrets/
 
   cross-build:
     runs-on: ubuntu-latest
