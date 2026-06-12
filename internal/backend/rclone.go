@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -39,7 +40,7 @@ func RcloneInstalled() bool {
 
 // ListRemotes returns the names of the user's configured rclone remotes.
 func ListRemotes(ctx context.Context) ([]string, error) {
-	out, err := runRclone(ctx, nil, "listremotes")
+	out, err := runRclone(ctx, nil, []string{"listremotes"})
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +56,7 @@ func ListRemotes(ctx context.Context) ([]string, error) {
 // RemoteType returns a remote's backend type (for example "b2" or "s3").
 // Reads the local rclone config only, no network.
 func RemoteType(ctx context.Context, name string) (string, error) {
-	out, err := runRclone(ctx, nil, "listremotes", "--long")
+	out, err := runRclone(ctx, nil, []string{"listremotes", "--long"})
 	if err != nil {
 		return "", err
 	}
@@ -75,11 +76,11 @@ func RemoteType(ctx context.Context, name string) (string, error) {
 // passwords, which may guard a whole server (prefer key-based SFTP auth).
 // Revisit if rclone grows a stdin-based config path.
 func CreateRemote(ctx context.Context, name, kind string, params map[string]string) error {
-	args := []string{"config", "create", name, kind}
+	paths := []string{name, kind}
 	for key, value := range params {
-		args = append(args, key+"="+value)
+		paths = append(paths, key+"="+value)
 	}
-	_, err := runRclone(ctx, nil, args...)
+	_, err := runRclone(ctx, nil, []string{"config", "create"}, paths...)
 	return err
 }
 
@@ -106,17 +107,17 @@ func (s *RcloneStorage) Preflight(ctx context.Context) error {
 func (s *RcloneStorage) Probe(ctx context.Context) error {
 	path := s.basePath() + "/.notenv-probe"
 	marker := []byte("notenv storage probe (safe to delete)")
-	if _, err := runRclone(ctx, marker, "rcat", path); err != nil {
+	if _, err := runRclone(ctx, marker, []string{"rcat"}, path); err != nil {
 		return fmt.Errorf("probe write failed: %w", err)
 	}
-	got, err := runRclone(ctx, nil, "cat", path)
+	got, err := runRclone(ctx, nil, []string{"cat"}, path)
 	if err != nil {
 		return fmt.Errorf("probe read-back failed: %w", err)
 	}
 	if !bytes.Equal(got, marker) {
 		return errors.New("probe read back different content than written")
 	}
-	if _, err := runRclone(ctx, nil, "deletefile", path); err != nil {
+	if _, err := runRclone(ctx, nil, []string{"deletefile"}, path); err != nil {
 		return fmt.Errorf("probe cleanup failed: %w", err)
 	}
 	return nil
@@ -131,7 +132,7 @@ func (s *RcloneStorage) Get(ctx context.Context, key string) ([]byte, error) {
 // missing path treats it as a directory and concatenates its (zero) files
 // (exit 0, empty output), and an empty result can never be a valid age blob.
 func (s *RcloneStorage) catObject(ctx context.Context, path string) ([]byte, error) {
-	out, err := runRclone(ctx, nil, "cat", path)
+	out, err := runRclone(ctx, nil, []string{"cat"}, path)
 	if err != nil {
 		if isNotFoundExit(err) {
 			return nil, ErrNotFound
@@ -145,12 +146,12 @@ func (s *RcloneStorage) catObject(ctx context.Context, path string) ([]byte, err
 }
 
 func (s *RcloneStorage) Put(ctx context.Context, key string, data []byte) error {
-	_, err := runRclone(ctx, data, "rcat", s.objectPath(key))
+	_, err := runRclone(ctx, data, []string{"rcat"}, s.objectPath(key))
 	return err
 }
 
 func (s *RcloneStorage) Delete(ctx context.Context, key string) error {
-	if _, err := runRclone(ctx, nil, "deletefile", s.objectPath(key)); err != nil {
+	if _, err := runRclone(ctx, nil, []string{"deletefile"}, s.objectPath(key)); err != nil {
 		if isNotFoundLoose(err) {
 			return nil // already gone
 		}
@@ -166,7 +167,7 @@ func (s *RcloneStorage) List(ctx context.Context, prefix string) ([]string, erro
 	if clean != "" {
 		root += "/" + clean
 	}
-	out, err := runRclone(ctx, nil, "lsf", "-R", "--files-only", root)
+	out, err := runRclone(ctx, nil, []string{"lsf", "-R", "--files-only"}, root)
 	if err != nil {
 		if isNotFoundExit(err) {
 			return nil, nil // prefix doesn't exist yet, so no objects
@@ -200,7 +201,7 @@ func (s *RcloneStorage) GetHeader(ctx context.Context) ([]byte, error) {
 // protocol (internal/keymgmt) calls BackupHeader before this, because a
 // clobbered header locks the user out of every blob under it.
 func (s *RcloneStorage) PutHeader(ctx context.Context, raw []byte) error {
-	_, err := runRclone(ctx, raw, "rcat", s.basePath()+"/"+headerObject)
+	_, err := runRclone(ctx, raw, []string{"rcat"}, s.basePath()+"/"+headerObject)
 	return err
 }
 
@@ -246,7 +247,7 @@ func (s *RcloneStorage) BackupHeader(ctx context.Context) error {
 	}
 	src := s.basePath() + "/" + headerObject
 	dst := s.basePath() + "/" + headerBackupObject
-	if _, err := runRclone(ctx, nil, "copyto", src, dst); err != nil {
+	if _, err := runRclone(ctx, nil, []string{"copyto"}, src, dst); err != nil {
 		if isNotFoundLoose(err) {
 			return nil // no header yet, nothing to back up
 		}
@@ -265,7 +266,7 @@ func (s *RcloneStorage) RestoreHeaderBackup(ctx context.Context) error {
 	}
 	src := s.basePath() + "/" + headerBackupObject
 	dst := s.basePath() + "/" + headerObject
-	if _, err := runRclone(ctx, nil, "copyto", src, dst); err != nil {
+	if _, err := runRclone(ctx, nil, []string{"copyto"}, src, dst); err != nil {
 		if isNotFoundLoose(err) {
 			return ErrNotFound
 		}
@@ -283,8 +284,17 @@ func (s *RcloneStorage) objectPath(key string) string {
 }
 
 // runRclone runs the binary with stdin (may be nil) and returns stdout.
-// Errors include rclone's stderr for diagnosability.
-func runRclone(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+// Errors include rclone's stderr for diagnosability. args holds the
+// subcommand and flags (literals chosen by this package); paths holds the
+// positional operands, which may embed user-influenced names, so the sink
+// itself separates the two with an end-of-options marker. Upstream
+// validation already keeps a leading dash out of every name that reaches
+// here; this keeps the property local to the exec boundary instead of
+// depending on a different package.
+func runRclone(ctx context.Context, stdin []byte, args []string, paths ...string) ([]byte, error) {
+	if len(paths) > 0 {
+		args = append(append(slices.Clip(args), "--"), paths...)
+	}
 	cmd := exec.CommandContext(ctx, "rclone", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

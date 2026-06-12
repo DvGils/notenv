@@ -35,8 +35,15 @@ notenv itself never stores an identity on disk anywhere.
 NAME` addresses a namespace directly when there is no checkout:
 
 ```sh
+export NOTENV_ACCEPT_NAMESPACE=my-service   # CI checkouts are fresh every run; name what this job may use
 notenv run --storage prod --namespace my-service -- ./deploy.sh
 ```
+
+The first use of a namespace that already holds secrets needs confirmation, and in CI nobody can
+answer: notenv refuses unless `NOTENV_ACCEPT_NAMESPACE` names the namespace. The value is exact
+names, never a blanket yes, so a malicious repository's committed `notenv.toml` cannot point a
+shared runner at another project's secrets. See
+[Environment variables](../reference/environment.md).
 
 ## Read exit codes
 

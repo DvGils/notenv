@@ -89,12 +89,15 @@ func identityRecipients(ids []age.Identity) []string {
 // unlockResult is what resolveUnlock returns: the master key, the slot that
 // opened, a reverify closure (re-unlocks a possibly-rewritten header with the
 // same credential, for SafePut's post-write check), and, for a passphrase
-// unlock, the slot private key (needed by `key rotate`).
+// unlock, the slot private key (needed by `key rotate`). fingerprint carries
+// the vault code parsed off an onboarding string, for the caller to verify
+// against the served header before trusting it.
 type unlockResult struct {
-	mk       *crypto.MasterKey
-	slot     int
-	reverify func(*crypto.Header) (*crypto.MasterKey, error)
-	slotKey  *age.X25519Identity // set only for passphrase unlock
+	mk          *crypto.MasterKey
+	slot        int
+	reverify    func(*crypto.Header) (*crypto.MasterKey, error)
+	slotKey     *age.X25519Identity // set only for passphrase unlock
+	fingerprint string
 }
 
 // resolveUnlock unlocks an existing header with whatever credential is
@@ -140,25 +143,34 @@ func resolveUnlock(header *crypto.Header, joinHint bool) (*unlockResult, error) 
 			ui.Infof("configured identity matches no slot here; using your passphrase")
 		}
 	}
-	pass, err := keyring.PromptPassphrase("Passphrase: ")
+	entered, err := keyring.PromptPassphrase("Passphrase: ")
 	if err != nil {
 		return nil, err
 	}
+	// An onboarding string carries the vault fingerprint after a slash; a
+	// chosen passphrase that merely looks like one is covered by retrying
+	// the full entry when the split half opens nothing.
+	pass, fingerprint := splitOnboardingString(entered)
 	var mk *crypto.MasterKey
 	var slot int
 	var slotKey *age.X25519Identity
 	if err := ui.Spin("Unlocking key slot (scrypt)", func() error {
 		var unlockErr error
 		mk, slot, slotKey, unlockErr = header.Unlock(pass)
+		if errors.Is(unlockErr, crypto.ErrWrongPassphrase) && fingerprint != "" {
+			pass, fingerprint = entered, ""
+			mk, slot, slotKey, unlockErr = header.Unlock(pass)
+		}
 		return unlockErr
 	}); err != nil {
 		return nil, err
 	}
 	held := pass
 	return &unlockResult{
-		mk:       mk,
-		slot:     slot,
-		slotKey:  slotKey,
-		reverify: func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock(held); return m, e },
+		mk:          mk,
+		slot:        slot,
+		slotKey:     slotKey,
+		fingerprint: fingerprint,
+		reverify:    func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock(held); return m, e },
 	}, nil
 }

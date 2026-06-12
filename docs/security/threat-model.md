@@ -142,10 +142,13 @@ What holds, and against whom.
   :white_check_mark:
 - **Against a malicious committed contract (a cloned repository):** the contract cannot choose where
   this machine reads or writes (storage is machine-config only), and the **namespace it names is pinned
-  per checkout** on first use: pinning a namespace other than the directory's name requires interactive
-  confirmation, and a contract that later renames its namespace is refused until explicitly re-accepted
-  (`notenv init`). A malicious clone cannot silently point `notenv run` at another project's secrets in
-  your vault. :white_check_mark:
+  per checkout** on first use: pinning a namespace other than the directory's name, or joining one that
+  already holds secrets, requires interactive confirmation, and where nobody can answer (CI, agent
+  harnesses) notenv **refuses** unless the runner's own environment names that exact namespace
+  (`NOTENV_ACCEPT_NAMESPACE`; a committed contract cannot write the runner's environment). A contract
+  that later renames its namespace is refused until explicitly re-accepted (`notenv init`). A malicious
+  clone cannot silently point `notenv run` at another project's secrets in your vault, interactively or
+  headless. :white_check_mark:
 
 ### Captured output (logs, CI, agent context)
 
@@ -155,8 +158,10 @@ What holds, and against whom.
   to the CI log, the shell pipeline, or the LLM reading the tool output. Best-effort by construction:
   exact byte matching (an encoded or transformed value passes through), values shorter than 6 bytes are
   skipped, and a live terminal is wired through untouched unless `--mask` is given. This is
-  **accident-proofing for the dominant real-world leak, not a boundary**. See [Non-goals](#non-goals).
-  :white_check_mark: (qualified)
+  **accident-proofing for the dominant real-world leak, not a boundary**. Turning masking off for a
+  captured stream (`--no-mask`) requires a freshly typed passphrase even when the session key is
+  cached, so it is a human's act, never an agent's; the same gate will guard any future command that
+  prints stored values. See [Non-goals](#non-goals). :white_check_mark: (qualified)
 - The experimental MCP server (`notenv mcp`) keeps the same line: its tools list names and descriptions
   or run commands with secrets injected, always masking the captured output: no tool returns a secret
   value to the model. The same qualification applies. :white_check_mark: (qualified)
@@ -214,7 +219,9 @@ notenv does **not** defend these, by design. Treating them as in-scope would be 
   recovers prior bytes, but notenv does not guarantee availability.
 - **A weak passphrase.** Someone with read access to your storage can attempt an offline brute-force
   against the scrypt-wrapped passphrase slot. scrypt raises the cost, but a weak passphrase is the weak
-  link. The passphrase is the root of trust; use a strong one.
+  link. The passphrase is the root of trust; notenv offers to generate a strong one at creation (and
+  always generates the onboarding ones), and warns about short choices, but cannot stop a determined
+  weak choice.
 - **The credential stores themselves.** Protecting your password manager, and the platform secret
   store that holds a machine's identity, is outside notenv. notenv's contribution is structural: it
   never writes a credential to disk, so there is no notenv-owned artifact to protect (see
@@ -226,10 +233,18 @@ notenv does **not** defend these, by design. Treating them as in-scope would be 
 
 ## Known limitations
 
-These are real, documented gaps, not oversights:
+These are real, documented gaps, not oversights. `notenv doctor` checks a storage for the
+recoverable states described here and below and names the way out of each:
 
-- **Trust on first use.** On a machine's *first* contact with a vault it has no prior revision to
-  compare against, so it cannot detect a rollback or substitution that predates its first sight.
+- **Trust on first use, narrowed.** On a machine's *first* contact with a vault it has no prior
+  revision to compare against, so it cannot detect a rollback or substitution that predates its
+  first sight. For **onboarded teammates this is closed**: the onboarding string carries a
+  fingerprint of the vault's identity and signing key, the first contact verifies the served
+  header against it before anything is pinned, and a re-key between invite and first contact
+  proves itself through the signed rotation chain. Defeating it requires the vault's master key
+  (or grinding a 60-bit digest collision) *in addition to* the intercepted one-time passphrase.
+  TOFU remains for the vault creator's own machines and for identity-enrolled machines, whose
+  operator provisioned the storage deliberately.
 - **Warm-cache runs defer the pin checks.** With the master key cached, a run never reads the header, so
   rollback / master-change / vanished-header detection happens on cold unlocks, at most one cache TTL
   (default 1 hour) after the event, not instantly. Writes are unaffected: they re-read the header after

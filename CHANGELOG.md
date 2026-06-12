@@ -4,6 +4,60 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.14.0
+
+The hardening and dailiness release. A security audit of 0.13 (no High or Medium findings)
+and a sweep of the threat model's own caveats drive most of it: the gaps that were wrinkles
+rather than physics get closed, and the daily loop gets its missing verb.
+
+### Added
+
+- **`notenv edit`: bulk editing that never displays a value.** The `$EDITOR` buffer shows
+  every existing value as `<keep>`: replace it to set, delete the line to unset, add lines
+  to create, edit the comment above a key to change its description. The diff lands as one
+  recorded write, new keys are declared in the contract, and a key that also changed on
+  another machine while the buffer was open stops the save with the key named. The buffer
+  never contains stored plaintext, so it can leak at most what you typed into it; it lives
+  in the RAM-backed runtime dir on Linux and is removed on exit and on signals.
+- **The onboarding string now proves which vault it is for.** `key add` prints the one-time
+  passphrase with a short fingerprint of the vault appended; the invited teammate's first
+  contact verifies the served header against it before anything is trusted, so a
+  substituted vault is refused instead of silently pinned. A legitimate re-key between the
+  invite and first contact passes by proving itself through the signed rotation chain.
+  Trust-on-first-use is closed for onboarded teammates.
+- **`notenv doctor`.** One read-only checkup for the known problem states: a vanished or
+  unreadable header, a pending rollback, a replaced vault, unfinished onboarding, objects a
+  crashed write left unrecorded, recorded objects that are missing. It recommends and never
+  fixes, never prompts, and exits 1 on findings so CI can run it.
+- **Generated root passphrases.** `setup` accepts Enter to generate a six-word passphrase,
+  printed once; typed passphrases under 12 characters draw a warning naming the offline
+  brute-force attack, at creation, at `key rotate`, and during onboarding.
+
+### Changed
+
+- **Namespace confirmation fails closed without a terminal** (audit finding). The first use
+  of a namespace that already holds secrets used to warn and proceed in CI and agent
+  harnesses; a malicious repository's committed contract on a shared runner could reach
+  another project's secrets that way. It now refuses unless `NOTENV_ACCEPT_NAMESPACE` names
+  the exact namespace; the value is a list of names rather than a yes-flag, because a
+  contract cannot write the runner's environment. Breaking for CI flows that relied on the
+  warn-and-proceed behavior: add the variable to the pipeline.
+- **`run --no-mask` asks for a freshly typed passphrase**, even when the session key is
+  cached. Sending raw secret values to a captured stream is now a human's act: prompts read
+  the terminal device, so an agent holding a warm cache cannot complete one. Strict on
+  purpose: no identity satisfies it and no environment variable bypasses it.
+- **rclone invocations carry an end-of-options marker** (audit hardening). The argv builder
+  separates flags from paths itself, so the guarantee that no name is ever parsed as a flag
+  lives at the exec boundary instead of in upstream validation.
+
+### Documentation
+
+- The threat model narrows its trust-on-first-use limitation (closed for onboarded
+  teammates), upgrades the malicious-contract property to cover headless runners, and
+  cross-references `doctor` from the known limitations. The teams, new-machine, CI, agents,
+  and environment pages cover the onboarding string, `NOTENV_ACCEPT_NAMESPACE`, and the
+  unmask gate.
+
 ## 0.13.0
 
 The principals release: passphrases are for people, identities are for machines. A vault

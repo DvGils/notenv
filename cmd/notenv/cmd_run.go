@@ -31,9 +31,11 @@ appearing in that stream is replaced with <notenv-masked:NAME> before it can
 land in a log or an LLM context. A live terminal is wired through untouched,
 so colors and interactive programs keep working; --mask forces masking there
 too, --no-mask disables it everywhere (e.g. when a consumer needs the raw
-bytes). Masking is accident-proofing for output, not a security boundary:
-values shorter than 6 bytes pass through, and code that holds a secret can
-always move it some other way.
+bytes). Because --no-mask sends raw values to a captured stream, it asks for
+your passphrase even when the session key is cached: plaintext egress needs a
+human present. Masking is accident-proofing for output, not a security
+boundary: values shorter than 6 bytes pass through, and code that holds a
+secret can always move it some other way.
 
 Exit codes (docker's convention): the child's own exit code passes through;
 125 means notenv itself failed, 126 the command was found but cannot run,
@@ -60,6 +62,11 @@ func runChild(cmd *cobra.Command, args []string) error {
 	a, err := loadApp(cmd.Context())
 	if err != nil {
 		return err
+	}
+	if runNoMask {
+		if err := a.requireHumanPassphrase(cmd.Context(), "--no-mask sends raw secret values to a captured stream"); err != nil {
+			return err
+		}
 	}
 	res, err := a.fetchSecrets(cmd.Context(), runRefresh)
 	if err != nil {
@@ -128,5 +135,5 @@ func init() {
 	runCmd.Flags().SetInterspersed(false)
 	runCmd.Flags().BoolVar(&runRefresh, "refresh", false, "bypass the local cache and pull the latest secrets (e.g. after a change on another machine)")
 	runCmd.Flags().BoolVar(&runMask, "mask", false, "mask secret values in output even on a live terminal")
-	runCmd.Flags().BoolVar(&runNoMask, "no-mask", false, "never mask output (interactive/TUI programs needing a real pipe of raw bytes)")
+	runCmd.Flags().BoolVar(&runNoMask, "no-mask", false, "never mask output (asks for your passphrase: raw values may reach a captured stream)")
 }

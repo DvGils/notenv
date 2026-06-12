@@ -44,6 +44,22 @@ NOTENV_READONLY=1 notenv run -- ./run-tests.sh
     Backblaze B2 application key behind the remote, or read-only directory permissions on a local
     vault). See the [threat model](../security/threat-model.md).
 
+## `NOTENV_ACCEPT_NAMESPACE`
+
+A comma-separated list of namespaces this runner's operator accepts without a prompt. The first use
+of a namespace that already holds secrets normally asks for interactive confirmation; where nobody
+can answer (CI, agent harnesses), notenv **refuses** instead of proceeding, unless this variable
+names the exact namespace being accepted.
+
+```sh
+NOTENV_ACCEPT_NAMESPACE=my-service notenv run --storage prod --namespace my-service -- ./deploy.sh
+```
+
+The value is deliberately a list of names, not a yes-flag: a committed `notenv.toml` cannot write
+the runner's environment, so a match is the operator's own statement of intent, while a blanket
+yes would be satisfied by whatever namespace a malicious contract names. See the
+[threat model](../security/threat-model.md).
+
 ## `XDG_RUNTIME_DIR` (Linux)
 
 On Linux, notenv caches the encrypted blob under `XDG_RUNTIME_DIR` (tmpfs), and the master key in the

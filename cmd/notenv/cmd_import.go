@@ -133,10 +133,16 @@ func runImport(cmd *cobra.Command, a *app, file string, items []importItem, skip
 		}
 	}
 
+	// An import overwrites values, not what the keys mean: each write
+	// carries the key's existing description forward.
+	writes := make([]secrets.Write, 0, len(items))
+	for _, it := range items {
+		writes = append(writes, secrets.Write{Key: it.storageKey, Value: it.value, Description: state.Meta[it.storageKey].Description})
+	}
 	var updated *secrets.State
 	if err := ui.Spin(fmt.Sprintf("Encrypting and recording %d secrets", len(items)), func() error {
 		var aerr error
-		updated, aerr = a.appendGuardedBatch(ctx, view, state, items)
+		updated, aerr = a.appendGuardedBatch(ctx, view, state, writes)
 		return aerr
 	}); err != nil {
 		return err

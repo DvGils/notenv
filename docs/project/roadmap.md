@@ -26,7 +26,6 @@ and what is deliberately out of scope.
   agents, turning "agents shouldn't see credentials" from a convention into a boundary.
 - **Hardware-backed key slots** (YubiKey, FIDO2, TPM) via age plugins: a human slot whose credential
   cannot be exfiltrated at all.
-- **`notenv edit`** for bulk edits in `$EDITOR`.
 - **Homebrew / AUR / Scoop** packages.
 
 ## Non-goals

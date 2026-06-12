@@ -365,6 +365,13 @@ func unlockHeader(ctx context.Context, store *headerTarget, gateProvisional bool
 	if err != nil {
 		return nil, err
 	}
+	// The fingerprint check precedes the trust check: it exists to refuse
+	// a substituted vault before anything pins it on first use.
+	if res.fingerprint != "" {
+		if err := verifyOnboardingFingerprint(ctx, store, header, res.mk, res.fingerprint); err != nil {
+			return nil, err
+		}
+	}
 	if err := trustHeader(ctx, store, store.scope, header, res.mk); err != nil {
 		return nil, err
 	}
@@ -426,6 +433,7 @@ untouched, so other slots keep working. Escrow the new passphrase.`,
 		if err != nil {
 			return err
 		}
+		warnShortPassphrase(newPass)
 		if err := u.header.RotateSlot(u.slot, newPass, u.slotKey); err != nil {
 			return err
 		}
@@ -539,10 +547,10 @@ private key stays wherever it was made).`,
 		if err := writeHeader(cmd.Context(), store, u, nil); err != nil {
 			return err
 		}
-		ui.Successf("added slot %q with a one-time onboarding passphrase", name)
-		ui.Infof("send this passphrase to them over a private channel:")
-		fmt.Println(temp)
-		ui.Infof("their first notenv command makes them replace it with a passphrase only they know; until then `notenv key list` shows the slot as provisional")
+		ui.Successf("added slot %q with a one-time onboarding string", name)
+		ui.Infof("send this string to them over a private channel:")
+		fmt.Println(temp + "/" + crypto.Fingerprint(u.header.VaultID, u.header.SignPub))
+		ui.Infof("it is their first passphrase plus a code that proves they reached this vault and not a substitute; their first notenv command makes them replace the passphrase with one only they know. Until then `notenv key list` shows the slot as provisional")
 		return nil
 	},
 }

@@ -173,11 +173,11 @@ func TestImportCarriesDescriptionsForward(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items := []importItem{
-		{key: "DB_URL", storageKey: "DB_URL", value: "new"},
-		{key: "FRESH", storageKey: "FRESH", value: "x"},
+	writes := []secrets.Write{
+		{Key: "DB_URL", Value: "new", Description: prev.Meta["DB_URL"].Description},
+		{Key: "FRESH", Value: "x"},
 	}
-	updated, err := a.appendGuardedBatch(ctx, view, prev, items)
+	updated, err := a.appendGuardedBatch(ctx, view, prev, writes)
 	if err != nil {
 		t.Fatalf("appendGuardedBatch: %v", err)
 	}

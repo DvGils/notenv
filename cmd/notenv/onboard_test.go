@@ -75,3 +75,54 @@ func TestEnforceProvisionalRefusesReadOnly(t *testing.T) {
 		t.Fatal("the slot must stay provisional after a refusal")
 	}
 }
+
+func TestSplitOnboardingString(t *testing.T) {
+	pass, fp := splitOnboardingString("edge-bats-prize-dab-pagan-probe/3f6k2c7m4x2p")
+	if pass != "edge-bats-prize-dab-pagan-probe" || fp != "3f6k2c7m4x2p" {
+		t.Fatalf("split = %q, %q", pass, fp)
+	}
+	for _, plain := range []string{
+		"my own passphrase",
+		"with/slash",
+		"edge-bats-prize-dab-pagan-probe",              // no code
+		"edge-bats-prize-dab-pagan-probe/3f6k2c",       // code too short
+		"edge-bats-prize-dab/3f6k2c7m4x2p",             // too few words
+		"Edge-bats-prize-dab-pagan-probe/3f6k2c7m4x2p", // uppercase
+		"edge-bats-prize-dab-pagan-probe/3f6k2c7m4x21", // 1 is not base32
+	} {
+		if pass, fp := splitOnboardingString(plain); pass != plain || fp != "" {
+			t.Fatalf("%q must not split, got %q, %q", plain, pass, fp)
+		}
+	}
+}
+
+// TestVerifyOnboardingFingerprint: a matching code passes, a mismatched code
+// is refused naming the substitution risk (no transitions exist to walk).
+func TestVerifyOnboardingFingerprint(t *testing.T) {
+	ctx := context.Background()
+	header, mk, err := crypto.NewHeader("owner pass", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memstore.New()
+
+	good := crypto.Fingerprint(header.VaultID, header.SignPub)
+	if err := verifyOnboardingFingerprint(ctx, store, header, mk, good); err != nil {
+		t.Fatalf("matching code: %v", err)
+	}
+	err = verifyOnboardingFingerprint(ctx, store, header, mk, "aaaaaaaaaaaa")
+	if err == nil || !strings.Contains(err.Error(), "substituted") {
+		t.Fatalf("mismatched code: err = %v, want a substitution refusal", err)
+	}
+}
+
+// TestRequireHumanPassphraseNonInteractive: plaintext egress needs a human;
+// with no terminal it refuses outright, before touching storage.
+func TestRequireHumanPassphraseNonInteractive(t *testing.T) {
+	forceNonInteractive(t)
+	a := &app{}
+	err := a.requireHumanPassphrase(context.Background(), "--no-mask sends raw secret values to a captured stream")
+	if err == nil || !strings.Contains(err.Error(), "no terminal") {
+		t.Fatalf("err = %v, want a no-terminal refusal", err)
+	}
+}

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/config"
@@ -37,8 +39,8 @@ func guardNamespace(ctx context.Context, store backend.Backend, dir string, bind
 	case config.NamespaceOK:
 		return nil
 	case config.NamespaceConfirm:
-		if err := confirmNamespace(fmt.Sprintf("%s requests namespace %q, not this directory's name. Expose that namespace's secrets to commands run here?", contract.FileName, resolved),
-			fmt.Sprintf("%s requests namespace %q (not this directory's name %q); pinning it for this checkout", contract.FileName, resolved, filepath.Base(dir)),
+		if err := confirmNamespace(resolved,
+			fmt.Sprintf("%s requests namespace %q, not this directory's name. Expose that namespace's secrets to commands run here?", contract.FileName, resolved),
 			fmt.Sprintf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)); err != nil {
 			return err
 		}
@@ -48,8 +50,8 @@ func guardNamespace(ctx context.Context, store backend.Backend, dir string, bind
 			return fmt.Errorf("check namespace %q before first use: %w", resolved, err)
 		}
 		if joining {
-			if err := confirmNamespace(fmt.Sprintf("this checkout hasn't used notenv before, but namespace %q already holds secrets. Expose them to commands run here?", resolved),
-				fmt.Sprintf("first use in this checkout joins existing namespace %q; pinning it", resolved),
+			if err := confirmNamespace(resolved,
+				fmt.Sprintf("this checkout hasn't used notenv before, but namespace %q already holds secrets. Expose them to commands run here?", resolved),
 				fmt.Sprintf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)); err != nil {
 				return err
 			}
@@ -80,8 +82,8 @@ func guardFlagNamespace(ctx context.Context, store backend.Backend, scope, names
 		return fmt.Errorf("check namespace %q before first use: %w", namespace, err)
 	}
 	if joining {
-		if err := confirmNamespace(fmt.Sprintf("namespace %q already holds secrets. Expose them to commands run here?", namespace),
-			fmt.Sprintf("first explicit use of namespace %q on this storage joins its existing secrets; accepting it", namespace),
+		if err := confirmNamespace(namespace,
+			fmt.Sprintf("namespace %q already holds secrets. Expose them to commands run here?", namespace),
 			fmt.Sprintf("namespace %q declined; check the --namespace value", namespace)); err != nil {
 			return err
 		}
@@ -92,13 +94,40 @@ func guardFlagNamespace(ctx context.Context, store backend.Backend, scope, names
 	return nil
 }
 
-// confirmNamespace asks the user to accept a namespace before its first use,
-// or warns loudly where no one can answer (CI). decline is the error a refusal
-// surfaces, pointing at where the namespace was chosen.
-func confirmNamespace(question, ciWarning, decline string) error {
-	if !ui.Interactive() {
-		ui.Warnf("%s", ciWarning)
-		return nil
+// acceptNamespaceEnv lists namespaces (comma-separated) this runner's
+// operator accepts without a prompt. The value names exact namespaces: a
+// committed contract cannot write the runner's environment, so a match is the
+// operator's own statement of intent, where a blanket yes-flag would be
+// satisfied by whatever a malicious contract names.
+const acceptNamespaceEnv = "NOTENV_ACCEPT_NAMESPACE"
+
+// interactiveFn is a seam for tests: the real check opens /dev/tty, which
+// exists when tests run from a terminal and not in CI, so tests pin it.
+var interactiveFn = ui.Interactive
+
+// envAcceptedNamespace reports whether acceptNamespaceEnv names namespace.
+func envAcceptedNamespace(namespace string) bool {
+	for _, n := range strings.Split(os.Getenv(acceptNamespaceEnv), ",") {
+		if strings.TrimSpace(n) == namespace {
+			return true
+		}
+	}
+	return false
+}
+
+// confirmNamespace asks the user to accept a namespace before its first use.
+// Where no one can answer (CI, agent harnesses) it fails closed, accepting
+// only a namespace the runner's environment names explicitly; proceeding on a
+// warning would let a malicious contract on a shared runner reach another
+// project's secrets with nobody there to decline. decline is the error an
+// interactive refusal surfaces, pointing at where the namespace was chosen.
+func confirmNamespace(namespace, question, decline string) error {
+	if !interactiveFn() {
+		if envAcceptedNamespace(namespace) {
+			ui.Notef("namespace %q accepted via %s", namespace, acceptNamespaceEnv)
+			return nil
+		}
+		return fmt.Errorf("refusing namespace %q: its first use here needs confirmation and there is no terminal to ask on. If this runner is meant to use it, set %s=%s", namespace, acceptNamespaceEnv, namespace)
 	}
 	ok, err := ui.Confirm(question, false)
 	if err != nil {
