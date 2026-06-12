@@ -37,12 +37,13 @@ import (
 // (internal/secrets) are versioned by the same exact-match rule. Bump only on
 // an incompatible change.
 //
-// Version 2 added VaultID and SignPub; version 1 headers are upgraded by
+// Version 2 added VaultID and SignPub; version 3 added the object manifest
+// (see manifest.go). The previous version's headers are upgraded by
 // `notenv key migrate` (a lossless rewrite under the same master).
-const headerVersion = 2
+const headerVersion = 3
 
-// Header is the parsed header object. VaultID and SignPub carry omitempty so
-// that a version-1 header (sealed before the fields existed) reproduces its
+// Header is the parsed header object. Fields added by later format versions
+// carry omitempty so a header sealed before the field existed reproduces its
 // original canonical bytes when re-marshaled — its authentication tag must
 // stay verifiable for the migration that upgrades it.
 type Header struct {
@@ -53,7 +54,11 @@ type Header struct {
 	Revision  int    `json:"revision"`           // monotonic; bumped on every write (anti-rollback)
 	Master    []byte `json:"master"`             // master identity, age-encrypted to every slot's public key
 	Slots     []Slot `json:"slots"`
-	Auth      []byte `json:"auth,omitempty"` // HMAC over the header keyed from the master (see auth.go)
+	// Manifest binds every segment/snapshot object to this authenticated
+	// header: full object key → plaintext MAC (see manifest.go). Nil only on a
+	// vault that has never stored a secret.
+	Manifest map[string]ManifestEntry `json:"manifest,omitempty"`
+	Auth     []byte                   `json:"auth,omitempty"` // HMAC over the header keyed from the master (see auth.go)
 }
 
 // Slot is one credential that can unlock the master. Name identifies its owner

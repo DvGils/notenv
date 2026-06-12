@@ -27,6 +27,7 @@ func (c *mapCache) Drop(scope string) { delete(c.m, scope) }
 // guardApp builds an app over a memstore vault, returning it with the master.
 func guardApp(t *testing.T) (*app, *memstore.Store, *crypto.MasterKey) {
 	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // the view's pin checks write local trust state
 	store := memstore.New()
 	header, mk, err := crypto.NewHeader("pass", "owner")
 	if err != nil {
@@ -76,41 +77,62 @@ func rotateHeader(t *testing.T, store *memstore.Store) *crypto.MasterKey {
 	return newMK
 }
 
-func TestAppendGuardedWritesWhenEpochUnchanged(t *testing.T) {
+func TestAppendGuardedWritesAndRecords(t *testing.T) {
 	ctx := context.Background()
 	a, store, mk := guardApp(t)
 
-	prev, err := a.secretsNamespace(mk).Fold(ctx)
+	view, err := a.view(ctx, mk)
+	if err != nil {
+		t.Fatalf("view: %v", err)
+	}
+	prev, err := a.namespaceFor(view).Fold(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := a.appendGuarded(ctx, mk, prev, 1, "K", "v", false)
+	updated, err := a.appendGuarded(ctx, view, prev, 1, "K", "v", false)
 	if err != nil {
 		t.Fatalf("appendGuarded: %v", err)
 	}
 	if updated.Secrets["K"] != "v" {
 		t.Fatalf("K = %q, want v", updated.Secrets["K"])
 	}
-	if keys, _ := store.List(ctx, "proj/"); len(keys) != 1 {
+	keys, _ := store.List(ctx, "proj/")
+	if len(keys) != 1 {
 		t.Fatalf("want 1 stored segment, got %d", len(keys))
+	}
+	// The write is recorded: the stored header's manifest carries the segment.
+	stored, err := crypto.ParseHeader(store.Header())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stored.Manifest[keys[0]]; !ok {
+		t.Fatalf("segment %s not recorded in the manifest: %v", keys[0], stored.Manifest)
+	}
+	if stored.Revision <= view.header.Revision {
+		t.Fatal("the manifest write must advance the header revision")
 	}
 }
 
 // TestAppendGuardedRollsBackOnEpochChange is the writer's half of the
-// write-epoch protocol: the vault is re-keyed between this writer's unlock and
-// its write, so the segment — sealed under the superseded master — must be
-// removed again and the stale cache dropped, leaving the namespace clean.
+// write-epoch protocol, now folded into the manifest swap: the vault is
+// re-keyed between this writer's unlock and its write, so the segment — sealed
+// under the superseded master — must be removed again and the stale cache
+// dropped, leaving the namespace clean.
 func TestAppendGuardedRollsBackOnEpochChange(t *testing.T) {
 	ctx := context.Background()
 	a, store, mk := guardApp(t)
 
-	prev, err := a.secretsNamespace(mk).Fold(ctx)
+	view, err := a.view(ctx, mk)
+	if err != nil {
+		t.Fatalf("view: %v", err)
+	}
+	prev, err := a.namespaceFor(view).Fold(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newMK := rotateHeader(t, store) // the flip lands before our write's confirm
+	newMK := rotateHeader(t, store) // the flip lands before our write records itself
 
-	if _, err := a.appendGuarded(ctx, mk, prev, 1, "K", "v", false); err == nil {
+	if _, err := a.appendGuarded(ctx, view, prev, 1, "K", "v", false); err == nil {
 		t.Fatal("appendGuarded must fail when the master changed mid-write")
 	}
 	if keys, _ := store.List(ctx, "proj/"); len(keys) != 0 {
@@ -120,7 +142,7 @@ func TestAppendGuardedRollsBackOnEpochChange(t *testing.T) {
 		t.Fatal("the stale cached master must be dropped")
 	}
 	// The namespace still folds cleanly for a holder of the new master.
-	if _, err := secrets.For(store, "proj", newMK, "m2").Fold(ctx); err != nil {
+	if _, err := secrets.For(store, "proj", newMK, "m2", nil).Fold(ctx); err != nil {
 		t.Fatalf("namespace must stay clean for the new master: %v", err)
 	}
 }

@@ -38,9 +38,10 @@ var setCmd = &cobra.Command{
 		ctx := cmd.Context()
 
 		// Fold fresh from storage (the master ceremony runs here on virgin
-		// storage). A new write appends a segment, so it never has to win a
-		// read-modify-write race against another machine.
-		state, mk, err := a.foldState(ctx)
+		// storage). A new write appends a segment, so it never overwrites
+		// another machine's object; recording it in the manifest goes through
+		// the header swap, which retries cleanly against other writers.
+		state, view, err := a.foldState(ctx)
 		if err != nil {
 			return err
 		}
@@ -57,19 +58,19 @@ var setCmd = &cobra.Command{
 		var updated *secrets.State
 		if err := ui.Spin("Uploading encrypted segment", func() error {
 			var aerr error
-			updated, aerr = a.appendGuarded(ctx, mk, state, seq, a.contract.StorageKey(key), value, false)
+			updated, aerr = a.appendGuarded(ctx, view, state, seq, a.contract.StorageKey(key), value, false)
 			return aerr
 		}); err != nil {
 			return err
 		}
 		// Refresh the local cache with the new folded state, so the next `run`
 		// on this machine is instant and coherent.
-		a.cacheFolded(mk, updated.Secrets)
+		a.cacheFolded(view.mk, updated.Secrets)
 		ui.Successf("%s set in namespace %q", key, a.namespace)
 		// Report from the post-write state: this write settles its own key's
 		// conflict, so only genuinely unresolved ones surface.
 		reportConflicts(updated.Conflicts)
-		a.maybeCompact(ctx, mk, state.SegmentCount())
+		a.maybeCompact(ctx, view.mk, state.SegmentCount())
 
 		// Convenience: keep the committed contract in sync with reality.
 		if _, declared := a.contract.Secrets[key]; !declared {
