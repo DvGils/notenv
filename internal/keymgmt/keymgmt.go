@@ -26,12 +26,11 @@ import (
 // result.
 //
 //   - base is the exact header bytes read at the start of the operation (nil if
-//     the storage had no header yet). Immediately before writing, SafePut
-//     re-reads the header and aborts if it no longer matches base, so a
-//     concurrent key operation can't be silently overwritten. This is a
-//     freshness check, not a lock: a write landing in the gap between this read
-//     and the write below still races. For an operation a human runs
-//     occasionally that is an acceptable, documented residual.
+//     the storage had no header yet). The write goes through the store's
+//     SwapHeader, which refuses (backend.ErrHeaderChanged) if the stored header
+//     no longer matches base, so a concurrent header mutation can't be silently
+//     overwritten. How atomic that is depends on the store; callers that can
+//     re-apply their change retry on ErrHeaderChanged.
 //   - mk is the master the header should wrap; SafePut seals with it and, after
 //     writing, confirms the read-back header's authentication tag verifies under
 //     it (catches a corrupted/substituted write).
@@ -58,19 +57,11 @@ func SafePut(ctx context.Context, store backend.HeaderStore, h *crypto.Header, b
 		return fmt.Errorf("back up header before write: %w", err)
 	}
 
-	// Freshness: re-read and compare to the bytes the operation started from.
-	current, err := store.GetHeader(ctx)
-	if errors.Is(err, backend.ErrNotFound) {
-		current = nil
-	} else if err != nil {
-		return fmt.Errorf("re-read header before write: %w", err)
-	}
-	if !bytes.Equal(current, base) {
-		return errors.New("the header changed since this operation started (another `notenv key` run?); re-run the command")
-	}
-
-	if err := store.PutHeader(ctx, newRaw); err != nil {
-		return fmt.Errorf("write header: %w", err)
+	if err := store.SwapHeader(ctx, base, newRaw); err != nil {
+		if errors.Is(err, backend.ErrHeaderChanged) {
+			return fmt.Errorf("%w (another notenv run?); re-run the command", err)
+		}
+		return err
 	}
 
 	// Read back the bytes we just wrote and verify the result.

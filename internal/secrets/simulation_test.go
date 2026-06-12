@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"math/rand"
 	"testing"
 
@@ -18,9 +19,9 @@ const (
 	simPutFailRate  = 0.10
 )
 
-// recordedWrite is one successful write the oracle remembers, to predict the
-// fold. The oracle is exact only while no compaction runs (a segment-only store
-// is in one-to-one correspondence with the recorded writes).
+// recordedWrite is one landed write the oracle remembers, to predict the fold.
+// The oracle is exact only while no compaction runs (a segment-only store is
+// in one-to-one correspondence with the landed writes).
 type recordedWrite struct {
 	value   string
 	deleted bool
@@ -29,13 +30,26 @@ type recordedWrite struct {
 	seq     int
 }
 
+// simManifest is the header-side manifest the simulation's writes go through,
+// applied the way the command layer would. Single-threaded steps make every
+// apply atomic, which matches the semantics the real header swap provides.
+type simManifest struct {
+	entries map[string]crypto.ManifestEntry
+}
+
+func (sm *simManifest) apply(d crypto.ManifestDelta) error {
+	h := &crypto.Header{Manifest: maps.Clone(sm.entries)}
+	h.ApplyManifest(d)
+	sm.entries = h.Manifest
+	return nil
+}
+
 // simMachine is a virtual machine: its id, its sequence counter, and the last
 // fold it saw — the (possibly stale) base its next write builds on.
 type simMachine struct {
 	id   string
-	ns   *Namespace
-	view *State
 	seq  int
+	view *State
 }
 
 // byteScript yields bounded choices from a byte slice, so a fuzzer's mutations
@@ -62,81 +76,125 @@ func chaosSeed(data []byte) int64 {
 	return int64(h.Sum64())
 }
 
+// secretSim is one simulation run's world: machines sharing a chaos-wrapped
+// store, a manifest, and the oracle's write log.
+type secretSim struct {
+	t        *testing.T
+	ctx      context.Context
+	mk       *crypto.MasterKey
+	store    *chaos.Backend
+	manifest *simManifest
+	machines []*simMachine
+	log      map[string][]recordedWrite
+}
+
+func newSecretSim(t *testing.T, data []byte) *secretSim {
+	t.Helper()
+	mk, err := crypto.GenerateMasterKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &secretSim{
+		t:        t,
+		ctx:      context.Background(),
+		mk:       mk,
+		store:    chaos.New(memstore.New(), chaosSeed(data), chaos.Options{PutFailRate: simPutFailRate}),
+		manifest: &simManifest{entries: map[string]crypto.ManifestEntry{}},
+		log:      map[string][]recordedWrite{},
+	}
+	for i := range simMachineCount {
+		s.machines = append(s.machines, &simMachine{id: fmt.Sprintf("m%d", i+1), view: &State{Secrets: map[string]string{}}})
+	}
+	return s
+}
+
+func (s *secretSim) ns(machine string) *Namespace {
+	return For(s.store, "proj", s.mk, machine, s.manifest.entries)
+}
+
+// fold reads the namespace as an observer holding the current manifest. An
+// honest run must never alarm, no matter how writes raced, crashed, or were
+// interrupted.
+func (s *secretSim) fold(step int) *State {
+	s.t.Helper()
+	st, err := s.ns("observer").Fold(s.ctx)
+	if err != nil {
+		s.t.Fatalf("step %d: fold failed on an honest run: %v", step, err)
+	}
+	return st
+}
+
+// write appends one key change from m and, unless the writer "crashes" first,
+// records it in the manifest exactly as the command layer would. A crashed
+// write lands but goes unrecorded: later folds must still include it, and a
+// compaction makes it durable.
+func (s *secretSim) write(m *simMachine, key, value string, deleted, crash bool) {
+	m.seq++
+	updated, objKey, entry, err := s.ns(m.id).Append(s.ctx, m.view, m.seq, key, value, deleted)
+	if err != nil {
+		return // interrupted upload: nothing landed, nothing recorded
+	}
+	s.log[key] = append(s.log[key], recordedWrite{value: value, deleted: deleted, lamport: updated.lamport, machine: m.id, seq: m.seq})
+	if crash {
+		// The process died between the segment landing and the manifest update;
+		// its view is gone with it.
+		m.view = &State{Secrets: map[string]string{}}
+		return
+	}
+	delta := crypto.ManifestDelta{Add: map[string]crypto.ManifestEntry{objKey: entry}, Prune: m.view.Prunable}
+	if err := s.manifest.apply(delta); err != nil {
+		s.t.Fatalf("manifest apply: %v", err)
+	}
+	m.view = updated
+}
+
 // runScript drives simMachineCount machines through the operations encoded in
-// data, against a chaos-wrapped store that interrupts some uploads.
+// data, against a chaos-wrapped store that interrupts some uploads and a
+// writer population that sometimes crashes between its segment write and its
+// manifest update.
 //
 // With allowCompact, compaction joins the mix and the checks are oracle-free:
-// every fold must succeed (no poison pill), and every compaction must leave the
-// visible secrets unchanged (compaction is transparent). Without it, the store
-// is segment-only, so the recorded write log is an exact oracle for both the
-// resolved secrets and the reported conflicts under concurrent, stale, and
-// interrupted writes.
+// every fold must succeed (no poison pill, no false alarm), and every
+// compaction must leave the visible secrets unchanged (compaction is
+// transparent). Without it, the store is segment-only, so the landed write log
+// is an exact oracle for both the resolved secrets and the reported conflicts
+// under concurrent, stale, crashed, and interrupted writes.
 func runScript(t *testing.T, data []byte, allowCompact bool) {
 	t.Helper()
 	if len(data) == 0 {
 		return
 	}
-	ctx := context.Background()
-	mk, err := crypto.GenerateMasterKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	store := chaos.New(memstore.New(), chaosSeed(data), chaos.Options{PutFailRate: simPutFailRate})
-
-	machines := make([]*simMachine, simMachineCount)
-	for i := range machines {
-		id := fmt.Sprintf("m%d", i+1)
-		machines[i] = &simMachine{id: id, ns: For(store, "proj", mk, id), view: &State{Secrets: map[string]string{}}}
-	}
-	log := map[string][]recordedWrite{}
-	observer := For(store, "proj", mk, "observer")
-
-	fold := func(step int) map[string]string {
-		st, err := observer.Fold(ctx)
-		if err != nil {
-			t.Fatalf("step %d: fold failed: %v", step, err)
-		}
-		if !allowCompact {
-			assertOracle(t, step, st, log)
-		}
-		return st.Secrets
-	}
+	s := newSecretSim(t, data)
 
 	sc := &byteScript{data: data}
 	for step := 0; !sc.done(); step++ {
-		m := machines[sc.choose(len(machines))]
-		switch op := sc.choose(8); {
+		m := s.machines[sc.choose(len(s.machines))]
+		switch op := sc.choose(10); {
 		case op == 0: // refresh: re-fold this machine's working base
-			st, err := m.ns.Fold(ctx)
-			if err != nil {
-				t.Fatalf("step %d: machine %s fold: %v", step, m.id, err)
-			}
-			m.view = st
+			m.view = s.fold(step)
 		case op == 1 && allowCompact: // compaction must be value-transparent
-			before := fold(step)
-			if err := m.ns.Compact(ctx, nil); err != nil {
+			before := s.fold(step).Secrets
+			if err := s.ns(m.id).Compact(s.ctx, s.manifest.apply); err != nil {
 				break // interrupted compaction: store unchanged, still consistent
 			}
-			after := fold(step)
+			after := s.fold(step).Secrets
 			if !sameStringMap(before, after) {
 				t.Fatalf("step %d: compaction changed visible secrets: %v -> %v", step, before, after)
 			}
-		default: // set or unset
+		default: // set, unset, or a crashed variant of either
 			key := fmt.Sprintf("K%d", sc.choose(simKeyCount))
 			deleted := sc.choose(4) == 0
+			crash := sc.choose(8) == 0
 			value := ""
 			if !deleted {
 				value = fmt.Sprintf("%s-%s-%d", m.id, key, step)
 			}
-			m.seq++
-			updated, _, err := m.ns.Append(ctx, m.view, m.seq, key, value, deleted)
-			if err != nil {
-				continue // interrupted upload: nothing landed, nothing recorded
-			}
-			log[key] = append(log[key], recordedWrite{value: value, deleted: deleted, lamport: updated.lamport, machine: m.id, seq: m.seq})
-			m.view = updated
+			s.write(m, key, value, deleted, crash)
 		}
-		fold(step) // a fold must always succeed (and match the oracle when applicable)
+		st := s.fold(step) // a fold must always succeed (and match the oracle when applicable)
+		if !allowCompact {
+			assertOracle(t, step, st, s.log)
+		}
 	}
 }
 

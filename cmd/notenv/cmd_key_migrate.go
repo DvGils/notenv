@@ -10,23 +10,25 @@ import (
 	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keymgmt"
+	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
-// keyMigrateCmd upgrades a version-1 header in place. Version 2 added the
-// vault ID and the master's signing public key; both are computable from the
-// unlocked master and a fresh random ID, so the upgrade is one lossless header
-// rewrite — no blob is touched and every slot keeps working. The command is
-// transitional and will be removed once no version-1 vaults remain; this whole
-// file goes with it.
+// keyMigrateCmd upgrades a version-2 vault in place. Version 3 added the
+// object manifest to the header and the self-naming object field to every
+// payload, so the upgrade rewrites each stored object under the same master
+// (no value changes, no slot changes) and records the result in one header
+// write. The command is transitional and will be removed once no version-2
+// vaults remain; this whole file goes with it.
 var keyMigrateCmd = &cobra.Command{
 	Use:   "migrate",
-	Short: "Upgrade this vault's key header to the current format (lossless)",
-	Long: `Upgrade a vault written by an older notenv to the current header format.
+	Short: "Upgrade this vault to the current storage format (lossless)",
+	Long: `Upgrade a vault written by an older notenv to the current storage format.
 
-The rewrite happens under your unlocked master key: no secret is re-encrypted,
-no slot changes, and the upgrade is verified end-to-end before anything is
-trusted. Run it once per vault; newer notenv versions refuse the old format.`,
+The rewrite happens under your unlocked master key: every secret keeps its
+value, every slot keeps working, and the upgrade is verified end-to-end before
+anything is trusted. Run it once per vault; newer notenv versions refuse the
+old format.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -52,11 +54,11 @@ trusted. Run it once per vault; newer notenv versions refuse the old format.`,
 			return fmt.Errorf("corrupt header: %w", err)
 		}
 		switch {
-		case header.VaultID != "" && header.SignPub != "":
-			ui.Notef("header is already in the current format; nothing to do")
+		case header.Version >= 3:
+			ui.Notef("vault is already in the current format; nothing to do")
 			return nil
-		case header.Version != 1:
-			return fmt.Errorf("don't know how to migrate a version %d header", header.Version)
+		case header.Version != 2:
+			return fmt.Errorf("don't know how to migrate a version %d header (upgrade it with notenv 0.7 first)", header.Version)
 		}
 
 		res, err := resolveUnlock(&header, false)
@@ -67,20 +69,22 @@ trusted. Run it once per vault; newer notenv versions refuse the old format.`,
 			return fmt.Errorf("%w; refusing to migrate an unauthenticated header", err)
 		}
 
-		header.Version = 2
-		if header.VaultID, err = crypto.NewVaultID(); err != nil {
+		var manifest map[string]crypto.ManifestEntry
+		if err := ui.Spin("Rewriting stored objects in the current format", func() error {
+			manifest, err = secrets.UpgradeObjects(ctx, store, res.mk)
+			return err
+		}); err != nil {
 			return err
 		}
-		if header.SignPub, err = res.mk.SignPub(); err != nil {
-			return err
-		}
-		if err := ui.Spin("Rewriting header in the current format", func() error {
+		header.Version = 3
+		header.Manifest = manifest
+		if err := ui.Spin("Recording the manifest in the header", func() error {
 			return keymgmt.SafePut(ctx, store, &header, raw, res.mk, res.reverify)
 		}); err != nil {
 			return err
 		}
 		pinCurrent(storeScope(store), &header, res.mk)
-		ui.Successf("header upgraded (vault %s); every slot and secret is unchanged", header.VaultID)
+		ui.Successf("vault upgraded: %d objects recorded in the manifest; every slot and secret is unchanged", len(manifest))
 		return nil
 	},
 }

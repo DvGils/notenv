@@ -29,18 +29,18 @@ func (s *lagOnceStore) Get(ctx context.Context, key string) ([]byte, error) {
 // the caller can retry, but the object stays.
 func TestAppendKeepsLaggedWrite(t *testing.T) {
 	ctx := context.Background()
-	base, mk := newStoreMaster(t)
-	store := &lagOnceStore{Store: base}
-	ns := secrets.For(store, "proj", mk, "m1")
+	v := newVault(t)
+	store := &lagOnceStore{Store: v.store}
+	ns := secrets.For(store, "proj", v.mk, "m1", v.manifest)
 
-	prev, err := ns.Fold(ctx) // empty namespace; the first Get is the verify read-back
+	prev, err := ns.Fold(ctx) // empty namespace: no reads happen, the first Get is the verify read-back
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ns.Append(ctx, prev, 1, "K", "v", false); err == nil {
+	if _, _, _, err := ns.Append(ctx, prev, 1, "K", "v", false); err == nil {
 		t.Fatal("append should surface the lagged read-back as an error")
 	}
-	keys, err := base.List(ctx, "proj/")
+	keys, err := v.store.List(ctx, "proj/")
 	if err != nil {
 		t.Fatal(err)
 	}

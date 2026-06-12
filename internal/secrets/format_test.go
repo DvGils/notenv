@@ -40,23 +40,41 @@ func TestFoldRejectsNewerFormat(t *testing.T) {
 	if err := store.Put(ctx, "proj/seg-m1-future.age", sealedAt(t, mk, raw)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := For(store, "proj", mk, "m1").Fold(ctx); err == nil {
+	if _, err := For(store, "proj", mk, "m1", nil).Fold(ctx); err == nil {
 		t.Fatal("fold must reject an object written by a newer notenv")
 	}
 }
 
-// TestFoldRejectsVersionlessObject: a segment with no version field (a pre-0.4
-// layout) is refused with a pointer at the upgrade path, not guessed at. The
-// lenient read it used to get was migration logic with no remaining users.
-func TestFoldRejectsVersionlessObject(t *testing.T) {
+// TestFoldRejectsOlderFormat: a segment in the previous payload format is
+// refused with a pointer at the upgrade path, not read leniently.
+func TestFoldRejectsOlderFormat(t *testing.T) {
 	ctx := context.Background()
 	mk := newMaster(t)
 	store := memstore.New()
-	raw := []byte(`{"machine":"m1","seq":1,"lamport":1,"key":"K","value":"v"}`)
+	raw := []byte(`{"v":1,"machine":"m1","seq":1,"lamport":1,"key":"K","value":"v"}`)
 	if err := store.Put(ctx, "proj/seg-m1-legacy.age", sealedAt(t, mk, raw)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := For(store, "proj", mk, "m1").Fold(ctx); err == nil {
-		t.Fatal("fold must reject a versionless (pre-0.4) object")
+	if _, err := For(store, "proj", mk, "m1", nil).Fold(ctx); err == nil {
+		t.Fatal("fold must reject an object in the previous payload format")
+	}
+}
+
+// TestFoldRejectsRelocatedObject: a payload that names a different object key
+// than it was fetched from was copied or renamed — including across
+// namespaces — and must never pass as the name it sits under.
+func TestFoldRejectsRelocatedObject(t *testing.T) {
+	ctx := context.Background()
+	mk := newMaster(t)
+	store := memstore.New()
+	raw, err := json.Marshal(segment{Version: formatVersion, Object: "other/seg-m1-aaaaaaaaaaaa.age", Machine: "m1", Seq: 1, Lamport: 1, Key: "K", Value: "v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, "proj/seg-m1-aaaaaaaaaaaa.age", sealedAt(t, mk, raw)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := For(store, "proj", mk, "m1", nil).Fold(ctx); err == nil {
+		t.Fatal("fold must reject an object that declares a different name")
 	}
 }

@@ -28,7 +28,7 @@ var unsetCmd = &cobra.Command{
 
 		// Fold fresh so we only write a tombstone for a key that is actually set,
 		// and so the removal is ordered after every write it supersedes.
-		state, mk, err := a.foldState(ctx)
+		state, view, err := a.foldState(ctx)
 		if err != nil {
 			return err
 		}
@@ -44,16 +44,16 @@ var unsetCmd = &cobra.Command{
 		var updated *secrets.State
 		if err := ui.Spin("Uploading removal", func() error {
 			var aerr error
-			updated, aerr = a.appendGuarded(ctx, mk, state, seq, storageKey, "", true)
+			updated, aerr = a.appendGuarded(ctx, view, state, seq, storageKey, "", true)
 			return aerr
 		}); err != nil {
 			return err
 		}
-		a.cacheFolded(mk, updated.Secrets)
+		a.cacheFolded(view.mk, updated.Secrets)
 		ui.Successf("%s removed from namespace %q", key, a.namespace)
 		// Post-write state: this tombstone settles its own key's conflict.
 		reportConflicts(updated.Conflicts)
-		a.maybeCompact(ctx, mk, state.SegmentCount())
+		a.maybeCompact(ctx, view.mk, state.SegmentCount())
 
 		// The committed contract is a separate decision from the stored value, so
 		// removal never edits it; warn if `run` will now report the key missing.

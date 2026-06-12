@@ -204,6 +204,37 @@ func (s *RcloneStorage) PutHeader(ctx context.Context, raw []byte) error {
 	return err
 }
 
+// SwapHeader implements the compare-and-swap as read-compare-put-readback,
+// which is the strongest rclone offers: object stores expose no conditional
+// write through it. Two writers that both pass the compare inside the same
+// sub-second window still last-write-wins; the read-back converts the loss
+// into ErrHeaderChanged whenever the winner's bytes have already landed, and
+// the one ordering it cannot see (our read-back completes before the winner's
+// put) is recovered by the manifest's adoption path, never lost silently. A
+// backend with native conditional writes can implement this atomically.
+func (s *RcloneStorage) SwapHeader(ctx context.Context, base, updated []byte) error {
+	current, err := s.GetHeader(ctx)
+	if errors.Is(err, ErrNotFound) {
+		current = nil
+	} else if err != nil {
+		return fmt.Errorf("re-read header before write: %w", err)
+	}
+	if !bytes.Equal(current, base) {
+		return ErrHeaderChanged
+	}
+	if err := s.PutHeader(ctx, updated); err != nil {
+		return fmt.Errorf("write header: %w", err)
+	}
+	readBack, err := s.GetHeader(ctx)
+	if err != nil {
+		return fmt.Errorf("read header back after write: %w", err)
+	}
+	if !bytes.Equal(readBack, updated) {
+		return fmt.Errorf("%w (another writer landed over ours)", ErrHeaderChanged)
+	}
+	return nil
+}
+
 // BackupHeader copies the current header to its ".prev" sibling so a bad
 // overwrite is recoverable. It is a no-op when the remote keeps native object
 // versions (those versions are the backup) and when no header exists yet

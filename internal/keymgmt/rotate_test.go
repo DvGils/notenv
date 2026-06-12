@@ -3,6 +3,7 @@ package keymgmt_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"filippo.io/age"
@@ -12,8 +13,9 @@ import (
 	"github.com/DvGils/notenv/internal/keymgmt"
 )
 
-// seedVault writes a header (owner passphrase + alice recipient) and the given
-// ciphertext objects (each a small plaintext) encrypted under the master.
+// seedVault writes a header (owner passphrase + alice recipient) whose
+// manifest records the given objects (each a small plaintext encrypted under
+// the master), the way real writes would have.
 func seedVault(t *testing.T, store *memstore.Store, blobs map[string]string) (*crypto.MasterKey, *age.X25519Identity) {
 	t.Helper()
 	ctx := context.Background()
@@ -28,7 +30,22 @@ func seedVault(t *testing.T, store *memstore.Store, blobs map[string]string) (*c
 	if err := header.AddRecipientSlot(alice.Recipient(), "alice", mk); err != nil {
 		t.Fatal(err)
 	}
-	if err := header.Seal(mk); err != nil { // re-seal after the slot add
+	header.Manifest = map[string]crypto.ManifestEntry{}
+	for key, val := range blobs {
+		sealed, err := mk.Encrypt([]byte(val))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Put(ctx, key, sealed); err != nil {
+			t.Fatal(err)
+		}
+		mac, err := mk.ObjectMAC([]byte(val))
+		if err != nil {
+			t.Fatal(err)
+		}
+		header.Manifest[key] = crypto.ManifestEntry{MAC: mac}
+	}
+	if err := header.Seal(mk); err != nil { // re-seal after the slot add and manifest
 		t.Fatal(err)
 	}
 	raw, err := header.Marshal()
@@ -38,20 +55,12 @@ func seedVault(t *testing.T, store *memstore.Store, blobs map[string]string) (*c
 	if err := store.PutHeader(ctx, raw); err != nil {
 		t.Fatal(err)
 	}
-	for key, val := range blobs {
-		sealed, err := mk.Encrypt([]byte(val))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Put(ctx, key, sealed); err != nil {
-			t.Fatal(err)
-		}
-	}
 	return mk, alice
 }
 
 // assertVault checks every blob decrypts to want under the header's current
-// master, that the old master no longer decrypts, and that every slot unlocks.
+// master and matches its re-keyed manifest entry, that the old master no
+// longer decrypts, and that every slot unlocks.
 func assertVault(t *testing.T, store *memstore.Store, oldMK *crypto.MasterKey, alice *age.X25519Identity, want map[string]string) {
 	t.Helper()
 	ctx := context.Background()
@@ -70,6 +79,9 @@ func assertVault(t *testing.T, store *memstore.Store, oldMK *crypto.MasterKey, a
 	if cur.String() == oldMK.String() {
 		t.Fatal("master was not rotated")
 	}
+	if len(header.Manifest) != len(want) {
+		t.Fatalf("manifest records %d objects, want %d: %v", len(header.Manifest), len(want), header.Manifest)
+	}
 	for key, val := range want {
 		blob, err := store.Get(ctx, key)
 		if err != nil {
@@ -81,6 +93,9 @@ func assertVault(t *testing.T, store *memstore.Store, oldMK *crypto.MasterKey, a
 		}
 		if _, err := oldMK.Decrypt(blob); err == nil {
 			t.Fatalf("blob %q still decrypts under the OLD master", key)
+		}
+		if err := cur.CheckObjectMAC(plain, header.Manifest[key].MAC); err != nil {
+			t.Fatalf("blob %q manifest entry not re-keyed: %v", key, err)
 		}
 	}
 }
@@ -176,59 +191,131 @@ func mustParse(t *testing.T, store *memstore.Store) *crypto.Header {
 	return h
 }
 
-// TestRotateMasterReKeysWriteLandedMidRotation injects a segment sealed under
-// the OLD master right after the rotation's first listing — a concurrent writer
-// that had not yet noticed the rotation. The narrow pass re-lists after the
-// flip and falls back to the old key, so the segment must end up readable under
-// the new master only, not stranded.
-func TestRotateMasterReKeysWriteLandedMidRotation(t *testing.T) {
+// TestRotateMasterLeavesUnrecordedWriteAlone covers the in-flight straggler: a
+// segment that landed mid-rotation without a manifest entry (its writer will
+// record it, roll it back, or has crashed). Rotation must neither re-key nor
+// adopt it — touching it would race the writer's own rollback — and the next
+// fold classifies whatever remains.
+func TestRotateMasterLeavesUnrecordedWriteAlone(t *testing.T) {
 	ctx := context.Background()
 	store := memstore.New()
 	blobs := map[string]string{"proj/snap-aa.age": "a"}
 	oldMK, alice := seedVault(t, store, blobs)
 	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
 
-	store.AfterNextList(func() { // fires after the widen listing
-		sealed, err := oldMK.Encrypt([]byte("late"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Put(ctx, "proj/seg-m2-late.age", sealed); err != nil {
-			t.Fatal(err)
-		}
-	})
+	sealed, err := oldMK.Encrypt([]byte("late"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, "proj/seg-m2-late.age", sealed); err != nil {
+		t.Fatal(err)
+	}
 
 	base := store.Header()
 	header, _ := crypto.ParseHeader(base)
 	if _, err := keymgmt.RotateMaster(ctx, store, header, base, oldMK, verify, nil); err != nil {
 		t.Fatalf("RotateMaster: %v", err)
 	}
-	assertVault(t, store, oldMK, alice, map[string]string{
-		"proj/snap-aa.age":     "a",
-		"proj/seg-m2-late.age": "late",
-	})
+	assertVault(t, store, oldMK, alice, blobs) // the manifest records only the snapshot
+
+	// The straggler is untouched: still exactly the bytes its writer stored.
+	got, err := store.Get(ctx, "proj/seg-m2-late.age")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := oldMK.Decrypt(got)
+	if err != nil || string(plain) != "late" {
+		t.Fatalf("unrecorded write was modified by the rotation: %v %q", err, plain)
+	}
 }
 
-// TestRotateMasterSkipsVanishedObject deletes a listed object mid-rotation (a
-// concurrent compaction folding it away). The rotation must skip it, not fail:
-// its content lives in that compaction's snapshot.
-func TestRotateMasterSkipsVanishedObject(t *testing.T) {
+// TestRotateMasterRefusesVanishedRecordedObject: a live manifest entry whose
+// object is gone must fail the rotation, never be skipped — dropping the entry
+// at the flip would erase the evidence of a deletion. (The honest cause, a
+// concurrent compaction, bumps the header revision, so the flip would abort
+// and the re-run sees the folded entry instead.)
+func TestRotateMasterRefusesVanishedRecordedObject(t *testing.T) {
 	ctx := context.Background()
 	store := memstore.New()
 	blobs := map[string]string{"proj/seg-m1-aa.age": "a", "proj/seg-m1-bb.age": "b"}
-	oldMK, alice := seedVault(t, store, blobs)
+	oldMK, _ := seedVault(t, store, blobs)
 	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
-
-	store.AfterNextList(func() {
-		if err := store.Delete(ctx, "proj/seg-m1-bb.age"); err != nil {
-			t.Fatal(err)
-		}
-	})
 
 	base := store.Header()
 	header, _ := crypto.ParseHeader(base)
-	if _, err := keymgmt.RotateMaster(ctx, store, header, base, oldMK, verify, nil); err != nil {
-		t.Fatalf("RotateMaster must tolerate a vanished object: %v", err)
+	if err := store.Delete(ctx, "proj/seg-m1-bb.age"); err != nil {
+		t.Fatal(err)
 	}
-	assertVault(t, store, oldMK, alice, map[string]string{"proj/seg-m1-aa.age": "a"})
+
+	_, err := keymgmt.RotateMaster(ctx, store, header, base, oldMK, verify, nil)
+	if err == nil || !strings.Contains(err.Error(), "missing from storage") {
+		t.Fatalf("rotation must refuse a vanished recorded object, got %v", err)
+	}
+	// The flip never happened: the old master still opens everything that exists.
+	if cur, _, _, uerr := mustParse(t, store).Unlock("owner-pass"); uerr != nil || cur.String() != oldMK.String() {
+		t.Fatalf("header should still yield the old master: %v", uerr)
+	}
+}
+
+// TestRotateMasterRefusesTamperedObject: a recorded object whose plaintext no
+// longer matches its manifest MAC (reverted or substituted) must abort the
+// rotation rather than be laundered into the new epoch under a fresh MAC.
+func TestRotateMasterRefusesTamperedObject(t *testing.T) {
+	ctx := context.Background()
+	store := memstore.New()
+	blobs := map[string]string{"proj/seg-m1-aa.age": "a"}
+	oldMK, _ := seedVault(t, store, blobs)
+	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
+
+	// Replace the object with a different plaintext sealed under the same
+	// master — the storage-level revert the manifest exists to catch.
+	swapped, err := oldMK.Encrypt([]byte("older value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, "proj/seg-m1-aa.age", swapped); err != nil {
+		t.Fatal(err)
+	}
+
+	base := store.Header()
+	header, _ := crypto.ParseHeader(base)
+	_, err = keymgmt.RotateMaster(ctx, store, header, base, oldMK, verify, nil)
+	if err == nil || !strings.Contains(err.Error(), "manifest") {
+		t.Fatalf("rotation must refuse a tampered object, got %v", err)
+	}
+}
+
+// TestRotateMasterRemovesFoldedLeftovers: entries marked folded (a compaction
+// recorded their replacement but its deletions never finished) are cleaned up
+// by the rotation — objects deleted, entries dropped at the flip.
+func TestRotateMasterRemovesFoldedLeftovers(t *testing.T) {
+	ctx := context.Background()
+	store := memstore.New()
+	blobs := map[string]string{"proj/snap-aa.age": "a", "proj/seg-m1-old.age": "old"}
+	oldMK, alice := seedVault(t, store, blobs)
+	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
+
+	// Mark the segment folded, as an interrupted compaction would have.
+	header := mustParse(t, store)
+	header.ApplyManifest(crypto.ManifestDelta{Fold: []string{"proj/seg-m1-old.age"}})
+	if err := header.Seal(oldMK); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := header.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutHeader(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+
+	base := store.Header()
+	header2, _ := crypto.ParseHeader(base)
+	if _, err := keymgmt.RotateMaster(ctx, store, header2, base, oldMK, verify, nil); err != nil {
+		t.Fatalf("RotateMaster: %v", err)
+	}
+	assertVault(t, store, oldMK, alice, map[string]string{"proj/snap-aa.age": "a"})
+	if _, err := store.Get(ctx, "proj/seg-m1-old.age"); err == nil {
+		t.Fatal("folded leftover object should be deleted by the rotation")
+	}
 }
