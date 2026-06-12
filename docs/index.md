@@ -89,9 +89,9 @@ notenv run -- cmd
 
 Your secrets are encrypted with a random **master key**. The master key never exists in plaintext
 at rest: a small header object next to your secrets holds it wrapped under one or more **key slots**,
-the same approach LUKS and restic use. A slot is either a **passphrase** (yours, escrowed) or a
-teammate's **age public key**, so you can grant access without sharing a secret. Unlocking any slot
-yields the master key for the session.
+the same approach LUKS and restic use. A slot is either a person's
+**passphrase** (escrowed in their password manager) or a machine's **age public key** (its identity
+lives in the platform's secret store). Unlocking any slot yields the master key for the session.
 
 The header is authenticated and carries a monotonic revision, so a party that can write your storage
 but holds no key cannot tamper with it or roll it back undetected.

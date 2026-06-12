@@ -32,19 +32,19 @@ Add these to any command:
 
 ## Key and slot management
 
-A vault's master key is wrapped under one or more **key slots**. A slot is a passphrase or a
-teammate's age public key. These commands manage them.
+A vault's master key is wrapped under one or more **key slots**. Passphrases are for people,
+identities are for machines: a slot is a person's passphrase or a machine's age public key. These
+commands manage them.
 
 | Command | What it does |
 |---|---|
-| `notenv key list` | List the key slots (name, type, primary, fingerprint). `--json` for machines. |
-| `notenv key add --passphrase` | Add another passphrase slot (a backup or second device). |
-| `notenv key add --recipient age1... [--name N]` | Add a teammate by their age public key. |
+| `notenv key list` | List the key slots (name, principal, primary, added, fingerprint). `--json` for machines. |
+| `notenv key add <name>` | Onboard a teammate: prints a one-time onboarding passphrase; their first command replaces it with their own. |
+| `notenv key add --machine <name>` | Enroll a machine (CI, an agent): prints a new identity exactly once, for the platform's secret store. `--recipient age1...` enrolls an existing public key instead. |
 | `notenv key rm <name\|index>` | Remove a slot **and re-key the vault** (offboarding). |
 | `notenv key rotate` | Change the passphrase on your slot (header only). |
 | `notenv key rotate-master` | Mint a fresh master key and re-encrypt every secret; all slots kept. |
 | `notenv key set-primary <name\|index>` | Transfer the primary (governance) slot. |
-| `notenv key gen-identity` | Generate an age identity on this machine (to join a vault). |
 | `notenv key trust` | Re-pin after a confirmed master change that carries no signed proof (shows what changed, asks). |
 | `notenv key forget` | Forget this machine's pin and cached key for a storage (after a deliberate vault reset). |
 | `notenv key restore-backup` | Restore the header from its pre-write backup. |

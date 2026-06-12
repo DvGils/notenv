@@ -16,11 +16,14 @@ In priority order, the things notenv exists to protect:
    provider, never written to disk, and never exposed beyond the process that needs them.
 2. **The master key.** A random X25519 key that encrypts every secret. Compromise of the master key
    compromises every secret in that vault.
-3. **The unlocking credentials.** A passphrase (escrowed by the user in a password manager) or a
-   teammate's age identity. These unwrap the master key.
+3. **The unlocking credentials.** A person's passphrase (escrowed in their password manager) or a
+   machine's age identity (provisioned through a platform secret store). These unwrap the master
+   key.
 
-The passphrase and age identities live **outside** notenv's storage: in the user's password manager or
-on the user's machine. notenv never stores them on the backend.
+The credentials live **outside** notenv's storage and outside notenv's files entirely: a passphrase
+in a person's head and password manager, an identity in the secret store that presents it via
+`NOTENV_IDENTITY`. notenv never stores a credential on the backend or on disk (see
+[Credentials at rest](#credentials-at-rest-passphrases-for-people-identities-for-machines)).
 
 ## Architecture and trust boundaries
 
@@ -31,9 +34,9 @@ running the command, only for as long as the command runs.**
 - Secrets are encrypted with [age](https://github.com/FiloSottile/age) (X25519) under a random
   **master key**.
 - The master key is stored once, in a **header** object, age-encrypted to one or more **key slots**. A
-  slot is either a passphrase (the master is reachable via a slot keypair whose private key is
-  scrypt-wrapped under the passphrase) or a teammate's age public key. This is the LUKS / restic
-  pattern: changing a passphrase or adding/removing a teammate rewraps only the header, not the
+  slot is either a person's passphrase (the master is reachable via a slot keypair whose private key
+  is scrypt-wrapped under the passphrase) or a machine's age public key. This is the LUKS / restic
+  pattern: changing a passphrase or adding/removing a slot rewraps only the header, not the
   secrets.
 - The header is **authenticated** with an HMAC keyed from the master, and carries a **monotonic
   revision** that each machine pins locally.
@@ -52,6 +55,41 @@ running the command, only for as long as the command runs.**
 - On Linux, the master key (kernel keyring) and ciphertext blobs (tmpfs) may be cached in RAM, both
   reclaimed by the OS on logout/reboot. macOS and Windows do **not** cache (see
   [Caching and performance](../guides/caching.md#caching-is-linux-only-by-design)).
+
+## Credentials at rest: passphrases for people, identities for machines
+
+A vault **concentrates risk by design**: scattered `.env` files leak one project at a time, while a
+vault credential opens every secret in every namespace, including projects the machine never
+checked out. Concentration is only a win if the credential is harder to steal than the files were,
+so notenv holds every unlock path to one bar: **no file at rest may be key-equivalent.** Every
+promptless path must be rooted in something a filesystem sweep (the smash-and-grab infostealer, the
+copied backup, the imaged disk) cannot take.
+
+How each path meets the bar:
+
+| Path | Where the credential lives | What a filesystem sweep gets |
+|---|---|---|
+| Passphrase slot | A person's head and password manager; scrypt-stretched on every unlock | Nothing |
+| Session cache (Linux) | Kernel memory, TTL-bounded, never disk | Nothing |
+| Machine identity | The platform's secret store, injected per run via `NOTENV_IDENTITY` | Nothing notenv put there |
+| One-time onboarding passphrase | In transit between owner and teammate, minutes, then dead | Nothing (it is not stored) |
+
+notenv deliberately owns **no identity file**: there is no notenv path for a stealer list to name.
+A machine identity is key-equivalent by nature, which is exactly why its at-rest custody is
+delegated to the secret store that already guards your deploy keys, and why humans never hold one.
+
+Two honest residuals of concentration:
+
+- **The offline brute-force surface.** Anyone who exfiltrates the header and ciphertext can attack
+  a passphrase slot offline, a surface scattered `.env` files never offered. scrypt raises the
+  cost; the strength of the passphrase carries the rest (see [Non-goals](#non-goals)). Generated
+  one-time onboarding passphrases are high-entropy for the same reason.
+- **The onboarding window.** A teammate's slot starts under a generated one-time passphrase that
+  the owner, and any channel it crossed, briefly knows. An interceptor needs that passphrase
+  **and** storage read access **during the window before the holder's first command replaces it**
+  (notenv refuses to proceed for them until they do, and `key list` shows the slot as provisional
+  until then). A suspected interception is remedied by `key rotate-master`: anything captured stops
+  decrypting anything written after.
 
 ## Security properties
 
@@ -177,8 +215,10 @@ notenv does **not** defend these, by design. Treating them as in-scope would be 
 - **A weak passphrase.** Someone with read access to your storage can attempt an offline brute-force
   against the scrypt-wrapped passphrase slot. scrypt raises the cost, but a weak passphrase is the weak
   link. The passphrase is the root of trust; use a strong one.
-- **The passphrase / identity files themselves.** Protecting your password manager and any on-disk age
-  identity (`NOTENV_IDENTITY`) is the user's responsibility.
+- **The credential stores themselves.** Protecting your password manager, and the platform secret
+  store that holds a machine's identity, is outside notenv. notenv's contribution is structural: it
+  never writes a credential to disk, so there is no notenv-owned artifact to protect (see
+  [Credentials at rest](#credentials-at-rest-passphrases-for-people-identities-for-machines)).
 - **Traffic analysis / timing side channels** beyond the metadata noted above.
 - **Revoking access to secrets a person has already seen.** Cryptography cannot un-share a value someone
   already decrypted. Offboarding (`notenv key rm` + master rotation) prevents decrypting *future*

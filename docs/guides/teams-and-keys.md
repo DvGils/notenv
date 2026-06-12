@@ -1,42 +1,75 @@
 # Teams and key management
 
-Several people (or machines) can share one vault with no server, using **key slots**. The
-asymmetric path is the point: you add a teammate with only their **public** key, and they never
-share a secret with you.
+Several people and machines can share one vault with no server, using **key slots**. The rule that
+keeps the model honest: **passphrases are for people, identities are for machines.** A person's
+credential lives in their head and their password manager; a machine's credential lives in the
+platform's secret store. Neither ever sits in a plaintext file that notenv owns.
 
 ## How sharing works
 
 Your secrets are encrypted with a random **master key**. The master key never exists in plaintext at
 rest: a header object holds it wrapped under one or more slots. A slot is either a **passphrase**
-(yours, escrowed) or a teammate's **age public key**. Unlocking any slot yields the master key for
-the session. Adding or removing a teammate rewraps only the header, never the secrets.
+(a person's, escrowed in their password manager) or an **age public key** (a machine's; see
+[CI](ci.md) and [AI agents](ai-agents.md)). Unlocking any slot yields the master key for the
+session. Adding or removing a slot rewraps only the header, never the secrets.
 
 ## Onboard a teammate
 
-1. **Teammate** generates an identity and shares their public recipient:
+1. **You** add them by name:
 
     ```sh
-    notenv key gen-identity      # saves an age identity locally, prints age1...
+    notenv key add alice
     ```
 
-2. They send you that `age1...` recipient. It is public and safe to share in the clear.
+    notenv generates a high-entropy **one-time onboarding passphrase** and prints it once.
 
-3. **You** add them by recipient:
+2. Send that passphrase to Alice over a private channel (a chat message is fine; see the note below
+   on what an interceptor would need).
 
-    ```sh
-    notenv key add --recipient age1... --name alice
-    ```
-
-4. **Teammate** points at the same storage and runs:
+3. **Alice** points her machine at the same storage and runs:
 
     ```sh
     notenv setup
-    notenv run -- ...
     ```
 
-    Their identity unlocks the vault. No passphrase.
+    She enters the one-time passphrase, and notenv immediately makes her replace it with a
+    passphrase only she knows. The one-time passphrase stops working at that moment. Until she does
+    this, no notenv command will proceed for her, and `notenv key list` shows her slot as
+    **provisional** so you can see the onboarding is not finished.
 
-## Offboard a teammate
+That is the whole flow. After step 3 you no longer know any credential of Alice's, and nothing
+key-equivalent exists on her disk: her passphrase is in her head and her password manager, like
+yours.
+
+!!! note "What an interceptor would need"
+
+    The one-time passphrase alone decrypts nothing: the vault lives on your storage, not in the
+    chat. An adversary would need the passphrase **and** read access to your storage **during the
+    minutes before Alice replaces it**. If you ever suspect that window was compromised, or a slot
+    stays provisional suspiciously long, run `notenv key rotate-master` (and `notenv key rm` the
+    slot): a fresh master key makes anything an interceptor captured useless.
+
+!!! note "Onboarding needs write access"
+
+    Replacing the one-time passphrase is a header write. If your team uses read-only storage
+    credentials for some members, onboard with the write-capable credential first, then switch the
+    member to the read-only one.
+
+## Enroll a machine
+
+CI jobs and agents are not teammates; they get **identities**, provisioned through the platform's
+secret store:
+
+```sh
+notenv key add --machine ci
+```
+
+This prints a new age identity exactly once, for pasting into the secret store; notenv saves it
+nowhere. The machine presents it via `NOTENV_IDENTITY`. If the machine generated its own identity,
+enroll its public key instead: `notenv key add --machine ci --recipient age1...`. See the
+[CI guide](ci.md) for the full recipe, including enforced read-only.
+
+## Offboard a teammate or machine
 
 ```sh
 notenv key rm alice
@@ -58,11 +91,10 @@ re-key propagates to other machines automatically (see [below](#re-keys-propagat
 
 | Operation | Command | Effect |
 |---|---|---|
-| Add a backup passphrase | `notenv key add --passphrase` | A second passphrase slot (backup or second device). |
 | Change your passphrase | `notenv key rotate` | Rewraps your slot. Header only; secrets untouched. |
 | Re-key as a precaution | `notenv key rotate-master` | Fresh master key, every secret re-encrypted, all slots kept. |
 | Transfer governance | `notenv key set-primary <name>` | Moves the advisory primary slot (the one `key rm` refuses to remove). |
-| Inspect slots | `notenv key list` | Name, type, primary, fingerprint. `--json` for machines. |
+| Inspect slots | `notenv key list` | Name, principal, primary, added date, fingerprint. `--json` for machines. |
 
 ## Re-keys propagate silently
 

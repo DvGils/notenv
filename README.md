@@ -104,8 +104,8 @@ notenv run -- cmd
 ```
 
 Secrets are encrypted with a random **master key** that never exists in plaintext at rest: a small
-header object holds it wrapped under one or more **key slots** (a passphrase, or a teammate's age
-public key), the same approach LUKS and restic use. The header is authenticated and version-pinned,
+header object holds it wrapped under one or more **key slots** (a person's passphrase, or a
+machine's age public key), the same approach LUKS and restic use. The header is authenticated and version-pinned,
 so a party that can write your storage but holds no key cannot tamper with it or roll it back
 undetected. Full detail in
 [Concepts](https://dvgils.github.io/notenv/concepts/how-it-works/).

@@ -11,15 +11,19 @@ rest. It is stored once, in the **header**, wrapped to one or more key slots.
 
 ## Key slots
 
-A slot wraps the master key so that one credential can recover it:
+A slot wraps the master key so that one credential can recover it. Passphrases are for people,
+identities are for machines:
 
-- **Passphrase slot.** The master is reachable via a slot keypair whose private key is scrypt-wrapped
-  under your passphrase. scrypt raises the cost of an offline brute-force.
-- **Recipient slot.** A teammate's age public key. They unwrap the master with their private identity;
-  you never see a secret of theirs.
+- **Passphrase slot (a person).** The master is reachable via a slot keypair whose private key is
+  scrypt-wrapped under a passphrase. scrypt raises the cost of an offline brute-force. A teammate's
+  slot starts out **provisional**: it is wrapped under a generated one-time onboarding passphrase,
+  and no command proceeds for them until they replace it with a passphrase only they know.
+- **Recipient slot (a machine).** An age public key whose private identity lives in the platform's
+  secret store (CI, an agent harness), presented via `NOTENV_IDENTITY`. notenv never stores an
+  identity on disk.
 
 Unlocking any one slot yields the master key. This is the LUKS / restic pattern: changing a passphrase
-or adding/removing a teammate rewraps only the header, not the secrets.
+or adding/removing a slot rewraps only the header, not the secrets.
 
 ## The authenticated header
 
@@ -68,5 +72,5 @@ remove it, and `notenv key set-primary` transfers it. This is governance, not a 
 |---|---|---|
 | Secret values (plaintext) | RAM only, on the running machine, for the command's lifetime | Never on disk |
 | Master key | The header, wrapped to slots; on Linux cached in the kernel keyring for a session | Never plaintext at rest |
-| Passphrase | Your password manager | Never stored on the backend |
-| age identity | Your machine (`NOTENV_IDENTITY`) | Your responsibility to protect |
+| Passphrase (a person) | Their head and their password manager | Never stored on the backend or on disk |
+| age identity (a machine) | The platform's secret store, presented via `NOTENV_IDENTITY` | notenv stores no identity on disk, anywhere |

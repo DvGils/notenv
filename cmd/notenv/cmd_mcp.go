@@ -28,8 +28,10 @@ Tools: list_secrets (names, descriptions, modified times) and
 run_with_secrets (inject and execute; returns exit code and masked output).
 Both address a namespace explicitly, like --namespace: no checkout needed.
 
-The vault must unlock without a prompt: set NOTENV_IDENTITY to an identity
-that holds a slot, or rely on a session-cached master key. To make the whole
+The vault must unlock without a prompt: rely on a session-cached master key
+(you unlocked earlier in the session), or enroll the agent as a machine
+('key add --machine') and present its identity via NOTENV_IDENTITY from the
+harness's secret store. To make the whole
 server read-only by policy, start it with NOTENV_READONLY=1 (the two tools
 mutate nothing either way).
 

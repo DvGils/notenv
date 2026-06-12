@@ -27,8 +27,8 @@ var keyCmd = &cobra.Command{
 	Long: `Manage the key-slot header that wraps your master key.
 
 The header lives next to your secrets and stores the master key wrapped under
-one or more slots (today: passphrase slots). These commands operate on the
-storage as a whole, independent of any single project.`,
+one or more slots: a person's passphrase, or a machine's age public key. These
+commands operate on the storage as a whole, independent of any single project.`,
 }
 
 // headerTarget is a storage opened for header operations together with its

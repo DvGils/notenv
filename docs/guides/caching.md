@@ -37,9 +37,9 @@ guarantee: they persist to disk, and with no daemon there is nothing to evict th
 a weaker cache under the same name and quietly break the "nothing left behind" property, notenv
 **does not cache on macOS or Windows**.
 
-Those platforms prompt and fetch on each run. For a prompt-free workflow there, use a configured
-[age identity](teams-and-keys.md) (`NOTENV_IDENTITY`): an on-disk credential you place and control,
-with no lifecycle managed by notenv.
+Those platforms prompt and fetch on each run. For a prompt-free workflow there, enroll the machine
+(`notenv key add --machine`) and present its identity via `NOTENV_IDENTITY` from a secret store you
+control, with no lifecycle managed by notenv. See [Teams and keys](teams-and-keys.md).
 
 ## Concurrent writes
 

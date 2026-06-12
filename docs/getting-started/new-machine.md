@@ -18,29 +18,22 @@ Nothing else to restore. The committed `notenv.toml` and your password manager a
 
 ## Joining someone else's vault
 
-If you are joining a vault someone else owns (rather than restoring your own), you join by **age
-identity** instead of a passphrase. The vault owner adds you with only your public key, so you never
-share a secret with them.
+If you are joining a vault someone else owns (rather than restoring your own), you still end up
+with a passphrase only you know; the owner just opens the door:
 
-1. Generate an identity on your machine:
+1. The owner runs `notenv key add you` and sends you the **one-time onboarding passphrase** it
+   prints, over a private channel.
 
-    ```sh
-    notenv key gen-identity
-    ```
-
-    This saves an age identity locally and prints your public `age1...` recipient.
-
-2. Send the owner that recipient. It is public and safe to share in the clear.
-
-3. The owner runs `notenv key add --recipient age1... --name you`.
-
-4. Point this machine at the same storage and run:
+2. Point this machine at the same storage and run:
 
     ```sh
     notenv setup
-    notenv run -- ...
     ```
 
-    Your identity unlocks the vault. No passphrase needed.
+    Enter the one-time passphrase. notenv immediately makes you replace it with your own; the
+    one-time passphrase stops working, and from then on the owner knows no credential of yours.
 
-See the [command reference](../reference/commands.md) for the full set of `notenv key` operations.
+3. Escrow your new passphrase in your password manager and you are ready: `notenv run -- ...`
+
+See [Teams and keys](../guides/teams-and-keys.md) for the full model and the
+[command reference](../reference/commands.md) for every `notenv key` operation.
