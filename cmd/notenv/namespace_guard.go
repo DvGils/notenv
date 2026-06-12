@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -37,7 +38,8 @@ func guardNamespace(ctx context.Context, store backend.Backend, dir string, bind
 		return nil
 	case config.NamespaceConfirm:
 		if err := confirmNamespace(fmt.Sprintf("%s requests namespace %q, not this directory's name — expose that namespace's secrets to commands run here?", contract.FileName, resolved),
-			fmt.Sprintf("%s requests namespace %q (not this directory's name %q); pinning it for this checkout", contract.FileName, resolved, filepath.Base(dir)), resolved); err != nil {
+			fmt.Sprintf("%s requests namespace %q (not this directory's name %q); pinning it for this checkout", contract.FileName, resolved, filepath.Base(dir)),
+			fmt.Sprintf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)); err != nil {
 			return err
 		}
 	case config.NamespacePin:
@@ -47,7 +49,8 @@ func guardNamespace(ctx context.Context, store backend.Backend, dir string, bind
 		}
 		if joining {
 			if err := confirmNamespace(fmt.Sprintf("this checkout hasn't used notenv before, but namespace %q already holds secrets — expose them to commands run here?", resolved),
-				fmt.Sprintf("first use in this checkout joins existing namespace %q; pinning it", resolved), resolved); err != nil {
+				fmt.Sprintf("first use in this checkout joins existing namespace %q; pinning it", resolved),
+				fmt.Sprintf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)); err != nil {
 				return err
 			}
 		}
@@ -56,9 +59,43 @@ func guardNamespace(ctx context.Context, store backend.Backend, dir string, bind
 	return nil
 }
 
-// confirmNamespace asks the user to accept a namespace before its first use in
-// this checkout, or warns loudly where no one can answer (CI).
-func confirmNamespace(question, ciWarning, resolved string) error {
+// guardFlagNamespace holds an explicitly named namespace (--namespace) to the
+// user-level acceptance record. Unlike a committed contract, the flag is
+// chosen by the invoker, so it cannot be planted by a cloned repository — but
+// it is exactly how a misdirected agent would be steered at another project's
+// secrets, so joining a namespace that already holds secrets is confirmed once
+// per (storage, namespace). Acceptance is recorded user-level: there is no
+// checkout to pin in. A virgin namespace is the new-project flow and pins
+// without ceremony, same as a checkout's.
+func guardFlagNamespace(ctx context.Context, store backend.Backend, scope, namespace string) error {
+	accepted, err := config.NamespaceAccepted(scope, namespace)
+	if err != nil {
+		return err
+	}
+	if accepted {
+		return nil
+	}
+	joining, err := secrets.Exists(ctx, store, namespace)
+	if err != nil {
+		return fmt.Errorf("check namespace %q before first use: %w", namespace, err)
+	}
+	if joining {
+		if err := confirmNamespace(fmt.Sprintf("namespace %q already holds secrets — expose them to commands run here?", namespace),
+			fmt.Sprintf("first explicit use of namespace %q on this storage joins its existing secrets; accepting it", namespace),
+			fmt.Sprintf("namespace %q declined; check the --namespace value", namespace)); err != nil {
+			return err
+		}
+	}
+	if err := config.AcceptNamespace(scope, namespace); err != nil {
+		ui.Warnf("could not record acceptance of namespace %q: %v (you may be asked again)", namespace, err)
+	}
+	return nil
+}
+
+// confirmNamespace asks the user to accept a namespace before its first use,
+// or warns loudly where no one can answer (CI). decline is the error a refusal
+// surfaces, pointing at where the namespace was chosen.
+func confirmNamespace(question, ciWarning, decline string) error {
 	if !ui.Interactive() {
 		ui.Warnf("%s", ciWarning)
 		return nil
@@ -68,7 +105,7 @@ func confirmNamespace(question, ciWarning, resolved string) error {
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)
+		return errors.New(decline)
 	}
 	return nil
 }

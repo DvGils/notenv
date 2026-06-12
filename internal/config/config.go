@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -435,10 +436,35 @@ func Resolve(u *User, f *contract.File, contractDir, storageName string) (Effect
 		return eff, err
 	}
 	eff.Namespace = firstOf(f.Namespace, filepath.Base(contractDir))
-	eff.Mode = firstOf(u.Crypto.Mode, ModePass)
 	if !contract.NamespaceName.MatchString(eff.Namespace) {
 		return eff, fmt.Errorf("derived namespace %q is not a valid object name; set namespace explicitly in %s", eff.Namespace, contract.FileName)
 	}
+	return cryptoEffective(u, eff, st, name)
+}
+
+// ResolveNamespace is Resolve without a project: an explicitly named namespace
+// (--namespace) combined with a selected storage. The vault is addressed
+// directly — no contract, no checkout, no cwd.
+func ResolveNamespace(u *User, storageName, namespace string) (Effective, error) {
+	name, st, err := u.SelectStorage(storageName)
+	if err != nil {
+		return Effective{}, err
+	}
+	eff, err := storageEffective(name, st)
+	if err != nil {
+		return eff, err
+	}
+	eff.Namespace = namespace
+	if !contract.NamespaceName.MatchString(namespace) {
+		return eff, fmt.Errorf("namespace %q is not a valid object name (must match %s)", namespace, contract.NamespaceName)
+	}
+	return cryptoEffective(u, eff, st, name)
+}
+
+// cryptoEffective fills the crypto half of an Effective: mode and the two
+// cache TTLs.
+func cryptoEffective(u *User, eff Effective, st StorageEntry, name string) (Effective, error) {
+	eff.Mode = firstOf(u.Crypto.Mode, ModePass)
 	if eff.Mode != ModePass {
 		return eff, fmt.Errorf("unsupported crypto mode %q (MVP supports %q)", eff.Mode, ModePass)
 	}
@@ -482,6 +508,11 @@ type trustState struct {
 	Vaults map[string]Pin `json:"vaults"`
 	// Scopes maps storage scope (CacheScope) → the vault ID seen there.
 	Scopes map[string]string `json:"scopes"`
+	// Namespaces maps storage scope → the namespaces this user has accepted
+	// addressing there explicitly (--namespace) — the dirless sibling of the
+	// checkout's namespace pin, since without a checkout there is no
+	// notenv.local.toml to record acceptance in.
+	Namespaces map[string][]string `json:"namespaces,omitempty"`
 }
 
 func pinPath() (string, error) {
@@ -493,7 +524,7 @@ func pinPath() (string, error) {
 }
 
 func loadTrust() (*trustState, error) {
-	state := &trustState{Vaults: map[string]Pin{}, Scopes: map[string]string{}}
+	state := &trustState{Vaults: map[string]Pin{}, Scopes: map[string]string{}, Namespaces: map[string][]string{}}
 	path, err := pinPath()
 	if err != nil {
 		return nil, err
@@ -513,6 +544,9 @@ func loadTrust() (*trustState, error) {
 	}
 	if state.Scopes == nil {
 		state.Scopes = map[string]string{}
+	}
+	if state.Namespaces == nil {
+		state.Namespaces = map[string][]string{}
 	}
 	return state, nil
 }
@@ -564,18 +598,48 @@ func ScopeVault(scope string) (vaultID string, bound bool, err error) {
 	return vaultID, bound, nil
 }
 
-// ForgetScope removes a scope's binding and its vault's pin (`notenv key
-// forget`, after a deliberate vault reset). The pin survives if another scope
-// still references the vault (the same vault reachable through two storage
-// configurations). Forgetting an unbound scope is a no-op.
+// NamespaceAccepted reports whether this user has explicitly accepted
+// addressing a namespace at a storage scope before (--namespace first use).
+func NamespaceAccepted(scope, namespace string) (bool, error) {
+	state, err := loadTrust()
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(state.Namespaces[scope], namespace), nil
+}
+
+// AcceptNamespace records the acceptance of a namespace at a storage scope.
+func AcceptNamespace(scope, namespace string) error {
+	state, err := loadTrust()
+	if err != nil {
+		return err
+	}
+	if slices.Contains(state.Namespaces[scope], namespace) {
+		return nil
+	}
+	state.Namespaces[scope] = append(state.Namespaces[scope], namespace)
+	sort.Strings(state.Namespaces[scope])
+	return saveTrust(state)
+}
+
+// ForgetScope removes a scope's binding, its vault's pin (`notenv key
+// forget`, after a deliberate vault reset), and the namespaces accepted
+// there. The pin survives if another scope still references the vault (the
+// same vault reachable through two storage configurations). Forgetting an
+// unbound scope still drops its namespace acceptances.
 func ForgetScope(scope string) error {
 	state, err := loadTrust()
 	if err != nil {
 		return err
 	}
+	_, hadNamespaces := state.Namespaces[scope]
+	delete(state.Namespaces, scope)
 	vaultID, bound := state.Scopes[scope]
 	if !bound {
-		return nil
+		if !hadNamespaces {
+			return nil
+		}
+		return saveTrust(state)
 	}
 	delete(state.Scopes, scope)
 	stillReferenced := false

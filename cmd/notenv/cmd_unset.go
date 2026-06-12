@@ -33,7 +33,7 @@ var unsetCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		storageKey := a.contract.StorageKey(key)
+		storageKey := a.storageKey(key)
 		if _, present := state.Secrets[storageKey]; !present {
 			return fmt.Errorf("%q is not set in namespace %q", key, a.namespace)
 		}
@@ -58,8 +58,10 @@ var unsetCmd = &cobra.Command{
 
 		// The committed contract is a separate decision from the stored value, so
 		// removal never edits it; warn if `run` will now report the key missing.
-		if spec, declared := a.contract.Secrets[key]; declared && spec.IsRequired() {
-			ui.Warnf("%s is still declared required in %s; `notenv run` will report it missing until you re-set it or remove the declaration", key, contract.FileName)
+		if a.contract != nil {
+			if spec, declared := a.contract.Secrets[key]; declared && spec.IsRequired() {
+				ui.Warnf("%s is still declared required in %s; `notenv run` will report it missing until you re-set it or remove the declaration", key, contract.FileName)
+			}
 		}
 		return nil
 	},

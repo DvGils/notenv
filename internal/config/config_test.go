@@ -427,3 +427,56 @@ func TestDefaultVaultDirIsNamePartitioned(t *testing.T) {
 		t.Fatalf("vault dir %q must end in its name", a)
 	}
 }
+
+// TestResolveNamespace: an explicit namespace combines with a selected
+// storage into a full Effective — no contract, no directory — and an invalid
+// namespace is refused before any storage is touched.
+func TestResolveNamespace(t *testing.T) {
+	u := &config.User{
+		Default: "personal",
+		Storage: map[string]config.StorageEntry{"personal": {Remote: "b2", Base: "p"}},
+	}
+	eff, err := config.ResolveNamespace(u, "", "ops")
+	if err != nil {
+		t.Fatalf("ResolveNamespace: %v", err)
+	}
+	if eff.StorageName != "personal" || eff.Namespace != "ops" {
+		t.Fatalf("resolved %+v, want personal/ops", eff)
+	}
+	if eff.CacheTTL != config.DefaultCacheTTL || eff.BlobCacheTTL != config.DefaultBlobCacheTTL {
+		t.Fatalf("TTLs not defaulted: %+v", eff)
+	}
+	if _, err := config.ResolveNamespace(u, "", "../evil"); err == nil {
+		t.Fatal("an invalid namespace must be refused")
+	}
+}
+
+// TestNamespaceAcceptance: acceptance is per (scope, namespace), persists,
+// and is dropped with the scope's trust state by ForgetScope — including for
+// a scope that never pinned a vault.
+func TestNamespaceAcceptance(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	ok, err := config.NamespaceAccepted("scopeA", "ops")
+	if err != nil || ok {
+		t.Fatalf("fresh state: accepted=%v err=%v, want false", ok, err)
+	}
+	if err := config.AcceptNamespace("scopeA", "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := config.NamespaceAccepted("scopeA", "ops"); !ok {
+		t.Fatal("acceptance must persist")
+	}
+	if ok, _ := config.NamespaceAccepted("scopeA", "other"); ok {
+		t.Fatal("acceptance must be per namespace")
+	}
+	if ok, _ := config.NamespaceAccepted("scopeB", "ops"); ok {
+		t.Fatal("acceptance must be per scope")
+	}
+	if err := config.ForgetScope("scopeA"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := config.NamespaceAccepted("scopeA", "ops"); ok {
+		t.Fatal("ForgetScope must drop the scope's namespace acceptances")
+	}
+}

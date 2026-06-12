@@ -59,7 +59,7 @@ var setCmd = &cobra.Command{
 			return err
 		}
 
-		storageKey := a.contract.StorageKey(key)
+		storageKey := a.storageKey(key)
 		// A set without --description re-states the value, not what the key
 		// means: the existing description rides along. --description "" clears.
 		desc := state.Meta[storageKey].Description
@@ -86,11 +86,14 @@ var setCmd = &cobra.Command{
 		a.maybeCompact(ctx, view.mk, state.SegmentCount())
 
 		// Convenience: keep the committed contract in sync with reality.
-		if _, declared := a.contract.Secrets[key]; !declared {
-			if err := contract.Declare(a.contractPath, key); err != nil {
-				ui.Warnf("could not declare %s in %s: %v; add it by hand or `notenv run` won't inject it", key, contract.FileName, err)
-			} else {
-				ui.Successf("declared %s in %s (required); commit it", key, contract.FileName)
+		// Projectless writes have no contract to sync.
+		if a.contract != nil {
+			if _, declared := a.contract.Secrets[key]; !declared {
+				if err := contract.Declare(a.contractPath, key); err != nil {
+					ui.Warnf("could not declare %s in %s: %v; add it by hand or `notenv run` won't inject it", key, contract.FileName, err)
+				} else {
+					ui.Successf("declared %s in %s (required); commit it", key, contract.FileName)
+				}
 			}
 		}
 		return nil

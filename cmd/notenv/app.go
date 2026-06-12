@@ -18,11 +18,14 @@ import (
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keymgmt"
 	"github.com/DvGils/notenv/internal/keyring"
+	"github.com/DvGils/notenv/internal/runner"
 	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
 // app wires contract, config, and backend together for one command invocation.
+// contract is nil in projectless mode (--namespace): the vault is addressed
+// directly, with no checkout to declare, rename, or narrow anything.
 type app struct {
 	contract     *contract.File
 	contractPath string
@@ -36,6 +39,9 @@ type app struct {
 }
 
 func loadApp(ctx context.Context) (*app, error) {
+	if namespaceFlag != "" {
+		return loadProjectlessApp(ctx)
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -86,6 +92,88 @@ func loadApp(ctx context.Context) (*app, error) {
 		cacheScope:   eff.Scope(),
 		cacheTTL:     eff.CacheTTL,
 	}, nil
+}
+
+// loadProjectlessApp is loadApp for --namespace: the vault addressed directly.
+// Storage selection is --storage or the machine default — there is no checkout
+// to carry a binding — and first use of a namespace that already holds secrets
+// is confirmed against the user-level acceptance record instead of a local pin.
+func loadProjectlessApp(ctx context.Context) (*app, error) {
+	user, err := config.LoadUser()
+	if err != nil {
+		return nil, err
+	}
+	eff, err := config.ResolveNamespace(user, storageFlag, namespaceFlag)
+	if err != nil {
+		return nil, err
+	}
+	store := openStorage(eff)
+	if err := guardFlagNamespace(ctx, store, eff.Scope(), eff.Namespace); err != nil {
+		return nil, err
+	}
+	machine, err := config.MachineID()
+	if err != nil {
+		return nil, err
+	}
+	return &app{
+		namespace:  eff.Namespace,
+		machine:    machine,
+		store:      store,
+		cache:      keyring.DefaultCache(),
+		blobs:      blobcache.New(eff.BlobCacheTTL),
+		cacheScope: eff.Scope(),
+		cacheTTL:   eff.CacheTTL,
+	}, nil
+}
+
+// storageKey maps a declared env name to the key it is stored under; without
+// a contract there is nothing to rename, so the name is the key.
+func (a *app) storageKey(key string) string {
+	if a.contract != nil {
+		return a.contract.StorageKey(key)
+	}
+	return key
+}
+
+// buildEnv resolves the env the child runs with: the contract's declared vars
+// when a project is loaded, otherwise every secret in the namespace under its
+// storage key — a projectless run has no contract to narrow, rename, or
+// require anything.
+func (a *app) buildEnv(base []string, secretMap map[string]string) ([]string, error) {
+	if a.contract != nil {
+		return a.contract.BuildEnv(base, secretMap)
+	}
+	env := base
+	for _, key := range slices.Sorted(maps.Keys(secretMap)) {
+		if !contract.ValidEnvName(key) {
+			ui.Warnf("skipping %q: not a valid environment variable name", key)
+			continue
+		}
+		env = append(env, key+"="+secretMap[key])
+	}
+	return env, nil
+}
+
+// injectedSecrets pairs each env var notenv injects with its value — the exact
+// strings the output masker scrubs. With a contract, only resolved declared
+// vars count (required-but-missing ones already failed buildEnv); without one,
+// everything buildEnv injects.
+func (a *app) injectedSecrets(secretMap map[string]string) []runner.Secret {
+	var out []runner.Secret
+	if a.contract != nil {
+		for envKey := range a.contract.Secrets {
+			if value, ok := secretMap[a.contract.StorageKey(envKey)]; ok {
+				out = append(out, runner.Secret{Name: envKey, Value: value})
+			}
+		}
+		return out
+	}
+	for key, value := range secretMap {
+		if contract.ValidEnvName(key) {
+			out = append(out, runner.Secret{Name: key, Value: value})
+		}
+	}
+	return out
 }
 
 // vaultView is one verified read of the vault header: the trust root a

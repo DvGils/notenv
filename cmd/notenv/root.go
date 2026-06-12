@@ -25,9 +25,15 @@ func (e *exitCodeError) Error() string { return fmt.Sprintf("exit code %d", e.co
 // local binding and the machine default. Persistent so every command honors it.
 var storageFlag string
 
+// namespaceFlag addresses a vault namespace directly, with no project
+// checkout: the contract walk is skipped entirely, so it works from any
+// directory (or none — an MCP server has no meaningful cwd).
+var namespaceFlag string
+
 func init() {
 	rootCmd.Version = versionString()
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 	rootCmd.PersistentFlags().StringVar(&storageFlag, "storage", "", "named storage to use (overrides the project binding and default)")
+	rootCmd.PersistentFlags().StringVar(&namespaceFlag, "namespace", "", "address this vault namespace directly, ignoring any project contract (works from anywhere)")
 	rootCmd.AddCommand(setupCmd, initCmd, importCmd, setCmd, unsetCmd, listCmd, runCmd, compactCmd, cacheCmd, keyCmd, vaultCmd)
 }
