@@ -38,6 +38,9 @@ var setCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err := a.requireWritable("set a secret"); err != nil {
+			return err
+		}
 
 		ctx := cmd.Context()
 

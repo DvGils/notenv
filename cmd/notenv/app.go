@@ -36,6 +36,29 @@ type app struct {
 	blobs        blobcache.Cache
 	cacheScope   string // length-prefixed remote+base (config.CacheScope): one key per storage base
 	cacheTTL     time.Duration
+	readOnly     string // non-empty: why mutating commands are refused (requireWritable)
+}
+
+// readOnlyReason returns why writes to a storage are refused, or "" when
+// writable: the per-storage policy or the process-wide env switch.
+func readOnlyReason(storageName string, readOnly bool) string {
+	if readOnly {
+		return fmt.Sprintf("storage %q is read-only (read_only = true in the machine config)", storageName)
+	}
+	if config.ReadOnlyEnv() {
+		return "NOTENV_READONLY is set"
+	}
+	return ""
+}
+
+// requireWritable refuses a mutating command against read-only storage. The
+// refusal is policy for cooperating clients, not containment: it exists so an
+// honest agent can't destroy anything by accident.
+func (a *app) requireWritable(action string) error {
+	if a.readOnly == "" {
+		return nil
+	}
+	return fmt.Errorf("%s; refusing to %s", a.readOnly, action)
 }
 
 func loadApp(ctx context.Context) (*app, error) {
@@ -91,6 +114,7 @@ func loadApp(ctx context.Context) (*app, error) {
 		blobs:        blobcache.New(eff.BlobCacheTTL),
 		cacheScope:   eff.Scope(),
 		cacheTTL:     eff.CacheTTL,
+		readOnly:     readOnlyReason(eff.StorageName, eff.ReadOnly),
 	}, nil
 }
 
@@ -123,6 +147,7 @@ func loadProjectlessApp(ctx context.Context) (*app, error) {
 		blobs:      blobcache.New(eff.BlobCacheTTL),
 		cacheScope: eff.Scope(),
 		cacheTTL:   eff.CacheTTL,
+		readOnly:   readOnlyReason(eff.StorageName, eff.ReadOnly),
 	}, nil
 }
 
@@ -503,7 +528,7 @@ func (a *app) master(ctx context.Context) (*crypto.MasterKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	mk, _, err := ensureMaster(ctx, v, a.cache, a.cacheScope, a.cacheTTL)
+	mk, _, err := ensureMaster(ctx, v, a.cache, a.cacheScope, a.cacheTTL, a.readOnly)
 	return mk, err
 }
 

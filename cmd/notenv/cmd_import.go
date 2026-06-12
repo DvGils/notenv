@@ -114,6 +114,10 @@ func reportDryRun(file string, items []importItem, skipped []string) {
 }
 
 func runImport(cmd *cobra.Command, a *app, file string, items []importItem, skipped []string) error {
+	// --dry-run never reaches here, so a read-only storage still vets a file.
+	if err := a.requireWritable("import secrets"); err != nil {
+		return err
+	}
 	if len(items) == 0 {
 		return errors.New("every assignment was empty; nothing to import")
 	}

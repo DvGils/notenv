@@ -215,7 +215,7 @@ func addLocalStorage(ctx context.Context, user *config.User, first bool) (bool, 
 	}
 	ui.Successf("wrote storage %q to %s", name, confPath)
 
-	_, created, err := ensureMaster(ctx, store, keyring.DefaultCache(), eff.Scope(), config.DefaultCacheTTL)
+	_, created, err := ensureMaster(ctx, store, keyring.DefaultCache(), eff.Scope(), config.DefaultCacheTTL, readOnlyReason(name, false))
 	if err != nil {
 		return false, err
 	}
@@ -276,7 +276,7 @@ func addRemoteStorage(ctx context.Context, user *config.User, first bool) (bool,
 	// wrapped under a newly chosen passphrase; existing storage verifies the
 	// escrowed passphrase by unlocking a slot, the new-machine recovery flow.
 	scope := config.CacheScope(remote, base)
-	_, created, err := ensureMaster(ctx, store, keyring.DefaultCache(), scope, config.DefaultCacheTTL)
+	_, created, err := ensureMaster(ctx, store, keyring.DefaultCache(), scope, config.DefaultCacheTTL, readOnlyReason(name, false))
 	if err != nil {
 		return false, err
 	}

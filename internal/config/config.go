@@ -66,6 +66,13 @@ type StorageEntry struct {
 	// Versioned: the remote retains old object versions on overwrite
 	// (B2 does natively), so skip the ~3s server-side .prev backup copy.
 	Versioned bool `toml:"versioned"`
+	// ReadOnly refuses every mutating command against this storage. It is
+	// policy, not crypto: it constrains cooperating clients (an honest agent
+	// doing something destructive by accident), it does not contain
+	// adversaries — anyone who can decrypt can forge writes with their own
+	// tooling. Enforced read-only comes from the storage credential itself
+	// (e.g. a read-only B2 application key behind the rclone remote).
+	ReadOnly bool `toml:"read_only"`
 	// CacheTTL bounds local ciphertext-cache lifetime for this storage
 	// (Go duration; "0" disables). Default 1h.
 	CacheTTL string `toml:"cache_ttl"`
@@ -206,6 +213,9 @@ func writeUserConfig(u *User) (string, error) {
 			fmt.Fprintf(&b, "base      = %q\n", st.Base)
 			fmt.Fprintf(&b, "versioned = %t   # remote keeps old versions on overwrite (B2: yes), so skip backup copies\n", st.Versioned)
 		}
+		if st.ReadOnly {
+			b.WriteString("read_only = true   # refuse mutating commands here (policy for cooperating clients, not enforcement)\n")
+		}
 		if st.CacheTTL != "" {
 			fmt.Fprintf(&b, "cache_ttl = %q\n", st.CacheTTL)
 		} else {
@@ -339,6 +349,15 @@ func CheckNamespacePin(b LocalBinding, resolved, derived string) (NamespaceDecis
 	}
 }
 
+// ReadOnlyEnv reports whether NOTENV_READONLY marks this whole process
+// read-only — the env-shaped sibling of a storage entry's read_only, for
+// wrapping an agent without touching the machine config. Any value but "" and
+// "0" counts.
+func ReadOnlyEnv() bool {
+	v := os.Getenv("NOTENV_READONLY")
+	return v != "" && v != "0"
+}
+
 // Exists reports whether a user config file is present (the "is this
 // machine set up" check).
 func Exists() bool {
@@ -357,6 +376,7 @@ type Effective struct {
 	Remote       string // rclone remote name; empty for local storages
 	Base         string // path within the remote
 	Versioned    bool   // remote retains versions on overwrite
+	ReadOnly     bool   // policy: refuse mutating commands against this storage
 	Namespace    string
 	Mode         string        // crypto mode
 	CacheTTL     time.Duration // master-key cache TTL; <= 0 disables caching
@@ -395,7 +415,7 @@ func (st StorageEntry) check(name string) error {
 // validating that the entry is exactly one kind and normalizing it (base
 // default, path expansion).
 func storageEffective(name string, st StorageEntry) (Effective, error) {
-	eff := Effective{StorageName: name, Versioned: st.Versioned}
+	eff := Effective{StorageName: name, Versioned: st.Versioned, ReadOnly: st.ReadOnly}
 	if err := st.check(name); err != nil {
 		return eff, err
 	}

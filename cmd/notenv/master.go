@@ -28,7 +28,12 @@ import (
 //
 // The unwrapped master key (never the passphrase) is cached best-effort in
 // the session keyring. Returns created=true when a header was written.
-func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache, scope string, ttl time.Duration) (*crypto.MasterKey, bool, error) {
+//
+// readOnly (non-empty: the reason, see readOnlyReason) blocks the creation
+// half: unlocking an existing vault is a read, but a missing header on
+// read-only storage must surface as exactly that — never as an invitation to
+// quietly write one from what was meant to be a read command.
+func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache, scope string, ttl time.Duration, readOnly string) (*crypto.MasterKey, bool, error) {
 	var raw []byte
 	var missing bool
 	if err := ui.Spin("Reading key header", func() error {
@@ -66,6 +71,9 @@ func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache,
 	// its absence is the loudest alarm the pin system can raise — a wiped or
 	// replaced vault — not an invitation to quietly initialize a fresh one
 	// (which would also overwrite the pin and silence the alarm forever).
+	if readOnly != "" {
+		return nil, false, fmt.Errorf("no vault exists on this storage and %s; refusing to create one", readOnly)
+	}
 	if vaultID, bound, err := config.ScopeVault(scope); err != nil {
 		return nil, false, err
 	} else if bound {

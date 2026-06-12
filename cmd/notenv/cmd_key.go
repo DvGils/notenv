@@ -32,10 +32,12 @@ storage as a whole, independent of any single project.`,
 }
 
 // headerTarget is a storage opened for header operations together with its
-// local-state scope (key cache, rollback pins).
+// local-state scope (key cache, rollback pins) and, when writes are refused,
+// the reason (readOnlyReason).
 type headerTarget struct {
 	vaultStorage
-	scope string
+	scope    string
+	readOnly string
 }
 
 // loadHeaderStore builds the storage backend for header operations. The header
@@ -69,7 +71,7 @@ func loadHeaderStore() (*headerTarget, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &headerTarget{vaultStorage: openStorage(eff), scope: eff.Scope()}, nil
+	return &headerTarget{vaultStorage: openStorage(eff), scope: eff.Scope(), readOnly: readOnlyReason(eff.StorageName, eff.ReadOnly)}, nil
 }
 
 // trustHeader is the read-side integrity check run after every unlock: it
@@ -229,6 +231,9 @@ recover a prior object version through the remote's version history instead.`,
 		if err != nil {
 			return err
 		}
+		if store.readOnly != "" {
+			return fmt.Errorf("%s; refusing to restore the header (a recovery is still a storage write)", store.readOnly)
+		}
 		if err := ui.Spin("Restoring header from backup", func() error {
 			return keymgmt.RestoreBackup(cmd.Context(), store)
 		}); err != nil {
@@ -256,8 +261,12 @@ type unlocked struct {
 // unlockHeader reads and unlocks the header for a mutating operation. Unlike
 // most commands it does not use the master-key cache: a key operation needs to
 // know which slot the caller holds and to hold the credential itself for the
-// post-write verification, so it always prompts.
+// post-write verification, so it always prompts. Every mutating key command
+// funnels through here, so this is also where read-only policy refuses them.
 func unlockHeader(ctx context.Context, store *headerTarget) (*unlocked, error) {
+	if store.readOnly != "" {
+		return nil, fmt.Errorf("%s; refusing to modify the vault header", store.readOnly)
+	}
 	if err := store.Preflight(ctx); err != nil {
 		return nil, err
 	}

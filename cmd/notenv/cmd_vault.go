@@ -41,6 +41,11 @@ not already hold a vault (copies never merge).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
+		// The destination is always a freshly named storage (never one with a
+		// read_only entry), so only the process-wide switch applies here.
+		if config.ReadOnlyEnv() {
+			return errors.New("NOTENV_READONLY is set; refusing to copy — a vault copy writes a full vault to the destination")
+		}
 		src, err := loadHeaderStore()
 		if err != nil {
 			return err

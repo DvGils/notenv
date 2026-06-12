@@ -480,3 +480,40 @@ func TestNamespaceAcceptance(t *testing.T) {
 		t.Fatal("ForgetScope must drop the scope's namespace acceptances")
 	}
 }
+
+// TestReadOnlyStorageEntry: read_only round-trips through the rendered config
+// and lands on the Effective for both resolution paths.
+func TestReadOnlyStorageEntry(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if _, err := config.UpsertStorage("ro", config.StorageEntry{Remote: "b2", Base: "x", ReadOnly: true}, false); err != nil {
+		t.Fatal(err)
+	}
+	u, err := config.LoadUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eff, err := config.ResolveStorage(u, "ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eff.ReadOnly {
+		t.Fatal("read_only must survive the config round-trip")
+	}
+	eff, err = config.ResolveNamespace(u, "ro", "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eff.ReadOnly {
+		t.Fatal("ResolveNamespace must carry read_only")
+	}
+}
+
+// TestReadOnlyEnv: NOTENV_READONLY counts for any value but "" and "0".
+func TestReadOnlyEnv(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "0": false, "1": true, "true": true} {
+		t.Setenv("NOTENV_READONLY", value)
+		if got := config.ReadOnlyEnv(); got != want {
+			t.Fatalf("NOTENV_READONLY=%q: got %v, want %v", value, got, want)
+		}
+	}
+}

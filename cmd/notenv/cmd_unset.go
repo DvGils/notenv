@@ -25,6 +25,9 @@ var unsetCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err := a.requireWritable("remove a secret"); err != nil {
+			return err
+		}
 		ctx := cmd.Context()
 
 		// Fold fresh so we only write a tombstone for a key that is actually set,
