@@ -1,0 +1,120 @@
+site_name: notenv
+site_description: Your .env, encrypted and off your disk, with no infrastructure to run.
+site_url: https://dvgils.github.io/notenv/
+site_author: DvGils
+
+repo_name: DvGils/notenv
+repo_url: https://github.com/DvGils/notenv
+edit_uri: edit/main/docs/
+
+copyright: Licensed under Apache-2.0
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+    logo: material/lock
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+
+plugins:
+  - search
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/DvGils/notenv
+      name: notenv on GitHub
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Quick start: getting-started/quick-start.md
+      - On a new machine: getting-started/new-machine.md
+  - Guides:
+      - Import an existing .env: guides/import.md
+      - Teams and key management: guides/teams-and-keys.md
+      - Cloud remotes: guides/cloud-remotes.md
+      - Multiple vaults: guides/multiple-vaults.md
+      - Continuous integration: guides/ci.md
+      - AI agents: guides/ai-agents.md
+      - Caching and performance: guides/caching.md
+  - Reference:
+      - Commands: reference/commands.md
+      - Configuration files: reference/configuration.md
+      - Environment variables: reference/environment.md
+  - Concepts:
+      - How it works: concepts/how-it-works.md
+      - Keys and slots: concepts/keys-and-slots.md
+      - Storage and concurrency: concepts/storage.md
+  - Security:
+      - Threat model: security/threat-model.md
+      - Reporting a vulnerability: security/reporting.md
+  - Project:
+      - Roadmap: project/roadmap.md
+      - Changelog: project/changelog.md

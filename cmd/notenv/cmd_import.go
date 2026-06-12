@@ -28,14 +28,14 @@ var importCmd = &cobra.Command{
 	Use:   "import [file]",
 	Short: "Import an existing .env file: every value encrypted, every key declared",
 	Long: `Parse a dotenv file and store every value encrypted in the vault, declaring
-each key in the project contract — one command instead of re-typing secrets.
+each key in the project contract: one command instead of re-typing secrets.
 
 The whole file is parsed and validated before anything is written, and all
 values land in a single recorded write: an import either fully happens or
 doesn't. The accepted syntax is the documented dotenv subset: comments,
 'export' prefixes, unquoted/single-/double-quoted values (quoted values may
 span lines), and never any variable expansion. The file itself is not touched;
-once the import succeeds, deleting it is safe — and the point.`,
+once the import succeeds, deleting it is safe, and the point.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		file := ".env"
@@ -73,7 +73,7 @@ once the import succeeds, deleting it is safe — and the point.`,
 
 // vetImport validates every assignment up front (all offenders reported
 // together, nothing written), applies last-wins to duplicate keys, and sets
-// aside empty values — `set` refuses those, so import does too.
+// aside empty values: `set` refuses those, so import does too.
 func vetImport(a *app, pairs []dotenv.Pair) (items []importItem, skipped []string, err error) {
 	var invalid []string
 	last := map[string]dotenv.Pair{}
@@ -163,7 +163,7 @@ func runImport(cmd *cobra.Command, a *app, file string, items []importItem, skip
 	} else {
 		ui.Successf("imported %d secrets into namespace %q (%d new, %d updated)", len(items), a.namespace, len(items)-updatedKeys, updatedKeys)
 	}
-	ui.Notef("every value is now encrypted in your vault — you can delete %s", file)
+	ui.Notef("every value is now encrypted in your vault, so you can delete %s", file)
 	return nil
 }
 

@@ -10,7 +10,7 @@ import (
 
 // lockExclusive takes an exclusive lock on path via LockFileEx, blocking
 // until it is available, and returns the release. The lock belongs to the
-// handle, so the kernel releases it when the process dies — no stale lock can
+// handle, so the kernel releases it when the process dies: no stale lock can
 // outlive its holder.
 func lockExclusive(path string) (func(), error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)

@@ -4,7 +4,7 @@
 // The only fault modelled today is an interrupted upload: a Put fails *before*
 // storing, so the write atomically never lands. That keeps an oracle exact (a
 // failed write is simply a write that did not happen) while still exercising the
-// recovery paths around partial progress — a compaction whose snapshot write is
+// recovery paths around partial progress: a compaction whose snapshot write is
 // interrupted, a `set` whose segment never arrives, and so on.
 package chaos
 

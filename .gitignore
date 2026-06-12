@@ -38,4 +38,9 @@ go.work.sum
 # .idea/
 # .vscode/
 
-/docs
+# Internal design docs: local-only, never published and never tracked.
+/design/
+
+# MkDocs build output and local docs toolchain (the docs/ source IS tracked).
+/site/
+/.venv/

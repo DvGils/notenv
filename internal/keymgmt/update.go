@@ -24,7 +24,7 @@ const updateAttempts = 4
 // manifest update in one authenticated step: every attempt re-reads the
 // header, requires it to wrap mk, and verifies its tag, so a rotation that
 // landed since the caller unlocked surfaces as ErrEpochChanged before anything
-// is written — the caller removes the object it just stored and re-runs. When
+// is written: the caller removes the object it just stored and re-runs. When
 // another writer merely lands first (backend.ErrHeaderChanged), the delta is
 // re-applied to the fresh header and the swap retried, so concurrent writers'
 // entries are never clobbered. Returns the header as written, for the caller's
@@ -32,8 +32,8 @@ const updateAttempts = 4
 //
 // The header's recipient field is attacker-writable in principle (it is only
 // authenticated by a tag keyed from the master it names), so a mismatch is
-// treated as "redo the unlock ceremony" — which runs the real pin and
-// authentication checks — never as a reason to trust anything new here. When
+// treated as "redo the unlock ceremony" (which runs the real pin and
+// authentication checks), never as a reason to trust anything new here. When
 // the recipient does match mk, the tag must verify under it, so a tampered
 // header cannot pass as "unchanged".
 func UpdateManifest(ctx context.Context, store backend.HeaderStore, mk *crypto.MasterKey, delta crypto.ManifestDelta) (*crypto.Header, error) {

@@ -1,7 +1,7 @@
 // Package mcp is a minimal Model Context Protocol server over stdio: enough
 // of the protocol (initialize, ping, tools/list, tools/call as
 // newline-delimited JSON-RPC 2.0) for an agent to call notenv's tools, and
-// nothing more. Hand-rolled deliberately — like internal/ui, it adds zero new
+// nothing more. Hand-rolled deliberately: like internal/ui, it adds zero new
 // supply-chain surface, which matters more than protocol breadth while the
 // server is a prototype.
 //

@@ -10,7 +10,7 @@ import (
 // the master (ToSignPub, ToMasterPub) at header revision ToRevision, in vault
 // VaultID." A machine whose local pin still names the old master verifies the
 // signature with the pinned public key and follows the change without raising
-// the master-changed alarm — so the alarm fires only for changes nobody with
+// the master-changed alarm, so the alarm fires only for changes nobody with
 // the old master authorized.
 //
 // The slot set is deliberately not covered: the new header's own MAC

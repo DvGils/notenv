@@ -19,7 +19,7 @@ type Vault interface {
 
 // RotateMaster re-keys a vault: it mints a fresh master, re-encrypts every
 // manifest-recorded blob under it, and rewrites the header to wrap the new
-// master under hdr's slots — with the manifest re-keyed in the same write,
+// master under hdr's slots, with the manifest re-keyed in the same write,
 // since the object MACs are derived from the master. hdr carries the desired
 // slot set (unchanged for a precautionary rotate, minus a slot for
 // offboarding) and the manifest the caller verified; base is the current
@@ -30,17 +30,17 @@ type Vault interface {
 // keeps the invariant "the master the header yields is a recipient of every
 // recorded blob" at all times:
 //
-//  1. widen  — re-encrypt every recorded blob to {old, new}, header still
+//  1. widen: re-encrypt every recorded blob to {old, new}, header still
 //     yields old. Each blob's plaintext is checked against its manifest MAC
 //     first: a reverted or substituted object must never be laundered into the
 //     new epoch.
-//  2. flip   — write the new header (yields new, manifest re-MAC'd under new);
+//  2. flip: write the new header (yields new, manifest re-MAC'd under new);
 //     every recorded blob already has new.
-//  3. narrow — re-encrypt every recorded blob to {new} only.
+//  3. narrow: re-encrypt every recorded blob to {new} only.
 //
 // Writes racing the rotation resolve through the header compare-and-swap. A
-// concurrent writer's manifest update either lands before the flip — bumping
-// the revision, so the flip's freshness check aborts the rotation (re-run) —
+// concurrent writer's manifest update either lands before the flip, bumping
+// the revision, so the flip's freshness check aborts the rotation (re-run),
 // or reaches the swap after the flip, sees the new master, and rolls its own
 // write back. An object whose manifest update never ran (its writer crashed,
 // or is about to roll back) is deliberately left alone: re-keying or adopting
@@ -63,11 +63,11 @@ func RotateMaster(ctx context.Context, store Vault, hdr *crypto.Header, base []b
 		return nil, err
 	}
 
-	// Phase 1: widen — every recorded object readable under the old AND new
+	// Phase 1: widen, every recorded object readable under the old AND new
 	// master, its re-keyed MAC collected for the flip. Folded entries (objects a
 	// compaction subsumed, awaiting deletion) are not re-keyed: their content
-	// lives in a live snapshot, so they are deleted here instead — rotation is a
-	// natural cleanup point — and their entries dropped at the flip.
+	// lives in a live snapshot, so they are deleted here instead (rotation is a
+	// natural cleanup point) and their entries dropped at the flip.
 	rekeyed := map[string]crypto.ManifestEntry{}
 	live, folded := splitManifest(hdr.Manifest)
 	for _, key := range live {
@@ -75,8 +75,8 @@ func RotateMaster(ctx context.Context, store Vault, hdr *crypto.Header, base []b
 		if errors.Is(err, backend.ErrNotFound) {
 			// A vanished recorded object must fail the rotation, not be skipped:
 			// dropping its entry at the flip would erase the evidence of a
-			// deletion. The honest cause — a concurrent compaction that folded
-			// it — moved the header revision, so the flip would abort and a
+			// deletion. The honest cause (a concurrent compaction that folded
+			// it) moved the header revision, so the flip would abort and a
 			// re-run sees the folded entry; anything else deserves the alarm.
 			return nil, fmt.Errorf("object %s is recorded in the vault manifest but missing from storage: a write was deleted or withheld (if another machine is compacting right now, re-run)", key)
 		}
@@ -105,7 +105,7 @@ func RotateMaster(ctx context.Context, store Vault, hdr *crypto.Header, base []b
 		return nil, fmt.Errorf("record rotation: %w", err)
 	}
 
-	// Phase 2: flip — install the new master and the re-keyed manifest in the
+	// Phase 2: flip, install the new master and the re-keyed manifest in the
 	// header (the one write that goes through the safe-write protocol, which
 	// bumps the revision and seals).
 	hdr.Manifest = rekeyed
@@ -121,7 +121,7 @@ func RotateMaster(ctx context.Context, store Vault, hdr *crypto.Header, base []b
 		onFlip(newMK)
 	}
 
-	// Phase 3: narrow — every recorded object readable under the new master
+	// Phase 3: narrow, every recorded object readable under the new master
 	// only; old can no longer decrypt. Every entry that survived to the flip was
 	// widened, so the new master reads each directly. An object that vanishes
 	// here is skipped, not an error: post-flip its live entry survives, so a

@@ -16,7 +16,7 @@ import (
 // guardNamespace holds the contract's namespace to the checkout's local pin.
 //
 // The committed contract picks the namespace, and the namespace picks which
-// secrets are decrypted into a child process — so an untrusted clone could
+// secrets are decrypted into a child process, so an untrusted clone could
 // otherwise name another project's namespace and have `notenv run` hand that
 // project's secrets to its scripts. The storage target is already machine-only;
 // this closes the same hole one level down. The decision matrix lives in
@@ -24,9 +24,9 @@ import (
 //
 // A first use whose namespace is just the directory's name still gets one
 // check: if that namespace already holds secrets in the vault, this checkout
-// is *joining* it — usually a legitimate new clone of your own project, but
+// is *joining* it, usually a legitimate new clone of your own project, but
 // also exactly what a malicious repository named after your project looks
-// like — so the join is confirmed once rather than pinned silently. A virgin
+// like, so the join is confirmed once rather than pinned silently. A virgin
 // namespace (the new-project flow) pins without ceremony.
 func guardNamespace(ctx context.Context, store backend.Backend, dir string, binding config.LocalBinding, resolved string) error {
 	decision, err := config.CheckNamespacePin(binding, resolved, filepath.Base(dir))
@@ -37,7 +37,7 @@ func guardNamespace(ctx context.Context, store backend.Backend, dir string, bind
 	case config.NamespaceOK:
 		return nil
 	case config.NamespaceConfirm:
-		if err := confirmNamespace(fmt.Sprintf("%s requests namespace %q, not this directory's name — expose that namespace's secrets to commands run here?", contract.FileName, resolved),
+		if err := confirmNamespace(fmt.Sprintf("%s requests namespace %q, not this directory's name. Expose that namespace's secrets to commands run here?", contract.FileName, resolved),
 			fmt.Sprintf("%s requests namespace %q (not this directory's name %q); pinning it for this checkout", contract.FileName, resolved, filepath.Base(dir)),
 			fmt.Sprintf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)); err != nil {
 			return err
@@ -48,7 +48,7 @@ func guardNamespace(ctx context.Context, store backend.Backend, dir string, bind
 			return fmt.Errorf("check namespace %q before first use: %w", resolved, err)
 		}
 		if joining {
-			if err := confirmNamespace(fmt.Sprintf("this checkout hasn't used notenv before, but namespace %q already holds secrets — expose them to commands run here?", resolved),
+			if err := confirmNamespace(fmt.Sprintf("this checkout hasn't used notenv before, but namespace %q already holds secrets. Expose them to commands run here?", resolved),
 				fmt.Sprintf("first use in this checkout joins existing namespace %q; pinning it", resolved),
 				fmt.Sprintf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)); err != nil {
 				return err
@@ -61,7 +61,7 @@ func guardNamespace(ctx context.Context, store backend.Backend, dir string, bind
 
 // guardFlagNamespace holds an explicitly named namespace (--namespace) to the
 // user-level acceptance record. Unlike a committed contract, the flag is
-// chosen by the invoker, so it cannot be planted by a cloned repository — but
+// chosen by the invoker, so it cannot be planted by a cloned repository, but
 // it is exactly how a misdirected agent would be steered at another project's
 // secrets, so joining a namespace that already holds secrets is confirmed once
 // per (storage, namespace). Acceptance is recorded user-level: there is no
@@ -80,7 +80,7 @@ func guardFlagNamespace(ctx context.Context, store backend.Backend, scope, names
 		return fmt.Errorf("check namespace %q before first use: %w", namespace, err)
 	}
 	if joining {
-		if err := confirmNamespace(fmt.Sprintf("namespace %q already holds secrets — expose them to commands run here?", namespace),
+		if err := confirmNamespace(fmt.Sprintf("namespace %q already holds secrets. Expose them to commands run here?", namespace),
 			fmt.Sprintf("first explicit use of namespace %q on this storage joins its existing secrets; accepting it", namespace),
 			fmt.Sprintf("namespace %q declined; check the --namespace value", namespace)); err != nil {
 			return err

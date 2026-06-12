@@ -78,8 +78,8 @@ func loadHeaderStore() (*headerTarget, error) {
 // verifies the header's authentication tag, confirms this storage still holds
 // the vault it held before, then checks the local rollback pin and advances
 // it. A master change is accepted silently when a chain of signed transitions
-// proves the pinned master authorized it; otherwise — and for a rollback or a
-// wholesale vault replacement — it is refused, recoverable with
+// proves the pinned master authorized it; otherwise (and for a rollback or a
+// wholesale vault replacement) it is refused, recoverable with
 // `notenv key trust` after out-of-band verification.
 func trustHeader(ctx context.Context, store keymgmt.Vault, scope string, h *crypto.Header, mk *crypto.MasterKey) error {
 	if err := h.Verify(mk); err != nil {
@@ -762,7 +762,7 @@ authentication tag must still verify.`,
 			return err
 		}
 		if bound && boundVault != header.VaultID {
-			ui.Warnf("this storage previously held vault %s; trusting REPLACES it with vault %s — every prior trust anchor stops applying", boundVault, header.VaultID)
+			ui.Warnf("this storage previously held vault %s; trusting REPLACES it with vault %s; every prior trust anchor stops applying", boundVault, header.VaultID)
 		}
 		stored, have, err := config.ReadPin(header.VaultID)
 		if err != nil {

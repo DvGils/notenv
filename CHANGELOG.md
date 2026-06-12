@@ -4,7 +4,35 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
-## 0.11.0 (unreleased)
+## 0.12.0
+
+The documentation release. notenv gets a proper documentation site, the README becomes a
+landing page that points into it, and the user-facing output gets a polish pass. Nothing
+about the storage format or command behavior changes.
+
+### Documentation
+
+- **A documentation site** at <https://dvgils.github.io/notenv>, built with MkDocs
+  (Material) and published from `docs/` by a GitHub Pages workflow. It covers getting
+  started, task guides (teams and keys, cloud remotes, CI, AI agents, caching and
+  performance), a command and configuration reference, the concepts behind the design,
+  and the full threat model.
+- **The README is now a landing page.** It keeps the pitch, the comparison table, and a
+  quick start, and links into the site for everything deeper.
+- **The threat model and security policy moved into the site.** `THREAT_MODEL.md` is now
+  a pointer to the site's threat model; `SECURITY.md` keeps the private vulnerability
+  reporting link and points its scope there too.
+
+### Changed
+
+- **Clearer error for a vault in an unreadable older format.** Two messages pointed at
+  `notenv key migrate`, removed back in 0.9. A vault written in a storage format this
+  build no longer reads now says exactly that, instead of naming a command that no longer
+  exists.
+- **Consistent house style in CLI output.** Removed em-dashes from messages, prompts, and
+  help text. Wording only; no flags, output shapes, or exit codes changed.
+
+## 0.11.0
 
 The agent-surface release. Software that uses your vault on your behalf — coding agents,
 MCP clients, CI — can now discover what exists, address it from anywhere, parse what it

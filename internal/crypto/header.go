@@ -38,9 +38,8 @@ import (
 // an incompatible change.
 //
 // Version 2 added VaultID and SignPub; version 3 added the object manifest
-// (see manifest.go). There is no in-place upgrade path in this version:
-// notenv 0.8 was the last to carry `notenv key migrate`, so older vaults go
-// through it first.
+// (see manifest.go). This build reads only version 3: there is no in-place
+// upgrade path for older vaults.
 const headerVersion = 3
 
 // Header is the parsed header object. Optional-shaped fields carry omitempty
@@ -338,7 +337,7 @@ func ParseHeader(data []byte) (*Header, error) {
 		return nil, fmt.Errorf("corrupt header: %w", err)
 	}
 	if h.Version < headerVersion {
-		return nil, fmt.Errorf("header version %d is from an older notenv, and this version no longer reads it; upgrade the vault with notenv 0.8 (`notenv key migrate`) first", h.Version)
+		return nil, fmt.Errorf("the key header is in an older storage format (v%d) that this version of notenv no longer reads", h.Version)
 	}
 	if h.Version > headerVersion {
 		return nil, fmt.Errorf("unsupported header version %d (this notenv supports version %d); upgrade notenv", h.Version, headerVersion)
@@ -393,7 +392,7 @@ func EncryptToMasters(plaintext []byte, masters ...*MasterKey) ([]byte, error) {
 }
 
 // ErrNotRecipient reports that a ciphertext is valid age but was not encrypted
-// to the key that tried to open it — the key is wrong, not the data. Callers
+// to the key that tried to open it: the key is wrong, not the data. Callers
 // (rotation's fallback read, the stale-cache retry) branch on it with errors.Is.
 var ErrNotRecipient = errors.New("blob was not encrypted under the current master key")
 

@@ -56,7 +56,7 @@ var storageNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 func ValidStorageName(name string) bool { return storageNameRe.MatchString(name) }
 
 // StorageEntry is one named storage target: either a local vault directory
-// (Path) or an rclone remote (Remote/Base/Versioned) — the populated field is
+// (Path) or an rclone remote (Remote/Base/Versioned): the populated field is
 // the storage's type, and exactly one of the two must be set.
 type StorageEntry struct {
 	// Path is a local vault directory (pure-Go backend, no rclone).
@@ -69,7 +69,7 @@ type StorageEntry struct {
 	// ReadOnly refuses every mutating command against this storage. It is
 	// policy, not crypto: it constrains cooperating clients (an honest agent
 	// doing something destructive by accident), it does not contain
-	// adversaries — anyone who can decrypt can forge writes with their own
+	// adversaries: anyone who can decrypt can forge writes with their own
 	// tooling. Enforced read-only comes from the storage credential itself
 	// (e.g. a read-only B2 application key behind the rclone remote).
 	ReadOnly bool `toml:"read_only"`
@@ -354,7 +354,7 @@ func CheckNamespacePin(b LocalBinding, resolved, derived string) (NamespaceDecis
 }
 
 // ReadOnlyEnv reports whether NOTENV_READONLY marks this whole process
-// read-only — the env-shaped sibling of a storage entry's read_only, for
+// read-only: the env-shaped sibling of a storage entry's read_only, for
 // wrapping an agent without touching the machine config. Any value but "" and
 // "0" counts.
 func ReadOnlyEnv() bool {
@@ -391,7 +391,7 @@ type Effective struct {
 func (e Effective) Local() bool { return e.Path != "" }
 
 // Scope returns the storage's local-state scope (key cache, pins, seq
-// counters). Local storages scope on ":local" plus the absolute path — a
+// counters). Local storages scope on ":local" plus the absolute path: a
 // ":" cannot appear in an rclone remote name, so a local scope can never
 // collide with a remote's, however the remote is named.
 func (e Effective) Scope() string {
@@ -468,7 +468,7 @@ func Resolve(u *User, f *contract.File, contractDir, storageName string) (Effect
 
 // ResolveNamespace is Resolve without a project: an explicitly named namespace
 // (--namespace) combined with a selected storage. The vault is addressed
-// directly — no contract, no checkout, no cwd.
+// directly: no contract, no checkout, no cwd.
 func ResolveNamespace(u *User, storageName, namespace string) (Effective, error) {
 	name, st, err := u.SelectStorage(storageName)
 	if err != nil {
@@ -499,7 +499,7 @@ func cryptoEffective(u *User, eff Effective, st StorageEntry, name string) (Effe
 	eff.CacheTTL = ttl
 	// Local vaults never blob-cache. The cache exists to skip a network
 	// round-trip plus a fold, and its warm path skips header and manifest
-	// verification entirely — a trade justified against a network, not
+	// verification entirely: a trade justified against a network, not
 	// against the same disk. A local vault verifies the manifest on every
 	// read and keeps no second ciphertext copy; cache_ttl is remote-only.
 	// (The master-key cache is untouched: it avoids re-prompting the
@@ -529,8 +529,8 @@ func cryptoEffective(u *User, eff Effective, st StorageEntry, name string) (Effe
 // separate scope → vault-ID binding records which vault each storage location
 // held: without it, substituting a header with a freshly minted vault ID would
 // sidestep the pin entirely (no pin under the new ID, trust on first use).
-// A bound scope whose header claims a different vault ID — or no header at
-// all — is therefore an alarm, never a fresh start.
+// A bound scope whose header claims a different vault ID (or no header at
+// all) is therefore an alarm, never a fresh start.
 type Pin struct {
 	Revision  int    `json:"revision"`
 	MasterPub string `json:"master_pub"`
@@ -544,7 +544,7 @@ type trustState struct {
 	// Scopes maps storage scope (CacheScope) → the vault ID seen there.
 	Scopes map[string]string `json:"scopes"`
 	// Namespaces maps storage scope → the namespaces this user has accepted
-	// addressing there explicitly (--namespace) — the dirless sibling of the
+	// addressing there explicitly (--namespace), the dirless sibling of the
 	// checkout's namespace pin, since without a checkout there is no
 	// notenv.local.toml to record acceptance in.
 	Namespaces map[string][]string `json:"namespaces,omitempty"`

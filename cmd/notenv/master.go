@@ -31,7 +31,7 @@ import (
 //
 // readOnly (non-empty: the reason, see readOnlyReason) blocks the creation
 // half: unlocking an existing vault is a read, but a missing header on
-// read-only storage must surface as exactly that — never as an invitation to
+// read-only storage must surface as exactly that, never as an invitation to
 // quietly write one from what was meant to be a read command.
 func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache, scope string, ttl time.Duration, readOnly string) (*crypto.MasterKey, bool, error) {
 	var raw []byte
@@ -68,8 +68,8 @@ func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache,
 	}
 
 	// No header. If this machine has pinned a vault at this storage before,
-	// its absence is the loudest alarm the pin system can raise — a wiped or
-	// replaced vault — not an invitation to quietly initialize a fresh one
+	// its absence is the loudest alarm the pin system can raise (a wiped or
+	// replaced vault), not an invitation to quietly initialize a fresh one
 	// (which would also overwrite the pin and silence the alarm forever).
 	if readOnly != "" {
 		return nil, false, fmt.Errorf("no vault exists on this storage and %s; refusing to create one", readOnly)
@@ -92,7 +92,7 @@ func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache,
 
 // createMaster runs the creation ceremony on virgin storage. An identity
 // supplied explicitly via the environment creates the vault promptless, with
-// that identity's recipient as the only slot — the agent/CI path. Humans get
+// that identity's recipient as the only slot: the agent/CI path. Humans get
 // the passphrase ceremony and its escrow moment.
 func createMaster(ctx context.Context, store keymgmt.Vault) (*crypto.MasterKey, *crypto.Header, error) {
 	if id, err := creationIdentity(); err != nil {
@@ -102,7 +102,7 @@ func createMaster(ctx context.Context, store keymgmt.Vault) (*crypto.MasterKey, 
 		if err != nil {
 			return nil, nil, err
 		}
-		ui.Warnf("this vault unlocks ONLY with the %s key; protect and back up that identity — lose it and the ciphertext is unrecoverable by design", identityEnv)
+		ui.Warnf("this vault unlocks ONLY with the %s key; protect and back up that identity; lose it and the ciphertext is unrecoverable by design", identityEnv)
 		return mk, header, nil
 	}
 

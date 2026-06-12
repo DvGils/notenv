@@ -1,6 +1,6 @@
 // Package local is a pure-Go backend over a directory: the zero-account,
 // zero-dependency vault. It stores exactly the bytes and layout a remote does
-// — header, transitions, namespace objects — so a local vault copied to a
+// (header, transitions, namespace objects), so a local vault copied to a
 // remote is byte-identical and the same trust machinery runs unchanged.
 //
 // Where rclone's header swap is a windowed best effort, this backend's is a
@@ -9,7 +9,7 @@
 // covers the read-compare-write, and same-machine writers are the only
 // writers a local vault has. The lock is cooperative and same-machine only: a
 // vault directory under Dropbox/syncthing/NFS gets no cross-machine
-// exclusion — concurrent multi-machine use is what remotes are for.
+// exclusion: concurrent multi-machine use is what remotes are for.
 package local
 
 import (
@@ -179,7 +179,7 @@ func (s *Storage) PutHeader(ctx context.Context, raw []byte) error {
 
 // SwapHeader is a true compare-and-swap: an exclusive OS file lock covers the
 // read, the compare, and the write, so concurrent same-machine writers
-// serialize completely — exactly one of any set of racing swaps against the
+// serialize completely: exactly one of any set of racing swaps against the
 // same base succeeds.
 func (s *Storage) SwapHeader(ctx context.Context, base, updated []byte) error {
 	if err := os.MkdirAll(s.Path, 0o700); err != nil {

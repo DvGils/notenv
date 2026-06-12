@@ -93,8 +93,8 @@ func loadApp(ctx context.Context) (*app, error) {
 		return nil, err
 	}
 	store := openStorage(eff)
-	// The contract chooses the namespace — the thing that selects which secrets
-	// reach a child process — so it is held to the checkout's local pin before
+	// The contract chooses the namespace (the thing that selects which secrets
+	// reach a child process), so it is held to the checkout's local pin before
 	// any key is touched (a first-use join of an existing namespace costs one
 	// listing here; pinned checkouts skip storage entirely).
 	if err := guardNamespace(ctx, store, dir, binding, eff.Namespace); err != nil {
@@ -120,8 +120,8 @@ func loadApp(ctx context.Context) (*app, error) {
 
 // projectlessApp is loadApp for an explicitly named namespace (--namespace,
 // or a per-call MCP argument): the vault addressed directly. Storage selection
-// is the explicit name or the machine default — there is no checkout to carry
-// a binding — and first use of a namespace that already holds secrets is
+// is the explicit name or the machine default (there is no checkout to carry
+// a binding), and first use of a namespace that already holds secrets is
 // confirmed against the user-level acceptance record instead of a local pin.
 func projectlessApp(ctx context.Context, storageName, namespace string) (*app, error) {
 	user, err := config.LoadUser()
@@ -163,7 +163,7 @@ func (a *app) storageKey(key string) string {
 
 // buildEnv resolves the env the child runs with: the contract's declared vars
 // when a project is loaded, otherwise every secret in the namespace under its
-// storage key — a projectless run has no contract to narrow, rename, or
+// storage key. A projectless run has no contract to narrow, rename, or
 // require anything.
 func (a *app) buildEnv(base []string, secretMap map[string]string) ([]string, error) {
 	if a.contract != nil {
@@ -180,7 +180,7 @@ func (a *app) buildEnv(base []string, secretMap map[string]string) ([]string, er
 	return env, nil
 }
 
-// injectedSecrets pairs each env var notenv injects with its value — the exact
+// injectedSecrets pairs each env var notenv injects with its value, the exact
 // strings the output masker scrubs. With a contract, only resolved declared
 // vars count (required-but-missing ones already failed buildEnv); without one,
 // everything buildEnv injects.
@@ -260,8 +260,8 @@ func (a *app) vault() (keymgmt.Vault, error) {
 // manifest write prunes folded entries whose objects are gone; both halves of
 // the delta are idempotent under the swap's retry re-application (adopting
 // in-flight strays is not, which is why that is compaction's job). On an
-// epoch change (a concurrent rotation), it removes its own segment — leaving
-// it would poison every fold once the old master is gone — drops the now-stale
+// epoch change (a concurrent rotation), it removes its own segment (leaving
+// it would poison every fold once the old master is gone), drops the now-stale
 // local caches, and reports what happened. The user re-runs the command, which
 // unlocks the new master (running the pin checks) and writes cleanly.
 func (a *app) appendGuarded(ctx context.Context, view *vaultView, prev *secrets.State, seq int, w secrets.Write) (*secrets.State, error) {
@@ -282,7 +282,7 @@ func (a *app) appendGuarded(ctx context.Context, view *vaultView, prev *secrets.
 			a.blobs.Drop(a.cacheScope, a.namespace)
 			return nil, fmt.Errorf("%w; the write was rolled back, nothing was stored. Re-run the command to write under the current key (verify the rotation is legitimate if it surprises you)", err)
 		}
-		return nil, fmt.Errorf("%w; the write was rolled back, nothing was stored — re-run the command", err)
+		return nil, fmt.Errorf("%w; the write was rolled back, nothing was stored. Re-run the command", err)
 	}
 	pinCurrent(a.cacheScope, h, view.mk)
 	return updated, nil
@@ -290,7 +290,7 @@ func (a *app) appendGuarded(ctx context.Context, view *vaultView, prev *secrets.
 
 // appendGuardedBatch is appendGuarded for many keys at once: N segments, one
 // manifest write. The single swap is what keeps a large import from costing N
-// header round-trips, and it keeps the all-or-nothing promise — any failure,
+// header round-trips, and it keeps the all-or-nothing promise: any failure,
 // including an epoch change, rolls back every segment this batch landed.
 func (a *app) appendGuardedBatch(ctx context.Context, view *vaultView, prev *secrets.State, items []importItem) (*secrets.State, error) {
 	v, err := a.vault()
@@ -333,7 +333,7 @@ func (a *app) appendGuardedBatch(ctx context.Context, view *vaultView, prev *sec
 			a.blobs.Drop(a.cacheScope, a.namespace)
 			return nil, fmt.Errorf("%w; the import was rolled back, nothing was stored. Re-run the command to write under the current key (verify the rotation is legitimate if it surprises you)", err)
 		}
-		return nil, fmt.Errorf("%w; the import was rolled back, nothing was stored — re-run the command", err)
+		return nil, fmt.Errorf("%w; the import was rolled back, nothing was stored. Re-run the command", err)
 	}
 	pinCurrent(a.cacheScope, h, view.mk)
 	return state, nil
@@ -383,7 +383,7 @@ func (a *app) foldState(ctx context.Context) (*secrets.State, *vaultView, error)
 // reportStrays surfaces what a fold found around the manifest: in-flight
 // writes it folded but the manifest doesn't record yet, and snapshots left by
 // a compaction that crashed before recording them. Both are warnings, not
-// errors — `notenv compact` settles them.
+// errors; `notenv compact` settles them.
 func reportStrays(state *secrets.State) {
 	for _, key := range slices.Sorted(maps.Keys(state.Adoptable)) {
 		ui.Warnf("found an in-flight write %s not yet recorded in the vault manifest; it is included, and `notenv compact` records it durably", key)
@@ -534,7 +534,7 @@ func (a *app) master(ctx context.Context) (*crypto.MasterKey, error) {
 }
 
 // cachePayloadVersion stamps the local folded-blob payload. The blob is
-// machine-local with a short TTL, so a version mismatch is just a cache miss —
+// machine-local with a short TTL, so a version mismatch is just a cache miss,
 // but the check must be exact: without it, a blob in another layout could
 // decode as an empty (or wrong) secret set instead of missing.
 const cachePayloadVersion = 1

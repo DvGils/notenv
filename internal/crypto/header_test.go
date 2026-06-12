@@ -272,8 +272,8 @@ func TestParseHeaderRejectsBad(t *testing.T) {
 		t.Error("want error for a newer version")
 	}
 	for _, old := range []string{"1", "2"} {
-		if _, err := ParseHeader([]byte(`{"version":` + old + `,` + idAndKey + `"master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil || !strings.Contains(err.Error(), "key migrate") {
-			t.Errorf("version %s must point at key migrate, got %v", old, err)
+		if _, err := ParseHeader([]byte(`{"version":` + old + `,` + idAndKey + `"master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil || !strings.Contains(err.Error(), "older storage format") {
+			t.Errorf("version %s must report an unreadable older format, got %v", old, err)
 		}
 	}
 	if _, err := ParseHeader([]byte(`{"version":3,"sign_pub":"ab","master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
