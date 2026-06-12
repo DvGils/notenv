@@ -263,35 +263,87 @@ func TestParseHeaderRejectsBad(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := good.Marshal()
-	if !strings.Contains(string(raw), `"version": 3`) {
-		t.Fatalf("expected version 3 header, got:\n%s", raw)
+	if !strings.Contains(string(raw), `"version": 4`) {
+		t.Fatalf("expected version 4 header, got:\n%s", raw)
 	}
 
 	const idAndKey = `"vault_id":"v1","sign_pub":"ab",`
 	if _, err := ParseHeader([]byte(`{"version":99,` + idAndKey + `"master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
 		t.Error("want error for a newer version")
 	}
-	for _, old := range []string{"1", "2"} {
+	for _, old := range []string{"1", "2", "3"} {
 		if _, err := ParseHeader([]byte(`{"version":` + old + `,` + idAndKey + `"master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil || !strings.Contains(err.Error(), "older storage format") {
 			t.Errorf("version %s must report an unreadable older format, got %v", old, err)
 		}
 	}
-	if _, err := ParseHeader([]byte(`{"version":3,"sign_pub":"ab","master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
+	if _, err := ParseHeader([]byte(`{"version":4,"sign_pub":"ab","master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
 		t.Error("want error for missing vault id")
 	}
-	if _, err := ParseHeader([]byte(`{"version":3,"vault_id":"v1","master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
+	if _, err := ParseHeader([]byte(`{"version":4,"vault_id":"v1","master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
 		t.Error("want error for missing signing public key")
 	}
-	if _, err := ParseHeader([]byte(`{"version":3,` + idAndKey + `"master":"AA==","slots":[],"auth":"AA=="}`)); err == nil {
+	if _, err := ParseHeader([]byte(`{"version":4,` + idAndKey + `"master":"AA==","slots":[],"auth":"AA=="}`)); err == nil {
 		t.Error("want error for empty slots")
 	}
-	if _, err := ParseHeader([]byte(`{"version":3,` + idAndKey + `"slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
+	if _, err := ParseHeader([]byte(`{"version":4,` + idAndKey + `"slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
 		t.Error("want error for missing master")
 	}
-	if _, err := ParseHeader([]byte(`{"version":3,` + idAndKey + `"master":"AA==","slots":[{"public_key":"x"}]}`)); err == nil {
+	if _, err := ParseHeader([]byte(`{"version":4,` + idAndKey + `"master":"AA==","slots":[{"public_key":"x"}]}`)); err == nil {
 		t.Error("want error for missing authentication tag")
 	}
 	if _, err := ParseHeader([]byte(`not json`)); err == nil {
 		t.Error("want error for non-JSON")
+	}
+}
+
+// A provisional slot survives the marshal round-trip, is absent from the
+// canonical bytes when unset, and is cleared by rotating the slot to an own
+// passphrase.
+func TestProvisionalSlotLifecycle(t *testing.T) {
+	header, mk, err := NewHeader("owner pass", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := header.Marshal()
+	if strings.Contains(string(raw), "provisional") || strings.Contains(string(raw), `"ts"`) {
+		t.Fatalf("unset provisional/ts must be omitted:\n%s", raw)
+	}
+
+	if err := header.AddPassphraseSlot("temp onboarding pass", "alice", mk); err != nil {
+		t.Fatal(err)
+	}
+	header.Slots[1].Provisional = true
+	header.Slots[1].TS = 1765500000
+	raw, _ = header.Marshal()
+	parsed, err := ParseHeader(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parsed.Slots[1].Provisional || parsed.Slots[1].TS != 1765500000 {
+		t.Fatalf("provisional/ts lost in round-trip: %+v", parsed.Slots[1])
+	}
+
+	unlocked, idx, slotKey, err := parsed.Unlock("temp onboarding pass")
+	if err != nil || idx != 1 {
+		t.Fatalf("Unlock with temp passphrase: idx=%d err=%v", idx, err)
+	}
+	if err := parsed.RotateSlot(idx, "alice's own pass", slotKey); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Slots[1].Provisional {
+		t.Fatal("RotateSlot must clear Provisional")
+	}
+	if parsed.Slots[1].TS != 1765500000 {
+		t.Fatal("RotateSlot must not touch TS")
+	}
+	if _, _, _, err := parsed.Unlock("temp onboarding pass"); err == nil {
+		t.Fatal("the temporary passphrase must stop opening the slot after rotation")
+	}
+	again, _, _, err := parsed.Unlock("alice's own pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.String() != unlocked.String() {
+		t.Fatal("rotation must preserve the master key")
 	}
 }

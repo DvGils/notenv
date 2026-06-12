@@ -38,9 +38,12 @@ import (
 // an incompatible change.
 //
 // Version 2 added VaultID and SignPub; version 3 added the object manifest
-// (see manifest.go). This build reads only version 3: there is no in-place
-// upgrade path for older vaults.
-const headerVersion = 3
+// (see manifest.go); version 4 added per-slot Provisional and TS. Provisional
+// gates onboarding, so a version that ignored it would silently reseal the
+// header without the gate; the exact-match rule makes that a loud refusal
+// instead. This build reads only version 4: there is no in-place upgrade path
+// for older vaults.
+const headerVersion = 4
 
 // Header is the parsed header object. Optional-shaped fields carry omitempty
 // so a parsed header reproduces the exact canonical bytes it was sealed over
@@ -73,6 +76,17 @@ type Slot struct {
 	Type      string `json:"type"`              // "passphrase" | "recipient"
 	PublicKey string `json:"public_key"`        // recipient of Master
 	Wrapped   []byte `json:"wrapped,omitempty"` // passphrase slots: slot private key, scrypt-encrypted
+	// Provisional marks a passphrase slot still wrapped under the temporary
+	// onboarding passphrase its issuer generated (and therefore knows). Tooling
+	// refuses to operate under a provisional slot until its holder rotates it
+	// to a passphrase of their own, which clears the flag. Tooling-enforced,
+	// like Primary.
+	Provisional bool `json:"provisional,omitempty"`
+	// TS is the slot's creation time in Unix seconds. Advisory display data
+	// (clocks lie): it feeds `key list` and the stale-provisional warning and
+	// is never load-bearing. Stamped by the command layer; this package reads
+	// no clock.
+	TS int64 `json:"ts,omitempty"`
 }
 
 // Slot type tags.
@@ -184,7 +198,8 @@ func (h *Header) AddRecipientSlot(recipient *age.X25519Recipient, name string, m
 // RotateSlot re-wraps a passphrase slot's private key under a new passphrase.
 // The master, the slot keypair, and Master are untouched, so other slots and
 // every blob are unaffected. slotKey is the slot's private key, obtained from
-// Unlock.
+// Unlock. Rotation clears Provisional: setting an own passphrase is exactly
+// what the flag waits for.
 func (h *Header) RotateSlot(i int, newPassphrase string, slotKey *age.X25519Identity) error {
 	if i < 0 || i >= len(h.Slots) {
 		return fmt.Errorf("slot index %d out of range", i)
@@ -197,6 +212,7 @@ func (h *Header) RotateSlot(i int, newPassphrase string, slotKey *age.X25519Iden
 		return fmt.Errorf("wrap slot key: %w", err)
 	}
 	h.Slots[i].Wrapped = wrapped
+	h.Slots[i].Provisional = false
 	return nil
 }
 
