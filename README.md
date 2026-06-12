@@ -9,28 +9,31 @@
 > Your `.env`, encrypted and off your disk, with no infrastructure to run.
 
 notenv replaces `.env` files. Your secrets are encrypted **on your machine** with
-[age](https://github.com/FiloSottile/age), stored as ciphertext on
-**storage you already own** (Backblaze B2, S3, Google Drive, SFTP, WebDAV, or anything
-[rclone](https://rclone.org) speaks), and decrypted **only into the environment of the
-process you run**. Plaintext never touches your disk.
+[age](https://github.com/FiloSottile/age), stored as ciphertext in a **local vault**
+or on **storage you already own** (Backblaze B2, S3, Google Drive, SFTP, WebDAV, or
+anything [rclone](https://rclone.org) speaks), and decrypted **only into the
+environment of the process you run**. Plaintext never touches your disk.
 
 ```sh
+notenv setup                   # a local vault: no accounts, no dependencies, one passphrase
+notenv import .env             # your existing secrets, encrypted; delete the .env after
 notenv run -- npm run dev      # secrets injected as env vars, gone when the process exits
 ```
 
-There is no server to run and no SaaS to sign up for. You hold the key; the storage
-provider only ever sees ciphertext.
+There is no server to run, no SaaS to sign up for, and nothing to install beyond notenv
+itself to get started. You hold the key; storage only ever sees ciphertext — and when
+syncing across machines starts to matter, `notenv vault copy` moves the same vault to a
+cloud remote in one command.
 
 ---
 
 ## Requirements
 
-- [rclone](https://rclone.org/install/) on your `PATH`. notenv uses it to move ciphertext
-  to and from your storage.
-- A storage remote you control (Backblaze B2, S3, and so on). notenv can create one for you
-  during setup.
 - Linux, macOS, or Windows. On Linux, notenv also caches your key and secrets in RAM for a
   faster, prompt-free workflow (see [Caching](#caching-and-performance)).
+- For **cloud remotes only**: [rclone](https://rclone.org/install/) on your `PATH` and a
+  storage remote you control (Backblaze B2, S3, and so on — notenv can create the remote
+  for you during setup). A local vault needs neither.
 
 ## Install
 
@@ -59,8 +62,9 @@ Homebrew and AUR packages are planned (see [Status](#status)).
 
 ## Quick start
 
-**1. Set up this machine once.** notenv finds or creates an rclone remote, generates your
-encryption key, and locks it with a passphrase:
+**1. Set up this machine once.** The default is a local vault — no accounts, no rclone,
+nothing but a passphrase (picking a cloud remote instead is the second option in the same
+prompt, and a local vault can move to one later):
 
 ```sh
 notenv setup
@@ -76,8 +80,14 @@ cd my-project
 notenv init          # writes notenv.toml, which you commit
 ```
 
-**3. Add secrets.** Values are prompted hidden, encrypted, and uploaded. The key name is
-recorded in `notenv.toml` for you:
+**3. Add secrets.** Have a `.env` already? Import it whole — every value encrypted, every
+key declared — then delete it:
+
+```sh
+notenv import .env && rm .env
+```
+
+Or add values one at a time, prompted hidden:
 
 ```sh
 notenv set DATABASE_URL
@@ -127,7 +137,7 @@ rclone, and dotenv ergonomics, with zero infrastructure.
 |---|---|---|---|
 | Plaintext on disk | never | never | never |
 | You hold the key | yes | no (provider does) | yes |
-| Storage backends | any rclone remote | per-provider code | you wire it up |
+| Storage backends | local vault or any rclone remote | per-provider code | you wire it up |
 | Infrastructure to run | none | none (uses your cloud) | none |
 | One-command onboarding | yes | partial | no |
 
@@ -159,8 +169,9 @@ fresh key while keeping all slots; see [Teams and key management](#teams-and-key
 
 | Command | What it does |
 |---|---|
-| `notenv setup` | Configure this machine: pick or create a storage remote, create or unlock your key. |
+| `notenv setup` | Configure this machine: a local vault by default, or pick/create a cloud remote; create or unlock your key. |
 | `notenv init` | Set up the current project (writes `notenv.toml`). Runs setup first if needed. |
+| `notenv import [file]` | Import a `.env` file: every value encrypted in one write, every key declared. `--dry-run` previews. |
 | `notenv set KEY` | Set a secret. Prompted hidden, encrypted, uploaded, and declared in `notenv.toml`. |
 | `notenv set KEY --stdin` | Read the value from stdin (for multiline or piped values). |
 | `notenv unset KEY` | Remove a stored secret value. |
@@ -169,6 +180,7 @@ fresh key while keeping all slots; see [Teams and key management](#teams-and-key
 | `notenv run --refresh -- cmd` | Same, but bypass the local cache and pull the latest secrets first. |
 | `notenv compact` | Force-fold a namespace's change segments into a single snapshot (also happens automatically). |
 | `notenv cache clear` | Remove all locally cached ciphertext on this machine. |
+| `notenv vault copy` | Replicate this vault to new storage (e.g. local → cloud) and register it. The source is untouched. |
 | `notenv --version` | Print the version, commit, and build date. |
 
 Add `--storage NAME` to any command to target a specific [vault](#multiple-vaults).
@@ -210,6 +222,9 @@ more named storages (vaults) and is written for you by `notenv setup`:
 
 ```toml
 default = "personal"               # storage used when a project has no local binding
+
+[storage.local]
+path      = "~/.local/share/notenv/vaults/local"   # a local vault directory (no rclone)
 
 [storage.personal]
 remote    = "s3-notenv"            # an rclone remote name
@@ -433,7 +448,10 @@ full set of release artifacts locally without publishing.
 
 Actively developed and being tested.
 
-**Working today:** `setup`, `init`, `set`, `unset`, `list`, `run`, `compact`, and `cache`; full
+**Working today:** `setup`, `init`, `import`, `set`, `unset`, `list`, `run`, `compact`,
+`cache`, and `vault copy`; **local vaults** (zero-account default, true compare-and-swap
+header writes, promptless creation for agents/CI via `NOTENV_IDENTITY`) with one-command
+replication to a cloud remote; full
 key and slot management (`notenv key …`); team access by age recipient, passphrase and
 master-key rotation, offboarding by re-key, advisory primary governance, and authenticated +
 version-pinned headers (vanished-header and vault-replacement detection included); **signed
