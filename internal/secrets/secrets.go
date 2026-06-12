@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -434,14 +435,20 @@ func (n *Namespace) openRecorded(ctx context.Context, l *loaded, key string) err
 // adoptable. A stray segment at or below the mark can only be a deleted object
 // someone put back — the machine's own seqs already moved past it, and every
 // honest write is preceded by a fold that adopts whatever in-flight segments
-// exist before the seq can advance over them. Stray snapshots never fold (the
-// recorded objects cover their content), so they are reported for cleanup, not
-// alarmed. Everything else is evidence and fails the fold.
+// exist before the seq can advance over them. Stray snapshots are reported for
+// cleanup without any further judgment, undecipherable ones included: no fold
+// ever reads an unrecorded snapshot, so it cannot affect a value, and alarming
+// would turn an honest crashed compaction overtaken by a re-key into a
+// permanent false positive. Everything else is evidence and fails the fold.
 func (n *Namespace) classify(ctx context.Context, l *loaded, key string) error {
 	base := strings.TrimPrefix(key, n.prefix())
 	isSeg := strings.HasPrefix(base, "seg-")
 	if !isSeg && !strings.HasPrefix(base, "snap-") {
 		return nil // not a payload object; nothing folds it, so it can't carry a value
+	}
+	if !isSeg {
+		l.strays = append(l.strays, key)
+		return nil
 	}
 	blob, err := n.store.Get(ctx, key)
 	if errors.Is(err, backend.ErrNotFound) {
@@ -453,14 +460,6 @@ func (n *Namespace) classify(ctx context.Context, l *loaded, key string) error {
 	plain, err := n.master.Decrypt(blob)
 	if err != nil {
 		return fmt.Errorf("object %s is not recorded in the vault manifest and does not open under the current master key (left over from a write interrupted by a re-key, or planted); inspect it and remove it, e.g. `rclone deletefile`: %w", key, err)
-	}
-
-	if !isSeg {
-		if _, err := n.intoSnapshot(key, plain); err != nil {
-			return err
-		}
-		l.strays = append(l.strays, key)
-		return nil
 	}
 	seg, err := n.intoSegment(key, plain)
 	if err != nil {
@@ -673,9 +672,7 @@ func (w *winner) conflict(key string) Conflict {
 // update consumes them alongside the new segment's own entry.
 func (s *State) with(seg segment) *State {
 	next := &State{Secrets: make(map[string]string, len(s.Secrets)), lamport: seg.Lamport}
-	for key, value := range s.Secrets {
-		next.Secrets[key] = value
-	}
+	maps.Copy(next.Secrets, s.Secrets)
 	if seg.Deleted {
 		delete(next.Secrets, seg.Key)
 	} else {
