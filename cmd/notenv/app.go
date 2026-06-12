@@ -289,10 +289,11 @@ func (a *app) appendGuarded(ctx context.Context, view *vaultView, prev *secrets.
 }
 
 // appendGuardedBatch is appendGuarded for many keys at once: N segments, one
-// manifest write. The single swap is what keeps a large import from costing N
+// manifest write. The single swap is what keeps a large batch from costing N
 // header round-trips, and it keeps the all-or-nothing promise: any failure,
 // including an epoch change, rolls back every segment this batch landed.
-func (a *app) appendGuardedBatch(ctx context.Context, view *vaultView, prev *secrets.State, items []importItem) (*secrets.State, error) {
+// Every write gets the same timestamp: the batch is one act.
+func (a *app) appendGuardedBatch(ctx context.Context, view *vaultView, prev *secrets.State, writes []secrets.Write) (*secrets.State, error) {
 	v, err := a.vault()
 	if err != nil {
 		return nil, err
@@ -307,15 +308,13 @@ func (a *app) appendGuardedBatch(ctx context.Context, view *vaultView, prev *sec
 	}
 	delta := crypto.ManifestDelta{Add: map[string]crypto.ManifestEntry{}, Prune: prev.Prunable}
 	now := time.Now().Unix()
-	for _, it := range items {
+	for _, w := range writes {
 		seq, err := config.NextSeq(a.cacheScope, a.namespace)
 		if err != nil {
 			rollback()
 			return nil, err
 		}
-		// An import overwrites values, not what the keys mean: each write
-		// carries the key's existing description forward.
-		w := secrets.Write{Key: it.storageKey, Value: it.value, Description: prev.Meta[it.storageKey].Description, TS: now}
+		w.TS = now
 		next, objKey, entry, err := ns.Append(ctx, state, seq, w)
 		if err != nil {
 			rollback()
@@ -331,9 +330,9 @@ func (a *app) appendGuardedBatch(ctx context.Context, view *vaultView, prev *sec
 		if errors.Is(err, keymgmt.ErrEpochChanged) {
 			a.cache.Drop(a.cacheScope)
 			a.blobs.Drop(a.cacheScope, a.namespace)
-			return nil, fmt.Errorf("%w; the import was rolled back, nothing was stored. Re-run the command to write under the current key (verify the rotation is legitimate if it surprises you)", err)
+			return nil, fmt.Errorf("%w; the batch was rolled back, nothing was stored. Re-run the command to write under the current key (verify the rotation is legitimate if it surprises you)", err)
 		}
-		return nil, fmt.Errorf("%w; the import was rolled back, nothing was stored. Re-run the command", err)
+		return nil, fmt.Errorf("%w; the batch was rolled back, nothing was stored. Re-run the command", err)
 	}
 	pinCurrent(a.cacheScope, h, view.mk)
 	return state, nil
