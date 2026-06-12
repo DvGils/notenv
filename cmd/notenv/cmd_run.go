@@ -40,10 +40,10 @@ Exit codes (docker's convention): the child's own exit code passes through;
 127 the command was not found.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Exit codes follow docker's convention (frozen at v1): the child's
-		// code passes through; 125 is notenv's own failure, 126 the command
-		// was found but cannot run, 127 the command was not found. Scripts
-		// and agents can finally tell whose failure they are looking at.
+		// Exit codes follow docker's convention: the child's code passes
+		// through; 125 is notenv's own failure, 126 the command was found
+		// but cannot run, 127 the command was not found. Scripts and agents
+		// can tell whose failure they are looking at.
 		err := runChild(cmd, args)
 		var ec *exitCodeError
 		if err != nil && !errors.As(err, &ec) {

@@ -174,22 +174,27 @@ fresh key while keeping all slots; see [Teams and key management](#teams-and-key
 | `notenv import [file]` | Import a `.env` file: every value encrypted in one write, every key declared. `--dry-run` previews. |
 | `notenv set KEY` | Set a secret. Prompted hidden, encrypted, uploaded, and declared in `notenv.toml`. |
 | `notenv set KEY --stdin` | Read the value from stdin (for multiline or piped values). |
+| `notenv set KEY --description "…"` | Also record what the secret is for; omitted, the existing note is kept (`""` clears). |
 | `notenv unset KEY` | Remove a stored secret value. |
-| `notenv list` | List stored secret names (never values). |
+| `notenv list` | List stored secret names with descriptions and modified times (never values). `--json` for machines; piped output is bare names. |
 | `notenv run -- cmd` | Run a command with secrets injected as environment variables. |
 | `notenv run --refresh -- cmd` | Same, but bypass the local cache and pull the latest secrets first. |
 | `notenv compact` | Force-fold a namespace's change segments into a single snapshot (also happens automatically). |
 | `notenv cache clear` | Remove all locally cached ciphertext on this machine. |
 | `notenv vault copy` | Replicate this vault to new storage (e.g. local → cloud) and register it. The source is untouched. |
+| `notenv mcp` | Serve the vault to MCP clients over stdio (experimental; see [AI agents](#using-notenv-with-ai-agents)). |
 | `notenv --version` | Print the version, commit, and build date. |
 
-Add `--storage NAME` to any command to target a specific [vault](#multiple-vaults).
+Add `--storage NAME` to any command to target a specific [vault](#multiple-vaults). Add
+`--namespace NAME` to address a vault namespace directly from anywhere — no project, no
+checkout; the contract (and its declarations) is bypassed entirely, so `run` injects every
+secret in the namespace.
 
 ### Key and slot management
 
 | Command | What it does |
 |---|---|
-| `notenv key list` | List the key slots (name, type, primary, fingerprint). |
+| `notenv key list` | List the key slots (name, type, primary, fingerprint). `--json` for machines. |
 | `notenv key add --passphrase` | Add another passphrase slot (a backup or second device). |
 | `notenv key add --recipient age1… [--name N]` | Add a teammate by their age public key. |
 | `notenv key rm <name\|index>` | Remove a slot **and re-key the vault** (offboarding). |
@@ -230,7 +235,8 @@ path      = "~/.local/share/notenv/vaults/local"   # a local vault directory (no
 remote    = "s3-notenv"            # an rclone remote name
 base      = "my-bucket/notenv"     # path within the remote
 versioned = true                   # remote keeps old versions on overwrite (B2 does)
-# cache_ttl = "1h"                 # local ciphertext cache lifetime; "0" disables
+# read_only = true                 # refuse mutating commands here (policy, not enforcement)
+# cache_ttl = "1h"                 # ciphertext cache lifetime (remote storages only); "0" disables
 
 [crypto]
 mode = "passphrase"
@@ -299,7 +305,9 @@ To keep the workflow snappy, notenv caches two things on Linux:
 - **Your master key** in the kernel keyring, so you are prompted for your passphrase at most
   once per session (default 1 hour, configurable via `crypto.cache_ttl`).
 - **The encrypted blob** in `XDG_RUNTIME_DIR` (tmpfs), so a warm `notenv run` needs no
-  network at all (default 1 hour, configurable via `storage.cache_ttl`).
+  network at all (default 1 hour, configurable via `storage.cache_ttl`). **Remote vaults
+  only**: a local vault is its own disk, so its reads skip the cache and verify the vault
+  manifest every time — no second ciphertext copy, nothing to go stale.
 
 Both caches are RAM-backed and cleared on logout or reboot. This is not only a speed-up but a
 **security property**: when the process exits there is no persistent cache for someone to
@@ -355,12 +363,22 @@ agent a verb that separates *using* credentials from *knowing* them:
 
 - **`notenv run -- cmd`** injects secrets into the child only; the value never appears in
   anything the model reads.
-- **`notenv list`** tells the agent *which* credentials exist (to decide what's runnable)
-  without showing values.
+- **`notenv list`** tells the agent *which* credentials exist — and, with per-secret
+  descriptions (`set KEY --description "…"`), *what they are for*, so it can decide what's
+  runnable without ever seeing a value. `notenv list --json` gives it a stable shape to parse.
 - **Captured output is masked.** When stdout/stderr is not a terminal — which is exactly how
   agents and CI read output — any injected value a child prints (a server echoing its
   connection string on boot, a debug dump) is replaced with `<notenv-masked:NAME>` before the
   model sees it.
+- **Exit codes say whose failure it was.** `run` follows docker's convention: the child's
+  code passes through; 125 is notenv's own failure, 126 found-but-can't-run, 127 not found.
+  An agent retrying a flaky test never mistakes a vault problem for a code problem.
+- **No checkout needed.** `--namespace` (with `--storage`) addresses a vault directly from
+  anywhere — an agent wired to a database needs credentials, not a git repository.
+- **Read-only by policy.** Start an agent with `NOTENV_READONLY=1` (or mark a storage
+  `read_only = true`) and every mutating command is refused. This constrains a cooperating
+  client from having an accident; for *enforced* read-only, use a read-only storage
+  credential (e.g. a B2 application key without write) behind the remote.
 - **Unlock prompts reach the human, not the model.** Passphrase prompts read the terminal
   device directly, so when an agent's command needs an unlock, the question goes to whoever is
   at the keyboard.
@@ -371,18 +389,34 @@ Drop this in your `AGENTS.md` / `CLAUDE.md`:
 This project manages secrets with notenv (https://github.com/DvGils/notenv).
 - Run anything needing credentials via `notenv run -- <cmd>`; the env vars in
   notenv.toml are injected automatically.
-- `notenv list` shows which secret names exist. Never print, ask for, or store
-  secret values; never create .env files.
+- `notenv list` shows which secret names exist and what they're for. Never
+  print, ask for, or store secret values; never create .env files.
 - If a command prompts for a passphrase, stop and let the user answer it.
 ```
+
+### The MCP server (experimental)
+
+`notenv mcp` serves the same surface over the Model Context Protocol, for agents that
+aren't shell-first (or machines with no checkout at all):
+
+```sh
+claude mcp add notenv -- notenv mcp        # or any MCP client, stdio transport
+```
+
+Two tools: `list_secrets` (names, descriptions, modified times — never values) and
+`run_with_secrets` (inject and execute; the agent gets the exit code and masked output).
+The vault must unlock without a prompt — set `NOTENV_IDENTITY`, or rely on a session-cached
+key. It is experimental: the tool surface may still change before it is frozen.
 
 **Honest limits:** this is accident-proofing, not a security boundary. An agent running as
 your user can still extract a value deliberately (any encoding defeats exact-byte masking:
 `notenv run -- sh -c 'printenv KEY | base64'`) or read the
 session key cache, and a child process that legitimately holds a secret can always send it
-somewhere — masking catches accidents, not intent. A broker mode that keeps the unlocked key
-in a separate trust domain (so agents can *use* but provably not *extract*) is on the
-roadmap; see [Status](#status) and the [threat model](./THREAT_MODEL.md).
+somewhere — masking catches accidents, not intent. The same goes for read-only mode: with a
+single master key, anyone who can decrypt could author writes with their own tooling, so the
+flag stops accidents while the storage credential is what stops adversaries. A broker mode
+that keeps the unlocked key in a separate trust domain (so agents can *use* but provably not
+*extract*) is on the roadmap; see [Status](#status) and the [threat model](./THREAT_MODEL.md).
 
 ## Security
 
@@ -416,7 +450,14 @@ roadmap; see [Status](#status) and the [threat model](./THREAT_MODEL.md).
 - **A cloned, untrusted project:** the committed `notenv.toml` can redirect neither your
   storage (machine-only) nor — silently — your namespace: the namespace is pinned per
   checkout, an unusual one is confirmed before first use, and a contract that changes its
-  namespace later is refused (see [Configuration](#configuration)).
+  namespace later is refused (see [Configuration](#configuration)). Explicit `--namespace`
+  use gets the same first-use confirmation, recorded per user instead of per checkout.
+- **Read-only mode is policy, not crypto:** `read_only` / `NOTENV_READONLY` make notenv
+  refuse writes — protection against a cooperating client's accident, never against an
+  adversary (with a single master key, read capability is write capability: anyone who can
+  decrypt can author valid writes with their own tooling). Enforced read-only is the
+  storage credential's job; cryptographic read-only identities require a key split and are
+  explicitly future (v2) work.
 - **Running machine compromise:** an attacker with your live session and your key can
   decrypt. notenv shrinks the window (no `.env` lying around, plaintext only in the child
   process for its lifetime) but cannot defend a fully compromised host.
