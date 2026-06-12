@@ -146,13 +146,28 @@ func TestUpsertStorageRejectsBadNames(t *testing.T) {
 	}
 }
 
-func TestPinRoundTripAndCheck(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	const scope = "1:b2:bucket/x"
-	const vault = "vault-1"
+const (
+	pinTestScope = "1:b2:bucket/x"
+	pinTestVault = "vault-1"
+)
 
-	// No pin yet → first contact advances (TOFU).
-	stored, have, err := config.ReadPin(vault)
+// seedPin writes the pin the pin tests start from and reads it back.
+func seedPin(t *testing.T) (config.Pin, bool) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := config.WritePin(pinTestScope, pinTestVault, config.Pin{Revision: 5, MasterPub: "age1master", SignPub: "ed1"}); err != nil {
+		t.Fatal(err)
+	}
+	stored, have, err := config.ReadPin(pinTestVault)
+	if err != nil || !have || stored.Revision != 5 || stored.SignPub != "ed1" {
+		t.Fatalf("read back: %+v have=%v err=%v", stored, have, err)
+	}
+	return stored, have
+}
+
+func TestPinFirstContactAdvances(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	stored, have, err := config.ReadPin(pinTestVault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,33 +178,34 @@ func TestPinRoundTripAndCheck(t *testing.T) {
 	if err != nil || !advance {
 		t.Fatalf("first contact should advance: advance=%v err=%v", advance, err)
 	}
+}
 
-	if err := config.WritePin(scope, vault, config.Pin{Revision: 5, MasterPub: "age1master", SignPub: "ed1"}); err != nil {
-		t.Fatal(err)
-	}
-	stored, have, err = config.ReadPin(vault)
-	if err != nil || !have || stored.Revision != 5 || stored.SignPub != "ed1" {
-		t.Fatalf("read back: %+v have=%v err=%v", stored, have, err)
-	}
-	// The scope remembers which vault it held.
-	if id, bound, _ := config.ScopeVault(scope); !bound || id != vault {
+func TestPinScopeRemembersVault(t *testing.T) {
+	seedPin(t)
+	if id, bound, _ := config.ScopeVault(pinTestScope); !bound || id != pinTestVault {
 		t.Fatalf("scope binding: id=%q bound=%v", id, bound)
 	}
+}
 
-	// Same master, higher revision → advance.
+// TestPinRevisionRules: higher and equal revisions advance (reads are
+// idempotent); lower is the rollback alarm.
+func TestPinRevisionRules(t *testing.T) {
+	stored, have := seedPin(t)
 	if ok, err := config.CheckPin(stored, have, 6, "age1master"); err != nil || !ok {
 		t.Fatalf("higher revision should advance: %v %v", ok, err)
 	}
-	// Same master, same revision → advance (idempotent reads).
 	if ok, err := config.CheckPin(stored, have, 5, "age1master"); err != nil || !ok {
 		t.Fatalf("equal revision should advance: %v %v", ok, err)
 	}
-	// Lower revision → rollback alarm.
 	if _, err := config.CheckPin(stored, have, 4, "age1master"); err == nil {
 		t.Fatal("lower revision should alarm (rollback)")
 	}
-	// Different master → the distinguishable master-changed alarm, so callers
-	// can try signed transitions before treating it as an attack.
+}
+
+// TestPinMasterChangeIsDistinguishable: a changed master is its own error, so
+// callers try signed transitions before treating it as an attack.
+func TestPinMasterChangeIsDistinguishable(t *testing.T) {
+	stored, have := seedPin(t)
 	if _, err := config.CheckPin(stored, have, 7, "age1other"); !errors.Is(err, config.ErrMasterChanged) {
 		t.Fatalf("changed master should report ErrMasterChanged, got %v", err)
 	}
