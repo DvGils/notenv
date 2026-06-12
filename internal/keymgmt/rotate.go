@@ -70,6 +70,20 @@ func RotateMaster(ctx context.Context, store Vault, hdr *crypto.Header, base []b
 		}
 	}
 
+	// Record the signed transition before the flip, so a machine pinned at the
+	// old master never observes the new header without the proof that the old
+	// master's holder authorized it. The revision the flip will assign is the
+	// current one plus SafePut's bump; if another write lands first, SafePut's
+	// freshness check aborts the rotation and this entry remains an orphan no
+	// chain walks through (the retry appends a fresh one).
+	transition, err := crypto.NewTransition(oldMK, newMK, hdr.VaultID, hdr.Revision+1)
+	if err != nil {
+		return nil, err
+	}
+	if err := appendTransition(ctx, store, transition); err != nil {
+		return nil, fmt.Errorf("record rotation: %w", err)
+	}
+
 	// Phase 2: flip — install the new master in the header (the one write that
 	// goes through the safe-write protocol, which bumps the revision and seals).
 	if err := hdr.SetMaster(newMK); err != nil {

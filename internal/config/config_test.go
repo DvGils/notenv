@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"errors"
 	"sync"
 	"testing"
 
@@ -148,9 +149,10 @@ func TestUpsertStorageRejectsBadNames(t *testing.T) {
 func TestPinRoundTripAndCheck(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	const scope = "1:b2:bucket/x"
+	const vault = "vault-1"
 
 	// No pin yet → first contact advances (TOFU).
-	stored, have, err := config.ReadPin(scope)
+	stored, have, err := config.ReadPin(vault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,12 +164,16 @@ func TestPinRoundTripAndCheck(t *testing.T) {
 		t.Fatalf("first contact should advance: advance=%v err=%v", advance, err)
 	}
 
-	if err := config.WritePin(scope, config.Pin{Revision: 5, MasterPub: "age1master"}); err != nil {
+	if err := config.WritePin(scope, vault, config.Pin{Revision: 5, MasterPub: "age1master", SignPub: "ed1"}); err != nil {
 		t.Fatal(err)
 	}
-	stored, have, err = config.ReadPin(scope)
-	if err != nil || !have || stored.Revision != 5 {
+	stored, have, err = config.ReadPin(vault)
+	if err != nil || !have || stored.Revision != 5 || stored.SignPub != "ed1" {
 		t.Fatalf("read back: %+v have=%v err=%v", stored, have, err)
+	}
+	// The scope remembers which vault it held.
+	if id, bound, _ := config.ScopeVault(scope); !bound || id != vault {
+		t.Fatalf("scope binding: id=%q bound=%v", id, bound)
 	}
 
 	// Same master, higher revision → advance.
@@ -182,31 +188,50 @@ func TestPinRoundTripAndCheck(t *testing.T) {
 	if _, err := config.CheckPin(stored, have, 4, "age1master"); err == nil {
 		t.Fatal("lower revision should alarm (rollback)")
 	}
-	// Different master → substitution alarm.
-	if _, err := config.CheckPin(stored, have, 7, "age1other"); err == nil {
-		t.Fatal("changed master should alarm")
+	// Different master → the distinguishable master-changed alarm, so callers
+	// can try signed transitions before treating it as an attack.
+	if _, err := config.CheckPin(stored, have, 7, "age1other"); !errors.Is(err, config.ErrMasterChanged) {
+		t.Fatalf("changed master should report ErrMasterChanged, got %v", err)
 	}
 }
 
-func TestDeletePin(t *testing.T) {
+func TestForgetScope(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if err := config.WritePin("s1", config.Pin{Revision: 3, MasterPub: "age1x"}); err != nil {
+	if err := config.WritePin("s1", "vaultA", config.Pin{Revision: 3, MasterPub: "age1x"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := config.WritePin("s2", config.Pin{Revision: 7, MasterPub: "age1y"}); err != nil {
+	if err := config.WritePin("s2", "vaultB", config.Pin{Revision: 7, MasterPub: "age1y"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := config.DeletePin("s1"); err != nil {
+	// The same vault reachable through a second storage configuration.
+	if err := config.WritePin("s3", "vaultA", config.Pin{Revision: 3, MasterPub: "age1x"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, have, _ := config.ReadPin("s1"); have {
-		t.Fatal("s1 pin should be gone")
+
+	// Forgetting s1 unbinds the scope but keeps vaultA's pin: s3 still uses it.
+	if err := config.ForgetScope("s1"); err != nil {
+		t.Fatal(err)
 	}
-	if p, have, _ := config.ReadPin("s2"); !have || p.Revision != 7 {
-		t.Fatalf("s2 pin must survive: have=%v %+v", have, p)
+	if _, bound, _ := config.ScopeVault("s1"); bound {
+		t.Fatal("s1 binding should be gone")
 	}
-	if err := config.DeletePin("absent"); err != nil {
-		t.Fatalf("deleting an absent pin is a no-op, got %v", err)
+	if _, have, _ := config.ReadPin("vaultA"); !have {
+		t.Fatal("vaultA pin must survive while s3 references it")
+	}
+
+	// Forgetting the last reference removes the pin too.
+	if err := config.ForgetScope("s3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, have, _ := config.ReadPin("vaultA"); have {
+		t.Fatal("vaultA pin should be gone with its last reference")
+	}
+	if p, have, _ := config.ReadPin("vaultB"); !have || p.Revision != 7 {
+		t.Fatalf("vaultB must survive: have=%v %+v", have, p)
+	}
+
+	if err := config.ForgetScope("unbound"); err != nil {
+		t.Fatalf("forgetting an unbound scope is a no-op, got %v", err)
 	}
 }
 

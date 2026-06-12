@@ -79,32 +79,62 @@ func storeScope(store *backend.RcloneStorage) string {
 }
 
 // trustHeader is the read-side integrity check run after every unlock: it
-// verifies the header's authentication tag, then checks the local rollback pin
-// and advances it. An unexpected master change or a lower revision is refused
-// (see config.CheckPin); recover with `notenv key trust` once verified.
-func trustHeader(scope string, h *crypto.Header, mk *crypto.MasterKey) error {
+// verifies the header's authentication tag, confirms this storage still holds
+// the vault it held before, then checks the local rollback pin and advances
+// it. A master change is accepted silently when a chain of signed transitions
+// proves the pinned master authorized it; otherwise — and for a rollback or a
+// wholesale vault replacement — it is refused, recoverable with
+// `notenv key trust` after out-of-band verification.
+func trustHeader(ctx context.Context, store keymgmt.Vault, scope string, h *crypto.Header, mk *crypto.MasterKey) error {
 	if err := h.Verify(mk); err != nil {
 		return fmt.Errorf("%w; refusing to use this vault", err)
 	}
-	stored, have, err := config.ReadPin(scope)
+	boundVault, bound, err := config.ScopeVault(scope)
+	if err != nil {
+		return err
+	}
+	if bound && boundVault != h.VaultID {
+		return fmt.Errorf("this storage previously held vault %s but now presents vault %s: the vault was replaced wholesale. If you deliberately re-initialized it, run `notenv key forget` and connect again; otherwise treat the storage as compromised", boundVault, h.VaultID)
+	}
+	stored, have, err := config.ReadPin(h.VaultID)
 	if err != nil {
 		return err
 	}
 	advance, err := config.CheckPin(stored, have, h.Revision, mk.PublicKey())
+	if errors.Is(err, config.ErrMasterChanged) {
+		if keymgmt.FollowRotations(ctx, store, h, stored.SignPub, stored.Revision, mk) == nil {
+			ui.Notef("the master key was rotated on another machine; verified the signed rotation chain and moved this machine's pin forward")
+			advance, err = true, nil
+		}
+	}
 	if err != nil {
 		return err
 	}
 	if advance {
-		return config.WritePin(scope, config.Pin{Revision: h.Revision, MasterPub: mk.PublicKey()})
+		return writePin(scope, h, mk)
 	}
 	return nil
+}
+
+// writePin records the observed header as this machine's trust anchor for the
+// vault, and binds the storage scope to the vault's identity.
+func writePin(scope string, h *crypto.Header, mk *crypto.MasterKey) error {
+	signPub, err := mk.SignPub()
+	if err != nil {
+		return err
+	}
+	return config.WritePin(scope, h.VaultID, config.Pin{
+		Revision:  h.Revision,
+		MasterPub: mk.PublicKey(),
+		SignPub:   signPub,
+	})
 }
 
 // pinCurrent force-advances the local pin to a header this machine just wrote
 // (the writer is authoritative for its own writes, including a legitimate master
 // change). Best-effort: a failure only risks a false rollback alarm next read.
 func pinCurrent(scope string, h *crypto.Header, mk *crypto.MasterKey) {
-	if err := config.WritePin(scope, config.Pin{Revision: h.Revision, MasterPub: mk.PublicKey()}); err != nil {
+	if err := writePin(scope, h, mk); err != nil {
 		ui.Warnf("could not update the local rollback pin: %v", err)
 	}
 }
@@ -256,7 +286,7 @@ func unlockHeader(ctx context.Context, store *backend.RcloneStorage) (*unlocked,
 	if err != nil {
 		return nil, err
 	}
-	if err := trustHeader(storeScope(store), header, res.mk); err != nil {
+	if err := trustHeader(ctx, store, storeScope(store), header, res.mk); err != nil {
 		return nil, err
 	}
 	return &unlocked{header: header, raw: raw, mk: res.mk, slot: res.slot, reverify: res.reverify, slotKey: res.slotKey}, nil
@@ -610,16 +640,17 @@ remote's version history).`,
 			return err
 		}
 		scope := storeScope(store)
-		pin, have, err := config.ReadPin(scope)
+		vaultID, bound, err := config.ScopeVault(scope)
 		if err != nil {
 			return err
 		}
-		if !have {
+		if !bound {
 			keyring.DefaultCache().Drop(scope)
-			ui.Notef("no pin recorded for this storage; dropped any cached key")
+			ui.Notef("no vault pinned at this storage; dropped any cached key")
 			return nil
 		}
-		ui.Warnf("this forgets the pinned header (revision %d, master %s); a substituted vault would then be trusted on next contact", pin.Revision, pin.MasterPub)
+		pin, _, _ := config.ReadPin(vaultID)
+		ui.Warnf("this forgets vault %s (pinned revision %d, master %s); a substituted vault would then be trusted on next contact", vaultID, pin.Revision, pin.MasterPub)
 		if !keyForgetForce {
 			if !ui.Interactive() {
 				return errors.New("refusing to forget non-interactively without --force")
@@ -632,7 +663,7 @@ remote's version history).`,
 				return errors.New("aborted; trust state kept")
 			}
 		}
-		if err := config.DeletePin(scope); err != nil {
+		if err := config.ForgetScope(scope); err != nil {
 			return err
 		}
 		keyring.DefaultCache().Drop(scope)
@@ -685,7 +716,14 @@ authentication tag must still verify.`,
 		// command exists to override a security check, so the decision must be
 		// visible, deliberate, and never the path of least resistance.
 		scope := storeScope(store)
-		stored, have, err := config.ReadPin(scope)
+		boundVault, bound, err := config.ScopeVault(scope)
+		if err != nil {
+			return err
+		}
+		if bound && boundVault != header.VaultID {
+			ui.Warnf("this storage previously held vault %s; trusting REPLACES it with vault %s — every prior trust anchor stops applying", boundVault, header.VaultID)
+		}
+		stored, have, err := config.ReadPin(header.VaultID)
 		if err != nil {
 			return err
 		}
@@ -693,12 +731,12 @@ authentication tag must still verify.`,
 			ui.Notef("pinned now:  revision %d, master %s", stored.Revision, stored.MasterPub)
 			ui.Notef("trusting:    revision %d, master %s", header.Revision, res.mk.PublicKey())
 			if stored.MasterPub != res.mk.PublicKey() {
-				ui.Warnf("this is a MASTER KEY change; only proceed if you confirmed the rotation out of band (e.g. with the teammate who ran it)")
+				ui.Warnf("this is a MASTER KEY change with no signed rotation path; only proceed if you confirmed the change out of band (e.g. with the teammate who ran it)")
 			} else if header.Revision < stored.Revision {
 				ui.Warnf("this is a ROLLBACK to an older header; trusting it re-exposes you to whatever it undid")
 			}
-		} else {
-			ui.Notef("no pin recorded yet; this is this machine's first pin for the storage")
+		} else if !bound {
+			ui.Notef("no pin recorded yet; this is this machine's first pin for the vault")
 		}
 		if !keyTrustYes {
 			if !ui.Interactive() {

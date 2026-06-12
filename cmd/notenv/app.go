@@ -91,14 +91,14 @@ func (a *app) secretsNamespace(mk *crypto.MasterKey) *secrets.Namespace {
 	return secrets.For(a.store, a.namespace, mk, a.machine)
 }
 
-// headerStore returns the backend's header side, which every store this app
+// vault returns the backend's header-bearing side, which every store this app
 // constructs implements (loadApp builds an RcloneStorage).
-func (a *app) headerStore() (backend.HeaderStore, error) {
-	hs, ok := a.store.(backend.HeaderStore)
+func (a *app) vault() (keymgmt.Vault, error) {
+	v, ok := a.store.(keymgmt.Vault)
 	if !ok {
 		return nil, errors.New("backend does not support client-side crypto")
 	}
-	return hs, nil
+	return v, nil
 }
 
 // epochConfirm returns the post-write check used by every operation that seals
@@ -107,7 +107,7 @@ func (a *app) headerStore() (backend.HeaderStore, error) {
 // between the two; appendGuarded runs it after the write.
 func (a *app) epochConfirm(ctx context.Context, mk *crypto.MasterKey) func() error {
 	return func() error {
-		hs, err := a.headerStore()
+		hs, err := a.vault()
 		if err != nil {
 			return err
 		}
@@ -267,11 +267,11 @@ func (a *app) master(ctx context.Context) (*crypto.MasterKey, error) {
 		}
 		a.cache.Drop(a.cacheScope) // unparseable cached value, treat as stale and drop it
 	}
-	hs, err := a.headerStore()
+	v, err := a.vault()
 	if err != nil {
 		return nil, err
 	}
-	mk, _, err := ensureMaster(ctx, hs, a.cache, a.cacheScope, a.cacheTTL)
+	mk, _, err := ensureMaster(ctx, v, a.cache, a.cacheScope, a.cacheTTL)
 	return mk, err
 }
 
