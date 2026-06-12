@@ -40,8 +40,11 @@ import (
 //
 // Version 2 added Object: the key the payload was written under, checked
 // against the key it was fetched from, so a master-sealed object copied to
-// another name (or namespace) can never pass as that name.
-const formatVersion = 2
+// another name (or namespace) can never pass as that name. Version 3 added
+// tombstones to snapshot entries: a reader that ignored the deleted flag
+// would surface a deleted key as live, so the exact-match rule makes an old
+// reader refuse loudly instead.
+const formatVersion = 3
 
 // segment is one append: a single key write or deletion, ordered across
 // machines by a Lamport clock and, within a machine, by Seq. Description and
@@ -64,14 +67,19 @@ type segment struct {
 // entry is one key's winning write in a snapshot, carrying the provenance
 // needed to merge the snapshot deterministically against later segments, plus
 // the write's advisory metadata; without it here, the first compaction would
-// destroy every description and timestamp.
+// destroy every description and timestamp. A deleted entry is a tombstone
+// that survived compaction: it keeps competing under last-write-wins so a
+// write that was in flight while the namespace compacted cannot resurrect a
+// key its deletion outranks. Deletions were the only operation whose evidence
+// compaction destroyed; this is the receipt.
 type entry struct {
-	Value       string `json:"value"`
+	Value       string `json:"value,omitempty"`
 	Lamport     int    `json:"lamport"`
 	Machine     string `json:"machine"`
 	Seq         int    `json:"seq"`
 	Description string `json:"desc,omitempty"`
 	TS          int64  `json:"ts,omitempty"`
+	Deleted     bool   `json:"deleted,omitempty"`
 }
 
 // snapshot is a folded namespace state: every live key with its provenance,
@@ -651,14 +659,14 @@ func accumulate(l *loaded) (map[string]*winner, int) {
 		}
 	}
 	for _, s := range l.snapshots {
-		// A snapshot's clock can outlive its entries: a delete folded into it
-		// leaves a higher Lamport than any surviving entry. Carry it forward so
-		// the next write's clock never regresses (and re-compaction preserves it).
+		// Defensive: a snapshot's clock should equal its highest entry now that
+		// tombstones are retained, but carry it forward regardless so the next
+		// write's clock never regresses.
 		if s.Lamport > maxLamport {
 			maxLamport = s.Lamport
 		}
 		for key, e := range s.Entries {
-			apply(key, e, false)
+			apply(key, e, e.Deleted)
 		}
 	}
 	for _, s := range l.segments {
@@ -667,10 +675,13 @@ func accumulate(l *loaded) (map[string]*winner, int) {
 	return acc, maxLamport
 }
 
-// foldSnapshot accumulates a namespace into a snapshot of its live keys,
-// dropping tombstones (their job is done once nothing older survives). The
-// per-machine seq marks fold in everything (prior snapshots' marks and every
-// segment, tombstones included), so the marks never regress.
+// foldSnapshot accumulates a namespace into a snapshot of its live keys and
+// its tombstones. A tombstone keeps its provenance and advisory timestamp but
+// no value or description; it stays in the snapshot indefinitely (dropping it
+// would reopen the resurrection window for a sufficiently late write, and the
+// cost of keeping it is bytes), until a later live write to the key
+// supersedes it. The per-machine seq marks fold in everything (prior
+// snapshots' marks and every segment), so the marks never regress.
 func foldSnapshot(l *loaded) snapshot {
 	acc, maxLamport := accumulate(l)
 	s := snapshot{Version: formatVersion, Lamport: maxLamport, Seqs: map[string]int{}, Entries: map[string]entry{}}
@@ -684,6 +695,7 @@ func foldSnapshot(l *loaded) snapshot {
 	}
 	for key, w := range acc {
 		if w.deleted {
+			s.Entries[key] = entry{Lamport: w.lamport, Machine: w.machine, Seq: w.seq, TS: w.ts, Deleted: true}
 			continue
 		}
 		s.Entries[key] = entry{Value: w.value, Lamport: w.lamport, Machine: w.machine, Seq: w.seq, Description: w.description, TS: w.ts}

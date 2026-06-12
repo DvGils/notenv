@@ -191,21 +191,35 @@ func runScript(t *testing.T, data []byte, allowCompact bool) {
 			}
 			s.write(m, key, value, deleted, crash)
 		}
-		st := s.fold(step) // a fold must always succeed (and match the oracle when applicable)
+		st := s.fold(step) // a fold must always succeed and match the oracle
+		// Values match the oracle in the compaction world too: snapshots
+		// retain tombstones, so resolution is a function of the write history
+		// alone, never of whether a cleanup ran in the window. Conflict
+		// reports are asserted only without compaction: a compaction collapses
+		// a tie already surfaced into its winner (the shadowed segments are
+		// gone), so the contest is no longer visible to report.
+		assertOracleValues(t, step, st, s.log)
 		if !allowCompact {
-			assertOracle(t, step, st, s.log)
+			assertOracleConflicts(t, step, st, s.log)
 		}
 	}
 }
 
-// assertOracle checks a fold against the write log: the resolved secrets and the
-// reported conflict keys must match what last-write-wins over the log predicts.
-func assertOracle(t *testing.T, step int, st *State, log map[string][]recordedWrite) {
+// assertOracleValues checks a fold's resolved secrets against what
+// last-write-wins over the write log predicts.
+func assertOracleValues(t *testing.T, step int, st *State, log map[string][]recordedWrite) {
 	t.Helper()
-	wantSecrets, wantConflicts := oracle(log)
+	wantSecrets, _ := oracle(log)
 	if !sameStringMap(st.Secrets, wantSecrets) {
 		t.Fatalf("step %d: fold secrets %v != oracle %v", step, st.Secrets, wantSecrets)
 	}
+}
+
+// assertOracleConflicts checks the reported conflict keys against the log's
+// ties; only meaningful while every contesting segment is still present.
+func assertOracleConflicts(t *testing.T, step int, st *State, log map[string][]recordedWrite) {
+	t.Helper()
+	_, wantConflicts := oracle(log)
 	got := map[string]bool{}
 	for _, c := range st.Conflicts {
 		got[c.Key] = true
