@@ -153,7 +153,9 @@ notenv does **not** defend these, by design. Treating them as in-scope would be 
   secrets; that is the product. Namespace pinning stops a malicious repository from *silently*
   reaching another project's secrets, not from misusing the secrets you knowingly hand it.
 - **Deliberate extraction by anything running as your user.** An agent (or any code) with your
-  UID can run `notenv run -- printenv KEY` or read the session key cache; output masking catches
+  UID can run `notenv run -- sh -c 'printenv KEY | base64'` (masking is exact-byte matching, so
+  any encoding walks around it; the child's own file and network writes never pass through the
+  masker at all) or read the session key cache; output masking catches
   accidents, not intent. The same trust model as ssh-agent. A broker that holds the unlocked key
   in a separate trust domain — agents *use*, provably cannot *extract* — is planned, and until it
   exists notenv makes no agent-containment claim.

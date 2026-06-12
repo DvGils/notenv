@@ -363,7 +363,8 @@ This project manages secrets with notenv (https://github.com/DvGils/notenv).
 ```
 
 **Honest limits:** this is accident-proofing, not a security boundary. An agent running as
-your user can still extract a value deliberately (`notenv run -- printenv KEY`) or read the
+your user can still extract a value deliberately (any encoding defeats exact-byte masking:
+`notenv run -- sh -c 'printenv KEY | base64'`) or read the
 session key cache, and a child process that legitimately holds a secret can always send it
 somewhere — masking catches accidents, not intent. A broker mode that keeps the unlocked key
 in a separate trust domain (so agents can *use* but provably not *extract*) is on the
