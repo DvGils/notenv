@@ -80,6 +80,7 @@ func enforceProvisional(ctx context.Context, store keymgmt.Vault, scope, readOnl
 	if err != nil {
 		return false, err
 	}
+	warnShortPassphrase(newPass)
 	if err := header.RotateSlot(res.slot, newPass, res.slotKey); err != nil {
 		return false, err
 	}

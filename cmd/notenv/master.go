@@ -116,7 +116,7 @@ func createMaster(ctx context.Context, store keymgmt.Vault) (*crypto.MasterKey, 
 		return mk, header, nil
 	}
 
-	pass, err := keyring.PromptNewPassphrase("Choose a passphrase for this storage: ")
+	pass, err := chooseCreationPassphrase()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -172,6 +172,46 @@ func createWithIdentity(ctx context.Context, store keymgmt.Vault, id *age.X25519
 		return nil, nil, err
 	}
 	return mk, header, nil
+}
+
+// chooseCreationPassphrase runs the creation prompt. Empty input generates a
+// passphrase (printed once, never confirmed: it was displayed); a typed one
+// is confirmed and gets the length warning. The passphrase is the root of
+// trust and the offline brute-force surface, so the easy path is the strong
+// one: users invent weak passphrases, the generator does not.
+func chooseCreationPassphrase() (string, error) {
+	pass, err := keyring.ReadSecret("Choose a passphrase for this storage (Enter to generate one): ")
+	if err != nil {
+		return "", err
+	}
+	if pass == "" {
+		gen, err := keyring.GeneratePassphrase()
+		if err != nil {
+			return "", err
+		}
+		ui.Infof("your generated passphrase (shown only once):")
+		fmt.Println(gen)
+		return gen, nil
+	}
+	again, err := keyring.ReadSecret("Confirm passphrase: ")
+	if err != nil {
+		return "", err
+	}
+	if pass != again {
+		return "", errors.New("passphrases do not match")
+	}
+	warnShortPassphrase(pass)
+	return pass, nil
+}
+
+// warnShortPassphrase flags a brute-forceable choice without refusing it.
+// Anyone with read access to the storage can attack the scrypt-wrapped slot
+// offline, so length is the one property worth interrupting for; cleverness
+// scoring is noise this stays out of.
+func warnShortPassphrase(pass string) {
+	if len(pass) < 12 {
+		ui.Warnf("that passphrase is short; anyone who can read your storage can brute-force it offline. Consider a longer one (notenv can generate one)")
+	}
 }
 
 // cacheMaster stores best-effort: a cache failure must never fail the

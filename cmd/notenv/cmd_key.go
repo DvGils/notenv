@@ -433,6 +433,7 @@ untouched, so other slots keep working. Escrow the new passphrase.`,
 		if err != nil {
 			return err
 		}
+		warnShortPassphrase(newPass)
 		if err := u.header.RotateSlot(u.slot, newPass, u.slotKey); err != nil {
 			return err
 		}
