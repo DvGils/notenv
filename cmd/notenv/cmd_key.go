@@ -31,11 +31,18 @@ one or more slots (today: passphrase slots). These commands operate on the
 storage as a whole, independent of any single project.`,
 }
 
+// headerTarget is a storage opened for header operations together with its
+// local-state scope (key cache, rollback pins).
+type headerTarget struct {
+	vaultStorage
+	scope string
+}
+
 // loadHeaderStore builds the storage backend for header operations. The header
 // sits alongside every namespace, so these commands need only the storage
 // target, not a project contract. Storage selection honors --storage, else the
 // machine default / sole storage.
-func loadHeaderStore() (*backend.RcloneStorage, error) {
+func loadHeaderStore() (*headerTarget, error) {
 	user, err := config.LoadUser()
 	if err != nil {
 		return nil, err
@@ -58,24 +65,11 @@ func loadHeaderStore() (*backend.RcloneStorage, error) {
 			storageName = binding.Storage
 		}
 	}
-	_, st, err := user.SelectStorage(storageName)
+	eff, err := config.ResolveStorage(user, storageName)
 	if err != nil {
 		return nil, err
 	}
-	base := st.Base
-	if base == "" {
-		base = config.DefaultBase
-	}
-	return &backend.RcloneStorage{
-		Remote:    st.Remote,
-		Base:      base,
-		Versioned: st.Versioned,
-	}, nil
-}
-
-// storeScope is the local-state key (keyring cache, rollback pin) for a storage.
-func storeScope(store *backend.RcloneStorage) string {
-	return config.CacheScope(store.Remote, store.Base)
+	return &headerTarget{vaultStorage: openStorage(eff), scope: eff.Scope()}, nil
 }
 
 // trustHeader is the read-side integrity check run after every unlock: it
@@ -143,9 +137,9 @@ func pinCurrent(scope string, h *crypto.Header, mk *crypto.MasterKey) {
 // (rotate-master / rm), so the operator's next command neither fails to decrypt
 // with a stale master nor re-prompts. Drops any stale entry first; honors the
 // configured cache TTL ("0" disables, so this no-ops). Best-effort.
-func recacheMaster(store *backend.RcloneStorage, mk *crypto.MasterKey) {
+func recacheMaster(store *headerTarget, mk *crypto.MasterKey) {
 	cache := keyring.DefaultCache()
-	scope := storeScope(store)
+	scope := store.scope
 	cache.Drop(scope)
 	user, err := config.LoadUser()
 	if err != nil {
@@ -263,7 +257,7 @@ type unlocked struct {
 // most commands it does not use the master-key cache: a key operation needs to
 // know which slot the caller holds and to hold the credential itself for the
 // post-write verification, so it always prompts.
-func unlockHeader(ctx context.Context, store *backend.RcloneStorage) (*unlocked, error) {
+func unlockHeader(ctx context.Context, store *headerTarget) (*unlocked, error) {
 	if err := store.Preflight(ctx); err != nil {
 		return nil, err
 	}
@@ -286,7 +280,7 @@ func unlockHeader(ctx context.Context, store *backend.RcloneStorage) (*unlocked,
 	if err != nil {
 		return nil, err
 	}
-	if err := trustHeader(ctx, store, storeScope(store), header, res.mk); err != nil {
+	if err := trustHeader(ctx, store, store.scope, header, res.mk); err != nil {
 		return nil, err
 	}
 	return &unlocked{header: header, raw: raw, mk: res.mk, slot: res.slot, reverify: res.reverify, slotKey: res.slotKey}, nil
@@ -295,7 +289,7 @@ func unlockHeader(ctx context.Context, store *backend.RcloneStorage) (*unlocked,
 // writeHeader marshals the mutated header and writes it through the safe-write
 // protocol. verify re-unlocks the written header with the operator's credential;
 // it defaults to the original unlock when nil (the credential is unchanged).
-func writeHeader(ctx context.Context, store *backend.RcloneStorage, u *unlocked, verify func(*crypto.Header) (*crypto.MasterKey, error)) error {
+func writeHeader(ctx context.Context, store *headerTarget, u *unlocked, verify func(*crypto.Header) (*crypto.MasterKey, error)) error {
 	if verify == nil {
 		verify = u.reverify
 	}
@@ -304,7 +298,7 @@ func writeHeader(ctx context.Context, store *backend.RcloneStorage, u *unlocked,
 	}); err != nil {
 		return err
 	}
-	pinCurrent(storeScope(store), u.header, u.mk) // revision was bumped by SafePut
+	pinCurrent(store.scope, u.header, u.mk) // revision was bumped by SafePut
 	return nil
 }
 
@@ -370,7 +364,7 @@ the header-only operations.`,
 		// pass leaves the pin consistent with the header (a re-run isn't a false
 		// rollback) and the operator's next command stays warm.
 		onFlip := func(newMK *crypto.MasterKey) {
-			pinCurrent(storeScope(store), u.header, newMK)
+			pinCurrent(store.scope, u.header, newMK)
 			recacheMaster(store, newMK)
 		}
 		if err := ui.Spin("Re-keying the vault (re-encrypting every secret)", func() error {
@@ -577,7 +571,7 @@ credential. The primary slot and the last remaining slot cannot be removed.`,
 		// Re-key under the surviving slots so the removed credential, and any
 		// retained copy of the old master, can no longer decrypt.
 		onFlip := func(newMK *crypto.MasterKey) {
-			pinCurrent(storeScope(store), u.header, newMK)
+			pinCurrent(store.scope, u.header, newMK)
 			recacheMaster(store, newMK)
 		}
 		if err := ui.Spin("Removing slot and re-keying the vault", func() error {
@@ -639,7 +633,7 @@ remote's version history).`,
 		if err != nil {
 			return err
 		}
-		scope := storeScope(store)
+		scope := store.scope
 		vaultID, bound, err := config.ScopeVault(scope)
 		if err != nil {
 			return err
@@ -715,7 +709,7 @@ authentication tag must still verify.`,
 		// Show exactly what is being traded before the alarm is cleared: this
 		// command exists to override a security check, so the decision must be
 		// visible, deliberate, and never the path of least resistance.
-		scope := storeScope(store)
+		scope := store.scope
 		boundVault, bound, err := config.ScopeVault(scope)
 		if err != nil {
 			return err

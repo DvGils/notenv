@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -53,8 +54,12 @@ var storageNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 // ValidStorageName reports whether name is usable as a storage name.
 func ValidStorageName(name string) bool { return storageNameRe.MatchString(name) }
 
-// StorageEntry is one named storage target.
+// StorageEntry is one named storage target: either a local vault directory
+// (Path) or an rclone remote (Remote/Base/Versioned) — the populated field is
+// the storage's type, and exactly one of the two must be set.
 type StorageEntry struct {
+	// Path is a local vault directory (pure-Go backend, no rclone).
+	Path   string `toml:"path"`
 	Remote string `toml:"remote"`
 	Base   string `toml:"base"`
 	// Versioned: the remote retains old object versions on overwrite
@@ -157,6 +162,9 @@ func UpsertStorage(name string, entry StorageEntry, makeDefault bool) (string, e
 	if !ValidStorageName(name) {
 		return "", fmt.Errorf("invalid storage name %q: use letters, digits, '-' or '_' (no dots or spaces)", name)
 	}
+	if err := entry.check(name); err != nil {
+		return "", err
+	}
 	u, err := LoadUser()
 	if err != nil {
 		return "", err
@@ -190,9 +198,13 @@ func writeUserConfig(u *User) (string, error) {
 	for _, name := range u.StorageNames() {
 		st := u.Storage[name]
 		fmt.Fprintf(&b, "[storage.%q]\n", name) // quoted key: never let a name nest as TOML tables
-		fmt.Fprintf(&b, "remote    = %q\n", st.Remote)
-		fmt.Fprintf(&b, "base      = %q\n", st.Base)
-		fmt.Fprintf(&b, "versioned = %t   # remote keeps old versions on overwrite (B2: yes), so skip backup copies\n", st.Versioned)
+		if st.Path != "" {
+			fmt.Fprintf(&b, "path      = %q   # local vault directory (no rclone); attach a remote later with `notenv vault copy`\n", st.Path)
+		} else {
+			fmt.Fprintf(&b, "remote    = %q\n", st.Remote)
+			fmt.Fprintf(&b, "base      = %q\n", st.Base)
+			fmt.Fprintf(&b, "versioned = %t   # remote keeps old versions on overwrite (B2: yes), so skip backup copies\n", st.Versioned)
+		}
 		if st.CacheTTL != "" {
 			fmt.Fprintf(&b, "cache_ttl = %q\n", st.CacheTTL)
 		} else {
@@ -340,13 +352,73 @@ func Exists() bool {
 // Effective is the merged result of the selected storage + contract.
 type Effective struct {
 	StorageName  string // the resolved storage name
-	Remote       string // rclone remote name
+	Path         string // local vault directory (absolute); empty for remote storages
+	Remote       string // rclone remote name; empty for local storages
 	Base         string // path within the remote
 	Versioned    bool   // remote retains versions on overwrite
 	Namespace    string
 	Mode         string        // crypto mode
 	CacheTTL     time.Duration // master-key cache TTL; <= 0 disables caching
 	BlobCacheTTL time.Duration // local ciphertext cache TTL; <= 0 disables
+}
+
+// Local reports whether the storage is a local vault directory.
+func (e Effective) Local() bool { return e.Path != "" }
+
+// Scope returns the storage's local-state scope (key cache, pins, seq
+// counters). Local storages scope on ":local" plus the absolute path — a
+// ":" cannot appear in an rclone remote name, so a local scope can never
+// collide with a remote's, however the remote is named.
+func (e Effective) Scope() string {
+	if e.Local() {
+		return CacheScope(":local", e.Path)
+	}
+	return CacheScope(e.Remote, e.Base)
+}
+
+// check validates that an entry is exactly one kind: a local path or a
+// remote. Run on write (so a contradictory entry can't be recorded) and on
+// resolution (so a hand-edited config still fails closed).
+func (st StorageEntry) check(name string) error {
+	confPath, _ := Path()
+	switch {
+	case st.Path != "" && st.Remote != "":
+		return fmt.Errorf("storage %q sets both path and remote; it must be exactly one (fix it in %s)", name, confPath)
+	case st.Path == "" && st.Remote == "":
+		return fmt.Errorf("storage %q has neither path nor remote configured; fix it in %s or re-run `notenv setup --name %s`", name, confPath, name)
+	}
+	return nil
+}
+
+// storageEffective fills the storage half of an Effective from a named entry,
+// validating that the entry is exactly one kind and normalizing it (base
+// default, path expansion).
+func storageEffective(name string, st StorageEntry) (Effective, error) {
+	eff := Effective{StorageName: name, Versioned: st.Versioned}
+	if err := st.check(name); err != nil {
+		return eff, err
+	}
+	if st.Path != "" {
+		p, err := AbsPath(st.Path)
+		if err != nil {
+			return eff, fmt.Errorf("storage %q: %w", name, err)
+		}
+		eff.Path = p
+		return eff, nil
+	}
+	eff.Remote = st.Remote
+	eff.Base = firstOf(st.Base, DefaultBase)
+	return eff, nil
+}
+
+// ResolveStorage selects and normalizes a storage without a project contract
+// (storage-wide commands: the key family, vault copy).
+func ResolveStorage(u *User, explicit string) (Effective, error) {
+	name, st, err := u.SelectStorage(explicit)
+	if err != nil {
+		return Effective{}, err
+	}
+	return storageEffective(name, st)
 }
 
 // Resolve selects a storage (storageName empty means auto: default or sole) and
@@ -358,18 +430,12 @@ func Resolve(u *User, f *contract.File, contractDir, storageName string) (Effect
 	if err != nil {
 		return Effective{}, err
 	}
-	eff := Effective{
-		StorageName: name,
-		Remote:      st.Remote,
-		Base:        firstOf(st.Base, DefaultBase),
-		Versioned:   st.Versioned,
-		Namespace:   firstOf(f.Namespace, filepath.Base(contractDir)),
-		Mode:        firstOf(u.Crypto.Mode, ModePass),
+	eff, err := storageEffective(name, st)
+	if err != nil {
+		return eff, err
 	}
-	if eff.Remote == "" {
-		path, _ := Path()
-		return eff, fmt.Errorf("storage %q has no remote configured; fix it in %s or re-run `notenv setup --name %s`", name, path, name)
-	}
+	eff.Namespace = firstOf(f.Namespace, filepath.Base(contractDir))
+	eff.Mode = firstOf(u.Crypto.Mode, ModePass)
 	if !contract.NamespaceName.MatchString(eff.Namespace) {
 		return eff, fmt.Errorf("derived namespace %q is not a valid object name; set namespace explicitly in %s", eff.Namespace, contract.FileName)
 	}
@@ -554,6 +620,53 @@ func CheckPin(stored Pin, have bool, obsRevision int, obsMasterPub string) (adva
 // join makes ("r","a:b") and ("r:a","b") collide.
 func CacheScope(remote, base string) string {
 	return fmt.Sprintf("%d:%s:%s", len(remote), remote, base)
+}
+
+// AbsPath expands a leading "~" and makes the path absolute.
+func AbsPath(path string) (string, error) {
+	if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(home, path[1:])
+	}
+	return filepath.Abs(path)
+}
+
+// DefaultVaultDir is where a named local vault lives by default: the
+// platform's data directory, never a repository.
+func DefaultVaultDir(name string) (string, error) {
+	base, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "notenv", "vaults", name), nil
+}
+
+func dataDir() (string, error) {
+	switch runtime.GOOS {
+	case "windows":
+		if dir := os.Getenv("LocalAppData"); dir != "" {
+			return dir, nil
+		}
+		return os.UserConfigDir()
+	case "darwin":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, "Library", "Application Support"), nil
+	default:
+		if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
+			return dir, nil
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, ".local", "share"), nil
+	}
 }
 
 func firstOf(vals ...string) string {

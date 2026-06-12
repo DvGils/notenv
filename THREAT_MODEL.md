@@ -40,8 +40,18 @@ machine running the command, only for as long as the command runs.**
 - Secret values for a namespace are stored as an **append-only set of encrypted segments** over
   periodic **snapshots**; reads fold them, last-write-wins per key. Every write is read back and
   verified before it is trusted.
-- Storage is reached through [rclone](https://rclone.org); notenv treats it as a dumb object store
-  and assumes nothing about its consistency or honesty beyond "stores and returns bytes."
+- Storage is a local vault directory (pure-Go backend) or a remote reached through
+  [rclone](https://rclone.org); notenv treats both as a dumb object store and assumes nothing
+  about consistency or honesty beyond "stores and returns bytes." A **local vault changes none
+  of the confidentiality story**: it is the same ciphertext that would sit on a provider, on a
+  strictly less-exposed medium, and the lost-laptop case below covers ciphertext at rest (the
+  offline passphrase brute-force note applies verbatim). What changes is durability and
+  recovery — no off-device copy and no object versioning — so back the directory up, or
+  replicate it to a remote with `notenv vault copy`; the header keeps its `.prev` backup like
+  any non-versioned remote. Local vaults are single-machine by design: their header writes get
+  a true compare-and-swap (an OS file lock), which is cooperative and same-machine only — a
+  vault directory inside Dropbox/syncthing/NFS gets no cross-machine exclusion; concurrent
+  multi-machine use is what remotes are for."
 - On Linux, the master key (kernel keyring) and ciphertext blobs (tmpfs) may be cached in RAM, both
   reclaimed by the OS on logout/reboot. macOS and Windows do **not** cache (see
   [README](./README.md#caching-is-linux-only-by-design)).

@@ -4,7 +4,48 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
-## 0.9.0 (unreleased)
+## 0.10.0 (unreleased)
+
+The adoption release. Until now the first secret was twenty minutes away — install rclone,
+make a bucket, mint credentials, walk a config wizard. It is now three commands on a clean
+machine: `notenv setup` (a passphrase), `notenv import .env`, `notenv run -- …`.
+
+### Added
+
+- **Local vaults.** `notenv setup` now defaults to a vault in a local directory: no
+  accounts, no rclone, nothing to install beyond notenv. It stores byte-identical layout to
+  a remote vault — same encryption, same authenticated header and manifest, same trust
+  machinery — and its header writes get a *true* compare-and-swap (an OS file lock that the
+  kernel releases if the holder dies), strictly stronger than the windowed swap on remotes.
+  Confidentiality is unchanged (the same ciphertext that would sit on a provider); the
+  honest trade is durability — no off-device copy, no versioning — so the setup message says
+  exactly that, and `vault copy` is the way out. Local vaults are single-machine by design;
+  syncing across machines is what remotes are for.
+- **Promptless creation for agents and CI.** With `NOTENV_IDENTITY` set, `setup` creates
+  the vault non-interactively with that identity as its only credential — the whole
+  zero-prompt path from nothing to `notenv run` now works headless. Only the environment
+  variable triggers this; an identity file on disk never silently changes what setup
+  creates.
+- **`notenv import`.** Parse an existing `.env` (documented dotenv subset: comments,
+  `export` prefixes, quoted and multiline values — and never any variable expansion),
+  validate everything up front, and store every value in a single recorded write: an import
+  either fully happens or doesn't, and N secrets cost one header round-trip, not N. Keys
+  are declared in the contract; `--dry-run` previews names, never values.
+- **`notenv vault copy`.** Replicate a vault to new storage and register it as a named
+  storage: every object byte-verified, the header installed last (the copy isn't live until
+  complete), races with concurrent writes reconciled, the source never touched. No
+  re-encryption, no new ceremony — pins follow the vault's own identity, exactly what that
+  identity was designed for. Local→cloud is the intended ramp; local→local works too
+  (removable media).
+- Multiple storages may now be local, remote, or any mix; config entries are validated to
+  be exactly one kind.
+
+### Changed
+
+- **rclone is now an optional dependency**, required only for cloud remotes. The
+  rclone-missing failure moved from setup's front door into the remote path.
+
+## 0.9.0
 
 The no-shims release: 0.8.0's one-shot migration has done its job and is gone, and the
 project's scarcest quality resource — fuzzer-hours — now accumulates every night.

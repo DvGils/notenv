@@ -110,6 +110,29 @@ func NewHeader(passphrase, slotName string) (*Header, *MasterKey, error) {
 	return header, mk, nil
 }
 
+// NewRecipientHeader generates a master key and a header whose only slot is
+// an age recipient: the promptless creation path (CI, agents). No passphrase
+// exists; the identity holder is the vault's owner.
+func NewRecipientHeader(recipient *age.X25519Recipient, slotName string) (*Header, *MasterKey, error) {
+	mk, err := GenerateMasterKey()
+	if err != nil {
+		return nil, nil, err
+	}
+	vaultID, err := NewVaultID()
+	if err != nil {
+		return nil, nil, err
+	}
+	header := &Header{Version: headerVersion, VaultID: vaultID, Revision: 1}
+	if err := header.AddRecipientSlot(recipient, slotName, mk); err != nil {
+		return nil, nil, err
+	}
+	header.Slots[0].Primary = true
+	if err := header.Seal(mk); err != nil {
+		return nil, nil, err
+	}
+	return header, mk, nil
+}
+
 // NewVaultID mints a vault's stable random identity.
 func NewVaultID() (string, error) {
 	buf := make([]byte, 16)

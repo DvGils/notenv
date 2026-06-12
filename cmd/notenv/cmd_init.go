@@ -95,7 +95,7 @@ var initCmd = &cobra.Command{
 			}
 			pinNamespace(dir, binding, eff.Namespace)
 		}
-		store := &backend.RcloneStorage{Remote: eff.Remote, Base: eff.Base, Versioned: eff.Versioned}
+		store := openStorage(eff)
 		var joined bool
 		if err := ui.Spin(fmt.Sprintf("Checking for existing secrets (namespace %q)", eff.Namespace), func() error {
 			exists, existsErr := secrets.Exists(ctx, store, eff.Namespace)

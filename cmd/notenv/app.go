@@ -63,7 +63,7 @@ func loadApp(ctx context.Context) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &backend.RcloneStorage{Remote: eff.Remote, Base: eff.Base, Versioned: eff.Versioned}
+	store := openStorage(eff)
 	// The contract chooses the namespace — the thing that selects which secrets
 	// reach a child process — so it is held to the checkout's local pin before
 	// any key is touched (a first-use join of an existing namespace costs one
@@ -83,7 +83,7 @@ func loadApp(ctx context.Context) (*app, error) {
 		store:        store,
 		cache:        keyring.DefaultCache(),
 		blobs:        blobcache.New(eff.BlobCacheTTL),
-		cacheScope:   config.CacheScope(eff.Remote, eff.Base),
+		cacheScope:   eff.Scope(),
 		cacheTTL:     eff.CacheTTL,
 	}, nil
 }
@@ -172,6 +172,53 @@ func (a *app) appendGuarded(ctx context.Context, view *vaultView, prev *secrets.
 	}
 	pinCurrent(a.cacheScope, h, view.mk)
 	return updated, nil
+}
+
+// appendGuardedBatch is appendGuarded for many keys at once: N segments, one
+// manifest write. The single swap is what keeps a large import from costing N
+// header round-trips, and it keeps the all-or-nothing promise — any failure,
+// including an epoch change, rolls back every segment this batch landed.
+func (a *app) appendGuardedBatch(ctx context.Context, view *vaultView, prev *secrets.State, items []importItem) (*secrets.State, error) {
+	v, err := a.vault()
+	if err != nil {
+		return nil, err
+	}
+	ns := a.namespaceFor(view)
+	state := prev
+	var landed []string
+	rollback := func() {
+		for _, objKey := range landed {
+			_ = a.store.Delete(ctx, objKey)
+		}
+	}
+	delta := crypto.ManifestDelta{Add: map[string]crypto.ManifestEntry{}, Prune: prev.Prunable}
+	for _, it := range items {
+		seq, err := config.NextSeq(a.cacheScope, a.namespace)
+		if err != nil {
+			rollback()
+			return nil, err
+		}
+		next, objKey, entry, err := ns.Append(ctx, state, seq, it.storageKey, it.value, false)
+		if err != nil {
+			rollback()
+			return nil, err
+		}
+		state = next
+		landed = append(landed, objKey)
+		delta.Add[objKey] = entry
+	}
+	h, err := keymgmt.UpdateManifest(ctx, v, view.mk, delta)
+	if err != nil {
+		rollback()
+		if errors.Is(err, keymgmt.ErrEpochChanged) {
+			a.cache.Drop(a.cacheScope)
+			a.blobs.Drop(a.cacheScope, a.namespace)
+			return nil, fmt.Errorf("%w; the import was rolled back, nothing was stored. Re-run the command to write under the current key (verify the rotation is legitimate if it surprises you)", err)
+		}
+		return nil, fmt.Errorf("%w; the import was rolled back, nothing was stored — re-run the command", err)
+	}
+	pinCurrent(a.cacheScope, h, view.mk)
+	return state, nil
 }
 
 // withMaster resolves the master key and runs fn with it, recovering once from

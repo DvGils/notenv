@@ -2,6 +2,8 @@ package config_test
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -328,5 +330,100 @@ func TestResolveSelectsStorage(t *testing.T) {
 	eff, err = config.Resolve(u, cf, "/tmp/proj", "")
 	if err != nil || eff.StorageName != "personal" {
 		t.Fatalf("auto-select: %+v err=%v", eff, err)
+	}
+}
+
+// TestLocalStorageEntry: a path entry round-trips through the rendered
+// config, resolves to an absolute local Effective with its own scope class,
+// and contradictory or empty entries are refused.
+func TestLocalStorageEntry(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	vaultDir := t.TempDir()
+	if _, err := config.UpsertStorage("local", config.StorageEntry{Path: vaultDir}, false); err != nil {
+		t.Fatal(err)
+	}
+	u, err := config.LoadUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Storage["local"].Path != vaultDir {
+		t.Fatalf("path entry not round-tripped: %+v", u.Storage["local"])
+	}
+
+	eff, err := config.ResolveStorage(u, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eff.Local() || eff.Path != vaultDir || eff.Remote != "" {
+		t.Fatalf("resolved local entry wrong: %+v", eff)
+	}
+	// The scope class can never collide with a remote-backed storage's, even
+	// one whose remote is literally named "local".
+	remoteAlike := config.CacheScope("local", vaultDir)
+	if eff.Scope() == remoteAlike {
+		t.Fatalf("local scope %q must differ from a remote named \"local\"", eff.Scope())
+	}
+}
+
+func TestStorageEntryValidation(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// A contradictory or empty entry can't even be written...
+	for name, entry := range map[string]config.StorageEntry{
+		"both":    {Path: "/somewhere", Remote: "b2", Base: "bucket/x"},
+		"neither": {},
+	} {
+		if _, err := config.UpsertStorage(name, entry, false); err == nil {
+			t.Errorf("UpsertStorage must refuse entry %q", name)
+		}
+	}
+	// ...and a hand-edited config that smuggles one in fails at resolution.
+	dir, err := config.Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := "[storage.\"both\"]\npath = \"/somewhere\"\nremote = \"b2\"\nbase = \"bucket/x\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u, err := config.LoadUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.ResolveStorage(u, "both"); err == nil {
+		t.Error("resolution must refuse a both-kinds entry")
+	}
+}
+
+func TestAbsPathExpandsHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.AbsPath("~/vaults/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Join(home, "vaults", "x") {
+		t.Fatalf("AbsPath(~/vaults/x) = %q", got)
+	}
+}
+
+func TestDefaultVaultDirIsNamePartitioned(t *testing.T) {
+	a, err := config.DefaultVaultDir("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := config.DefaultVaultDir("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatal("distinct vault names must yield distinct directories")
+	}
+	if filepath.Base(a) != "work" {
+		t.Fatalf("vault dir %q must end in its name", a)
 	}
 }
