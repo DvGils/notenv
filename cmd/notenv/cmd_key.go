@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"text/tabwriter"
+	"time"
 
 	"filippo.io/age"
 	"github.com/spf13/cobra"
@@ -301,7 +302,9 @@ type unlocked struct {
 // know which slot the caller holds and to hold the credential itself for the
 // post-write verification, so it always prompts. Every mutating key command
 // funnels through here, so this is also where read-only policy refuses them.
-func unlockHeader(ctx context.Context, store *headerTarget) (*unlocked, error) {
+// gateProvisional runs the onboarding gate; `key rotate` skips it because the
+// rotation it is about to perform is exactly what the gate would force.
+func unlockHeader(ctx context.Context, store *headerTarget, gateProvisional bool) (*unlocked, error) {
 	if store.readOnly != "" {
 		return nil, fmt.Errorf("%s; refusing to modify the vault header", store.readOnly)
 	}
@@ -329,6 +332,21 @@ func unlockHeader(ctx context.Context, store *headerTarget) (*unlocked, error) {
 	}
 	if err := trustHeader(ctx, store, store.scope, header, res.mk); err != nil {
 		return nil, err
+	}
+	if gateProvisional {
+		// Read-only was refused above, so the gate's write cannot hit it.
+		rotated, err := enforceProvisional(ctx, store, store.scope, "", header, raw, res)
+		if err != nil {
+			return nil, err
+		}
+		if rotated {
+			// The gate rewrote the header; re-marshal the sealed result so the
+			// next SafePut's freshness baseline matches what storage now holds.
+			raw, err = header.Marshal()
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	return &unlocked{header: header, raw: raw, mk: res.mk, slot: res.slot, reverify: res.reverify, slotKey: res.slotKey}, nil
 }
@@ -362,7 +380,7 @@ untouched, so other slots keep working. Escrow the new passphrase.`,
 		if err != nil {
 			return err
 		}
-		u, err := unlockHeader(cmd.Context(), store)
+		u, err := unlockHeader(cmd.Context(), store, false)
 		if err != nil {
 			return err
 		}
@@ -403,7 +421,7 @@ the header-only operations.`,
 		if err != nil {
 			return err
 		}
-		u, err := unlockHeader(cmd.Context(), store)
+		u, err := unlockHeader(cmd.Context(), store, true)
 		if err != nil {
 			return err
 		}
@@ -425,71 +443,110 @@ the header-only operations.`,
 	},
 }
 
-var keyAddPassphrase bool
+var keyAddMachine bool
 var keyAddRecipient string
-var keyAddName string
 
 var keyAddCmd = &cobra.Command{
-	Use:   "add",
-	Short: "Add a key slot (a passphrase or a teammate's recipient)",
+	Use:   "add <name>",
+	Short: "Add a key slot: onboard a teammate or enroll a machine",
 	Long: `Add a key slot to the header.
 
-  notenv key add --passphrase                  add a passphrase slot (a backup
-                                               or second-device credential)
-  notenv key add --recipient age1… --name bob  add a teammate by their age
-                                               public key
+  notenv key add alice          onboard a teammate: prints a one-time
+                                onboarding passphrase to send them; their
+                                first notenv command replaces it with a
+                                passphrase only they know
+  notenv key add --machine ci   enroll a machine (CI, an agent): prints a
+                                new identity exactly once, for the platform's
+                                secret store; nothing is written to disk
 
-A recipient slot wraps the master key to a teammate's public key; they unlock it
-with their own age identity and never share a secret with you.`,
-	Args: cobra.NoArgs,
+Passphrases are for people, identities are for machines. A machine slot wraps
+the master key to an age public key; the machine presents the private key via
+NOTENV_IDENTITY. Where the machine only reads, pair it with a read-only
+storage credential and NOTENV_READONLY. With --machine --recipient age1...,
+an existing public key is enrolled instead of generating a new identity (the
+private key stays wherever it was made).`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if keyAddPassphrase == (keyAddRecipient != "") {
-			return errors.New("specify exactly one of --passphrase or --recipient")
+		if keyAddRecipient != "" && !keyAddMachine {
+			return errors.New("--recipient enrolls a machine key; use it together with --machine")
 		}
+		name := args[0]
 		store, err := loadHeaderStore()
 		if err != nil {
 			return err
 		}
-		u, err := unlockHeader(cmd.Context(), store)
+		u, err := unlockHeader(cmd.Context(), store, true)
 		if err != nil {
 			return err
 		}
-
-		if keyAddRecipient != "" {
-			recipient, err := age.ParseX25519Recipient(keyAddRecipient)
-			if err != nil {
-				return fmt.Errorf("invalid recipient %q: %w", keyAddRecipient, err)
+		for _, slot := range u.header.Slots {
+			if slot.Name == name {
+				return fmt.Errorf("a slot named %q already exists; pick another name", name)
 			}
-			if err := u.header.AddRecipientSlot(recipient, keyAddName, u.mk); err != nil {
-				return err
-			}
-			// We only appended a slot, so the credential we unlocked with still
-			// opens the new header and verifies the write.
-			if err := writeHeader(cmd.Context(), store, u, nil); err != nil {
-				return err
-			}
-			ui.Successf("added recipient slot for %s", recipient.String())
-			return nil
 		}
 
-		newPass, err := keyring.PromptNewPassphrase("Choose a passphrase for the new slot: ")
+		if keyAddMachine {
+			return addMachineSlot(cmd.Context(), store, u, name)
+		}
+
+		temp, err := keyring.GeneratePassphrase()
 		if err != nil {
 			return err
 		}
-		name := keyAddName
-		if name == "" {
-			name = userAtHost()
-		}
-		if err := u.header.AddPassphraseSlot(newPass, name, u.mk); err != nil {
+		if err := u.header.AddPassphraseSlot(temp, name, u.mk); err != nil {
 			return err
 		}
+		slot := &u.header.Slots[len(u.header.Slots)-1]
+		slot.Provisional = true
+		slot.TS = time.Now().Unix()
+		// We only appended a slot, so the credential we unlocked with still
+		// opens the new header and verifies the write.
 		if err := writeHeader(cmd.Context(), store, u, nil); err != nil {
 			return err
 		}
-		ui.Warnf("escrow the new passphrase in your password manager")
-		ui.Successf("added passphrase slot %q", name)
+		ui.Successf("added slot %q with a one-time onboarding passphrase", name)
+		ui.Infof("send this passphrase to them over a private channel:")
+		fmt.Println(temp)
+		ui.Infof("their first notenv command makes them replace it with a passphrase only they know; until then `notenv key list` shows the slot as provisional")
 		return nil
 	},
+}
+
+// addMachineSlot enrolls a machine principal: a recipient slot for a supplied
+// public key, or for a freshly generated identity whose secret half is printed
+// exactly once and never stored. The identity belongs in the machine's secret
+// store, presented at runtime via NOTENV_IDENTITY.
+func addMachineSlot(ctx context.Context, store *headerTarget, u *unlocked, name string) error {
+	var recipient *age.X25519Recipient
+	var generated *age.X25519Identity
+	if keyAddRecipient != "" {
+		var err error
+		recipient, err = age.ParseX25519Recipient(keyAddRecipient)
+		if err != nil {
+			return fmt.Errorf("invalid recipient %q: %w", keyAddRecipient, err)
+		}
+	} else {
+		var err error
+		generated, err = age.GenerateX25519Identity()
+		if err != nil {
+			return err
+		}
+		recipient = generated.Recipient()
+	}
+	if err := u.header.AddRecipientSlot(recipient, name, u.mk); err != nil {
+		return err
+	}
+	u.header.Slots[len(u.header.Slots)-1].TS = time.Now().Unix()
+	if err := writeHeader(ctx, store, u, nil); err != nil {
+		return err
+	}
+	ui.Successf("enrolled machine slot %q for %s", name, recipient.String())
+	if generated != nil {
+		ui.Infof("store this identity in the machine's secret store and present it via NOTENV_IDENTITY; it is shown only once and saved nowhere:")
+		fmt.Println(generated.String())
+	}
+	ui.Infof("if this machine only reads, give it a read-only storage credential and set NOTENV_READONLY=1")
+	return nil
 }
 
 var keyGenIdentityForce bool
@@ -545,7 +602,7 @@ cannot be removed, and only its holder may transfer primary.`,
 		if err != nil {
 			return err
 		}
-		u, err := unlockHeader(cmd.Context(), store)
+		u, err := unlockHeader(cmd.Context(), store, true)
 		if err != nil {
 			return err
 		}
@@ -597,7 +654,7 @@ credential. The primary slot and the last remaining slot cannot be removed.`,
 		if err != nil {
 			return err
 		}
-		u, err := unlockHeader(cmd.Context(), store)
+		u, err := unlockHeader(cmd.Context(), store, true)
 		if err != nil {
 			return err
 		}
@@ -798,9 +855,8 @@ authentication tag must still verify.`,
 }
 
 func init() {
-	keyAddCmd.Flags().BoolVar(&keyAddPassphrase, "passphrase", false, "add a passphrase slot")
-	keyAddCmd.Flags().StringVar(&keyAddRecipient, "recipient", "", "add a teammate by their age1… public key")
-	keyAddCmd.Flags().StringVar(&keyAddName, "name", "", "name for the new slot (passphrase slots default to user@host)")
+	keyAddCmd.Flags().BoolVar(&keyAddMachine, "machine", false, "enroll a machine (CI, an agent) instead of onboarding a teammate")
+	keyAddCmd.Flags().StringVar(&keyAddRecipient, "recipient", "", "with --machine: enroll an existing age1... public key instead of generating an identity")
 	keyGenIdentityCmd.Flags().BoolVar(&keyGenIdentityForce, "force", false, "overwrite an existing identity (the old one is lost forever)")
 	keyListCmd.Flags().BoolVar(&keyListJSON, "json", false, "machine-readable output: vault id, revision, slots")
 	keyTrustCmd.Flags().BoolVar(&keyTrustYes, "yes", false, "pin without the interactive confirmation (for scripts; you have verified the change out of band)")
