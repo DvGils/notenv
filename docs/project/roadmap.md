@@ -15,10 +15,11 @@ and what is deliberately out of scope.
   passphrase and master-key rotation, offboarding by re-key, advisory primary governance, and signed
   rotation transitions so legitimate re-keys propagate to every machine without prompts.
 - **Agents and CI.** Masked captured output, machine-readable `--json`, docker-style exit codes,
-  projectless `--namespace` addressing, policy-level read-only mode, and an **experimental MCP server**
-  (`notenv mcp`).
-- **Platforms.** Linux, macOS, and Windows; Linux key/blob caching. Releases are reproducible,
-  cosign-signed, and carry SLSA build provenance.
+  projectless `--namespace` addressing, policy-level read-only mode, an **MCP server** (`notenv
+  mcp`), and an installable **agent skill** (`skills/notenv/`).
+- **Platforms.** Linux, macOS, and Windows, with session key caching on all three (kernel keyring,
+  Keychain, DPAPI); blob caching on Linux. Releases are reproducible, cosign-signed, and carry SLSA
+  build provenance.
 
 ## Planned
 

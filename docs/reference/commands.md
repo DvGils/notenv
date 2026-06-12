@@ -19,7 +19,7 @@
 | `notenv compact` | Force-fold a namespace's change segments into a single snapshot (also happens automatically). |
 | `notenv cache clear` | Remove all locally cached ciphertext on this machine. |
 | `notenv vault copy` | Replicate this vault to new storage (for example local to cloud) and register it. The source is untouched. |
-| `notenv mcp` | Serve the vault to MCP clients over stdio (experimental). |
+| `notenv mcp` | Serve the vault to MCP clients over stdio: discovery, masked execution, doctor; never a value. |
 | `notenv --version` | Print the version, commit, and build date. |
 
 ## Targeting a vault
