@@ -74,7 +74,7 @@ func runChild(cmd *cobra.Command, args []string) error {
 	stdout, outMask := maskedStream(os.Stdout, injected)
 	stderr, errMask := maskedStream(os.Stderr, injected)
 
-	code, err := runner.Run(args, env, stdout, stderr)
+	code, err := runner.Run(args, env, os.Stdin, stdout, stderr)
 	flushMasker(outMask)
 	flushMasker(errMask)
 	if err != nil {

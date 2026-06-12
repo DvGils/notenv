@@ -63,7 +63,7 @@ func (a *app) requireWritable(action string) error {
 
 func loadApp(ctx context.Context) (*app, error) {
 	if namespaceFlag != "" {
-		return loadProjectlessApp(ctx)
+		return projectlessApp(ctx, storageFlag, namespaceFlag)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -118,16 +118,17 @@ func loadApp(ctx context.Context) (*app, error) {
 	}, nil
 }
 
-// loadProjectlessApp is loadApp for --namespace: the vault addressed directly.
-// Storage selection is --storage or the machine default — there is no checkout
-// to carry a binding — and first use of a namespace that already holds secrets
-// is confirmed against the user-level acceptance record instead of a local pin.
-func loadProjectlessApp(ctx context.Context) (*app, error) {
+// projectlessApp is loadApp for an explicitly named namespace (--namespace,
+// or a per-call MCP argument): the vault addressed directly. Storage selection
+// is the explicit name or the machine default — there is no checkout to carry
+// a binding — and first use of a namespace that already holds secrets is
+// confirmed against the user-level acceptance record instead of a local pin.
+func projectlessApp(ctx context.Context, storageName, namespace string) (*app, error) {
 	user, err := config.LoadUser()
 	if err != nil {
 		return nil, err
 	}
-	eff, err := config.ResolveNamespace(user, storageFlag, namespaceFlag)
+	eff, err := config.ResolveNamespace(user, storageName, namespace)
 	if err != nil {
 		return nil, err
 	}

@@ -29,16 +29,17 @@ type StartError struct{ Err error }
 func (e *StartError) Error() string { return e.Err.Error() }
 func (e *StartError) Unwrap() error { return e.Err }
 
-// Run executes argv with the given environment, streaming the child's output
-// to stdout/stderr (pass os.Stdout/os.Stderr for a direct wire, or Maskers to
-// scrub captured output — the caller flushes those after Run returns) and
-// forwarding termination signals to the child. It returns the child's exit
-// code (128+signal if the child was killed by a signal); a child that never
-// started is a *StartError.
-func Run(argv []string, env []string, stdout, stderr io.Writer) (int, error) {
+// Run executes argv with the given environment, wiring stdin through (nil
+// reads as empty — for callers whose own stdin belongs to a protocol) and
+// streaming the child's output to stdout/stderr (pass os.Stdout/os.Stderr for
+// a direct wire, or Maskers to scrub captured output — the caller flushes
+// those after Run returns), forwarding termination signals to the child. It
+// returns the child's exit code (128+signal if the child was killed by a
+// signal); a child that never started is a *StartError.
+func Run(argv []string, env []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = env
-	cmd.Stdin = os.Stdin
+	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.WaitDelay = waitDelay

@@ -123,7 +123,7 @@ func TestRunMasksChildOutput(t *testing.T) {
 	code, err := Run(
 		[]string{"sh", "-c", `echo "leaking $TOKEN now"`},
 		[]string{"TOKEN=s3cretvalue", "PATH=" + getPATH()},
-		m, m,
+		nil, m, m,
 	)
 	if err != nil || code != 0 {
 		t.Fatalf("run: code=%d err=%v", code, err)
@@ -145,7 +145,7 @@ func TestRunExitCodeSurvivesMasking(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	m := NewMasker(&buf, nil)
-	code, err := Run([]string{"sh", "-c", "exit 42"}, []string{"PATH=" + getPATH()}, m, m)
+	code, err := Run([]string{"sh", "-c", "exit 42"}, []string{"PATH=" + getPATH()}, nil, m, m)
 	if err != nil {
 		t.Fatal(err)
 	}
