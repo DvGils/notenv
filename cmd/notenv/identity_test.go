@@ -88,7 +88,7 @@ func TestConfiguredIdentitiesFromEnvPath(t *testing.T) {
 // With NOTENV_IDENTITY unset there are no identities at all: identities are
 // machine credentials and notenv owns no file location for one.
 func TestConfiguredIdentitiesUnsetEnv(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	t.Setenv(identityEnv, "")
 
 	ids, err := configuredIdentities()

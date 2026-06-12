@@ -44,7 +44,9 @@ func TestMCPToolSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != string(golden) {
+	// Belt against a checkout that translated line endings anyway.
+	want := strings.ReplaceAll(string(golden), "\r\n", "\n")
+	if got != want {
 		t.Fatalf("MCP tool surface drifted from testdata/mcp_tools.golden.json:\n%s", got)
 	}
 }

@@ -29,7 +29,7 @@ func doctorCmdCtx(t *testing.T) *cobra.Command {
 
 // TestDoctorCleanVault: a healthy vault yields zero findings.
 func TestDoctorCleanVault(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	ctx := context.Background()
 	store := memstore.New()
 
@@ -54,7 +54,7 @@ func TestDoctorCleanVault(t *testing.T) {
 // unrecorded object, a missing recorded object, and a rolled-back pin must
 // surface exactly those findings, and the storage must be untouched.
 func TestDoctorNamesEveryPlantedFault(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	ctx := context.Background()
 	store := memstore.New()
 

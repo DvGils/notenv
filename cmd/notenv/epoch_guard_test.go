@@ -27,7 +27,7 @@ func (c *mapCache) Drop(scope string) { delete(c.m, scope) }
 // guardApp builds an app over a memstore vault, returning it with the master.
 func guardApp(t *testing.T) (*app, *memstore.Store, *crypto.MasterKey) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // the view's pin checks write local trust state
+	isolateConfig(t) // the view's pin checks write local trust state
 	store := memstore.New()
 	header, mk, err := crypto.NewHeader("pass", "owner")
 	if err != nil {

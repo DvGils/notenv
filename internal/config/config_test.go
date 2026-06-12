@@ -15,7 +15,7 @@ import (
 // TestNextSeqConcurrent hammers NextSeq from many goroutines at once; with the
 // read-modify-write locked, every returned sequence number must be distinct.
 func TestNextSeqConcurrent(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	const workers, perWorker = 16, 5
 
 	results := make(chan int, workers*perWorker)
@@ -90,7 +90,7 @@ func TestSelectStorage(t *testing.T) {
 }
 
 func TestUpsertStorageRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 
 	// First storage becomes the default.
 	if _, err := config.UpsertStorage("personal", config.StorageEntry{Remote: "b2", Base: "p", Versioned: true}, false); err != nil {
@@ -130,7 +130,7 @@ func TestUpsertStorageRoundTrip(t *testing.T) {
 }
 
 func TestUpsertStorageRejectsBadNames(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	for _, bad := range []string{"vault.prod", "has space", "a/b", "", ".x", "-x"} {
 		if _, err := config.UpsertStorage(bad, config.StorageEntry{Remote: "r"}, false); err == nil {
 			t.Errorf("UpsertStorage(%q) should be rejected", bad)
@@ -157,7 +157,7 @@ const (
 // seedPin writes the pin the pin tests start from and reads it back.
 func seedPin(t *testing.T) (config.Pin, bool) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	if err := config.WritePin(pinTestScope, pinTestVault, config.Pin{Revision: 5, MasterPub: "age1master", SignPub: "ed1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func seedPin(t *testing.T) (config.Pin, bool) {
 }
 
 func TestPinFirstContactAdvances(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	stored, have, err := config.ReadPin(pinTestVault)
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestPinMasterChangeIsDistinguishable(t *testing.T) {
 }
 
 func TestForgetScope(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	if err := config.WritePin("s1", "vaultA", config.Pin{Revision: 3, MasterPub: "age1x"}); err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +338,7 @@ func TestResolveSelectsStorage(t *testing.T) {
 // config, resolves to an absolute local Effective with its own scope class,
 // and contradictory or empty entries are refused.
 func TestLocalStorageEntry(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	vaultDir := t.TempDir()
 	if _, err := config.UpsertStorage("local", config.StorageEntry{Path: vaultDir}, false); err != nil {
 		t.Fatal(err)
@@ -367,7 +367,7 @@ func TestLocalStorageEntry(t *testing.T) {
 }
 
 func TestStorageEntryValidation(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	// A contradictory or empty entry can't even be written...
 	for name, entry := range map[string]config.StorageEntry{
 		"both":    {Path: "/somewhere", Remote: "b2", Base: "bucket/x"},
@@ -456,7 +456,7 @@ func TestResolveNamespace(t *testing.T) {
 // and is dropped with the scope's trust state by ForgetScope — including for
 // a scope that never pinned a vault.
 func TestNamespaceAcceptance(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 
 	ok, err := config.NamespaceAccepted("scopeA", "ops")
 	if err != nil || ok {
@@ -485,7 +485,7 @@ func TestNamespaceAcceptance(t *testing.T) {
 // TestReadOnlyStorageEntry: read_only round-trips through the rendered config
 // and lands on the Effective for both resolution paths.
 func TestReadOnlyStorageEntry(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	if _, err := config.UpsertStorage("ro", config.StorageEntry{Remote: "b2", Base: "x", ReadOnly: true}, false); err != nil {
 		t.Fatal(err)
 	}

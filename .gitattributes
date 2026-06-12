@@ -1,0 +1,2 @@
+# Golden files are byte-compared by tests; line-ending translation breaks them.
+*.golden.json -text

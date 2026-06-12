@@ -15,7 +15,7 @@ import (
 // must refuse before any "choose a new passphrase" ceremony (which would also
 // have overwritten the pin and silenced the alarm).
 func TestEnsureMasterAlarmsOnVanishedHeader(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	scope := "test-scope"
 	if err := config.WritePin(scope, "vault-1", config.Pin{Revision: 4, MasterPub: "age1pinned"}); err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestEnsureMasterAlarmsOnVanishedHeader(t *testing.T) {
 // TestEnsureMasterRefusesCreationOnReadOnlyStorage: a read command against a
 // virgin read-only storage must report the missing vault, never write one.
 func TestEnsureMasterRefusesCreationOnReadOnlyStorage(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	store := memstore.New()
 	_, _, err := ensureMaster(context.Background(), store, newMapCache(), "scope", time.Hour, `storage "ro" is read-only`)
 	if err == nil || !strings.Contains(err.Error(), "refusing to create") {

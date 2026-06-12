@@ -18,7 +18,7 @@ import (
 // "machine" pinned at the initial master.
 func trustVault(t *testing.T) (*memstore.Store, *crypto.MasterKey, *age.X25519Identity, string) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	ctx := context.Background()
 	store := memstore.New()
 	scope := "trust-scope"
