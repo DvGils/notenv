@@ -7,6 +7,8 @@ import (
 	"os"
 	"time"
 
+	"filippo.io/age"
+
 	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/crypto"
@@ -71,9 +73,34 @@ func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache,
 		return nil, false, fmt.Errorf("no key header found, but this machine pinned vault %s at this storage (revision %d, master %s): the vault may have been wiped or replaced. Restore the header (`notenv key restore-backup`, or the remote's version history), or, ONLY if you deliberately reset this storage, run `notenv key forget` and set up again", vaultID, pin.Revision, pin.MasterPub)
 	}
 
-	pass, err := keyring.PromptNewPassphrase("Choose a passphrase for this storage: ")
+	mk, header, err := createMaster(ctx, store)
 	if err != nil {
 		return nil, false, err
+	}
+	cacheMaster(cache, scope, mk, ttl)
+	pinCurrent(scope, header, mk) // anchor the rollback pin at creation
+	return mk, true, nil
+}
+
+// createMaster runs the creation ceremony on virgin storage. An identity
+// supplied explicitly via the environment creates the vault promptless, with
+// that identity's recipient as the only slot — the agent/CI path. Humans get
+// the passphrase ceremony and its escrow moment.
+func createMaster(ctx context.Context, store keymgmt.Vault) (*crypto.MasterKey, *crypto.Header, error) {
+	if id, err := creationIdentity(); err != nil {
+		return nil, nil, err
+	} else if id != nil {
+		mk, header, err := createWithIdentity(ctx, store, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		ui.Warnf("this vault unlocks ONLY with the %s key; protect and back up that identity — lose it and the ciphertext is unrecoverable by design", identityEnv)
+		return mk, header, nil
+	}
+
+	pass, err := keyring.PromptNewPassphrase("Choose a passphrase for this storage: ")
+	if err != nil {
+		return nil, nil, err
 	}
 	var mk *crypto.MasterKey
 	var header *crypto.Header
@@ -96,12 +123,35 @@ func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache,
 		header, mk = h, key
 		return nil
 	}); err != nil {
-		return nil, false, err
+		return nil, nil, err
 	}
 	ui.Warnf("escrow this passphrase in your password manager NOW. It is the only key to your secrets; lose it and the ciphertext is unrecoverable by design")
-	cacheMaster(cache, scope, mk, ttl)
-	pinCurrent(scope, header, mk) // anchor the rollback pin at creation
-	return mk, true, nil
+	return mk, header, nil
+}
+
+// createWithIdentity writes a fresh recipient-slot header through the same
+// safe-write protocol as the passphrase ceremony, verifying the identity can
+// unlock the result before anything trusts it.
+func createWithIdentity(ctx context.Context, store keymgmt.Vault, id *age.X25519Identity) (*crypto.MasterKey, *crypto.Header, error) {
+	var mk *crypto.MasterKey
+	var header *crypto.Header
+	err := ui.Spin("Generating master key, writing and verifying header", func() error {
+		h, key, err := crypto.NewRecipientHeader(id.Recipient(), userAtHost())
+		if err != nil {
+			return err
+		}
+		h.Revision = 0 // SafePut owns the revision; the stored header starts at 1
+		verify := func(hh *crypto.Header) (*crypto.MasterKey, error) { m, _, e := hh.UnlockIdentity(id); return m, e }
+		if err := keymgmt.SafePut(ctx, store, h, nil, key, verify); err != nil {
+			return err
+		}
+		header, mk = h, key
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return mk, header, nil
 }
 
 // cacheMaster stores best-effort: a cache failure must never fail the

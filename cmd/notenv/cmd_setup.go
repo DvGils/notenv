@@ -21,6 +21,9 @@ import (
 var (
 	setupName    string
 	setupDefault bool
+	setupLocal   bool
+	setupRemote  bool
+	setupPath    string
 )
 
 var setupCmd = &cobra.Command{
@@ -33,8 +36,11 @@ var setupCmd = &cobra.Command{
 }
 
 func init() {
-	setupCmd.Flags().StringVar(&setupName, "name", config.DefaultStorage, "name for this storage (use distinct names for separate vaults)")
+	setupCmd.Flags().StringVar(&setupName, "name", "", "name for this storage (use distinct names for separate vaults)")
 	setupCmd.Flags().BoolVar(&setupDefault, "default", false, "make this the default storage")
+	setupCmd.Flags().BoolVar(&setupLocal, "local", false, "create a local vault on this machine (the default; no accounts, no rclone)")
+	setupCmd.Flags().BoolVar(&setupRemote, "remote-storage", false, "set up a cloud remote via rclone instead of a local vault")
+	setupCmd.Flags().StringVar(&setupPath, "path", "", "directory for a local vault (default: the per-name data dir)")
 }
 
 // setupFlow is the machine installer. Also chained into by `notenv init` on an
@@ -43,14 +49,6 @@ func init() {
 // Storage-only by design beyond that: a namespace's secrets don't exist until
 // the first `set`.
 func setupFlow(ctx context.Context) error {
-	// Tier 0: no rclone at all.
-	if !backend.RcloneInstalled() {
-		ui.Failf("rclone is not installed; notenv moves ciphertext through it")
-		ui.Infof("install it with %s, then rerun `notenv setup`", ui.Bold(installHint()))
-		ui.Infof("all options: https://rclone.org/install/")
-		return errors.New("rclone missing")
-	}
-
 	user, err := config.LoadUser()
 	if err != nil {
 		return err
@@ -87,10 +85,128 @@ func setupFlow(ctx context.Context) error {
 	return nil
 }
 
-// addStorage runs one storage's setup: name, remote, base, probe, write, and
-// key ceremony. first seeds the name suggestion. Returns false (no error) when
+// addStorage runs one storage's setup. The structural question comes first —
+// a local vault on this machine (the default) or a cloud remote — and the
+// local path asks nothing further: name, directory, then straight into the
+// key ceremony. first seeds name suggestions. Returns false (no error) when
 // the user declines to replace an existing storage, so the loop can continue.
 func addStorage(ctx context.Context, user *config.User, first bool) (bool, error) {
+	isLocal, err := chooseVaultKind()
+	if err != nil {
+		return false, err
+	}
+	if isLocal {
+		return addLocalStorage(ctx, user, first)
+	}
+	return addRemoteStorage(ctx, user, first)
+}
+
+// chooseVaultKind decides local vs remote: flags first, then the prompt, and
+// promptless runs default to local — the zero-account, zero-dependency path.
+func chooseVaultKind() (bool, error) {
+	switch {
+	case setupLocal && setupRemote:
+		return false, errors.New("--local and --remote-storage are mutually exclusive")
+	case setupLocal:
+		return true, nil
+	case setupRemote:
+		return false, nil
+	case !ui.Interactive():
+		return true, nil
+	}
+	choice, err := ui.Select("Where should this vault live?", []ui.Option{
+		{Label: "On this machine", Detail: "no accounts; attach a cloud remote later"},
+		{Label: "On a cloud remote", Detail: "via rclone: Backblaze B2, S3, SFTP, WebDAV…"},
+	})
+	if err != nil {
+		return false, err
+	}
+	return choice == 0, nil
+}
+
+// localStorageTarget resolves the local vault's name and directory: the
+// defaults ("local", the per-name data dir) unless flags or a name conflict
+// say otherwise. ok is false (no error) when the user declines a replacement.
+func localStorageTarget(user *config.User, first bool) (name, path string, ok bool, err error) {
+	name = setupName
+	if name == "" {
+		name = "local"
+	}
+	if _, exists := user.Storage[name]; exists {
+		if name, ok, err = chooseStorageName(user, first); err != nil || !ok {
+			return "", "", ok, err
+		}
+	}
+	path = setupPath
+	if path == "" {
+		if path, err = config.DefaultVaultDir(name); err != nil {
+			return "", "", false, err
+		}
+	}
+	if path, err = config.AbsPath(path); err != nil {
+		return "", "", false, err
+	}
+	return name, path, true, nil
+}
+
+// addLocalStorage creates a local vault: directory, probe, config entry, key
+// ceremony. With no name conflict there is nothing to ask — the credential
+// prompt inside the ceremony is the whole interaction.
+func addLocalStorage(ctx context.Context, user *config.User, first bool) (bool, error) {
+	name, path, ok, err := localStorageTarget(user, first)
+	if err != nil || !ok {
+		return false, err
+	}
+
+	confPath, err := config.UpsertStorage(name, config.StorageEntry{Path: path}, setupDefault && first)
+	if err != nil {
+		return false, err
+	}
+	fresh, err := config.LoadUser()
+	if err != nil {
+		return false, err
+	}
+	eff, err := config.ResolveStorage(fresh, name)
+	if err != nil {
+		return false, err
+	}
+	store := openStorage(eff)
+	if err := store.Preflight(ctx); err != nil {
+		return false, err
+	}
+	if err := ui.Spin("Validating vault directory: write, read back, delete probe", func() error {
+		return store.Probe(ctx)
+	}); err != nil {
+		return false, err
+	}
+	ui.Successf("wrote storage %q to %s", name, confPath)
+
+	_, created, err := ensureMaster(ctx, store, keyring.DefaultCache(), eff.Scope(), config.DefaultCacheTTL)
+	if err != nil {
+		return false, err
+	}
+	if created {
+		ui.Successf("vault created at %s", path)
+	} else {
+		ui.Successf("existing vault at %s: credential verified; this machine can decrypt its secrets", path)
+	}
+	ui.Notef("this vault is encrypted at rest but exists on this machine only — back up the directory, or attach a cloud remote later with `notenv vault copy`")
+
+	if err := offerPromoteDefault(name); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// addRemoteStorage runs the rclone-backed setup: remote, base, probe, write,
+// and key ceremony.
+func addRemoteStorage(ctx context.Context, user *config.User, first bool) (bool, error) {
+	if !backend.RcloneInstalled() {
+		ui.Failf("rclone is not installed; notenv moves ciphertext to remotes through it")
+		ui.Infof("install it with %s and rerun, or use a local vault (no rclone needed)", ui.Bold(installHint()))
+		ui.Infof("all options: https://rclone.org/install/")
+		return false, errors.New("rclone missing")
+	}
 	name, ok, err := chooseStorageName(user, first)
 	if err != nil || !ok {
 		return false, err
@@ -131,15 +247,23 @@ func addStorage(ctx context.Context, user *config.User, first bool) (bool, error
 		return false, err
 	}
 	if created {
-		ui.Successf("storage %q initialized: master key generated, locked by your passphrase", name)
+		ui.Successf("storage %q initialized", name)
 	} else {
-		ui.Successf("storage %q: passphrase verified; this machine can decrypt its secrets", name)
+		ui.Successf("storage %q: credential verified; this machine can decrypt its secrets", name)
 	}
 
 	if err := offerPromoteDefault(name); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// describeEntry names a storage entry's target for prompts.
+func describeEntry(st config.StorageEntry) string {
+	if st.Path != "" {
+		return fmt.Sprintf("local vault at %s", st.Path)
+	}
+	return fmt.Sprintf("remote %q, base %q", st.Remote, st.Base)
 }
 
 // offerPromoteDefault asks, when other storages exist, whether this one should
@@ -167,7 +291,7 @@ func chooseStorageName(user *config.User, first bool) (name string, ok bool, err
 	if first && len(user.Storage) == 0 {
 		suggested = config.DefaultStorage
 	}
-	if first && setupName != "" {
+	if setupName != "" {
 		suggested = setupName
 	}
 	for {
@@ -185,7 +309,7 @@ func chooseStorageName(user *config.User, first bool) (name string, ok bool, err
 			continue
 		}
 		if existing, exists := user.Storage[n]; exists {
-			replace, err := ui.Confirm(fmt.Sprintf("Storage %q already exists (remote %q, base %q). Replace it?", n, existing.Remote, existing.Base), false)
+			replace, err := ui.Confirm(fmt.Sprintf("Storage %q already exists (%s). Replace it?", n, describeEntry(existing)), false)
 			if err != nil {
 				return "", false, err
 			}

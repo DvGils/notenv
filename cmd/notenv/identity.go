@@ -48,6 +48,27 @@ func configuredIdentities() ([]age.Identity, error) {
 	return identitiesFromFile(path)
 }
 
+// creationIdentity returns the X25519 identity NOTENV_IDENTITY explicitly
+// supplies, for promptless vault creation; nil when the variable is unset.
+// Only the environment variable counts here: a default identity file on disk
+// exists for unlocking vaults this machine was invited to, and must never
+// silently change what `setup` creates for a human.
+func creationIdentity() (*age.X25519Identity, error) {
+	if strings.TrimSpace(os.Getenv(identityEnv)) == "" {
+		return nil, nil
+	}
+	ids, err := configuredIdentities()
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		if x, ok := id.(*age.X25519Identity); ok {
+			return x, nil
+		}
+	}
+	return nil, fmt.Errorf("%s holds no X25519 identity usable for vault creation", identityEnv)
+}
+
 func identitiesFromFile(path string) ([]age.Identity, error) {
 	f, err := os.Open(path)
 	if err != nil {
