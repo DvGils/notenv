@@ -132,7 +132,17 @@ func localStorageTarget(user *config.User, first bool) (name, path string, ok bo
 	if name == "" {
 		name = "local"
 	}
-	if _, exists := user.Storage[name]; exists {
+	if existing, exists := user.Storage[name]; exists {
+		if same, target := sameLocalTarget(existing, name); same {
+			// A re-run pointing at the vault that already exists is idempotent:
+			// the ceremony below verifies the credential instead of creating.
+			// Agents and scripts re-run setup as an "ensure", so this must not
+			// require a prompt.
+			return name, target, true, nil
+		}
+		if !ui.Interactive() {
+			return "", "", false, fmt.Errorf("storage %q already exists (%s); pass --name for a second vault", name, describeEntry(existing))
+		}
 		if name, ok, err = chooseStorageName(user, first); err != nil || !ok {
 			return "", "", ok, err
 		}
@@ -147,6 +157,30 @@ func localStorageTarget(user *config.User, first bool) (name, path string, ok bo
 		return "", "", false, err
 	}
 	return name, path, true, nil
+}
+
+// sameLocalTarget reports whether the existing entry is a local vault at the
+// directory this setup run would use anyway, returning that resolved path.
+func sameLocalTarget(existing config.StorageEntry, name string) (bool, string) {
+	if existing.Path == "" {
+		return false, ""
+	}
+	want := setupPath
+	if want == "" {
+		var err error
+		if want, err = config.DefaultVaultDir(name); err != nil {
+			return false, ""
+		}
+	}
+	want, err := config.AbsPath(want)
+	if err != nil {
+		return false, ""
+	}
+	have, err := config.AbsPath(existing.Path)
+	if err != nil {
+		return false, ""
+	}
+	return have == want, want
 }
 
 // addLocalStorage creates a local vault: directory, probe, config entry, key
