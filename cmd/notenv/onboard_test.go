@@ -115,3 +115,14 @@ func TestVerifyOnboardingFingerprint(t *testing.T) {
 		t.Fatalf("mismatched code: err = %v, want a substitution refusal", err)
 	}
 }
+
+// TestRequireHumanPassphraseNonInteractive: plaintext egress needs a human;
+// with no terminal it refuses outright, before touching storage.
+func TestRequireHumanPassphraseNonInteractive(t *testing.T) {
+	forceNonInteractive(t)
+	a := &app{}
+	err := a.requireHumanPassphrase(context.Background(), "--no-mask sends raw secret values to a captured stream")
+	if err == nil || !strings.Contains(err.Error(), "no terminal") {
+		t.Fatalf("err = %v, want a no-terminal refusal", err)
+	}
+}
