@@ -95,17 +95,6 @@ func Path() (string, error) {
 	return filepath.Join(dir, "config.toml"), nil
 }
 
-// IdentityPath returns the default age identity file location. It holds the
-// private key a teammate unlocks their recipient slot with; the NOTENV_IDENTITY
-// environment variable overrides it.
-func IdentityPath() (string, error) {
-	dir, err := Dir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "identity"), nil
-}
-
 // LoadUser reads the user config. A missing file is not an error: it
 // returns a zero-value config (callers surface the "no storage" error later).
 func LoadUser() (*User, error) {

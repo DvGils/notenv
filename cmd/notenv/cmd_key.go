@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"text/tabwriter"
 	"time"
@@ -549,45 +548,6 @@ func addMachineSlot(ctx context.Context, store *headerTarget, u *unlocked, name 
 	return nil
 }
 
-var keyGenIdentityForce bool
-
-var keyGenIdentityCmd = &cobra.Command{
-	Use:   "gen-identity",
-	Short: "Generate an age identity for unlocking a recipient slot",
-	Long: `Generate a new age identity and save it on this machine.
-
-Send the printed age1… recipient (public, safe to share) to the vault owner so
-they can add you with 'notenv key add --recipient'. The private identity is
-written to the identity file and never leaves this machine.`,
-	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		path, err := config.IdentityPath()
-		if err != nil {
-			return err
-		}
-		if _, err := os.Stat(path); err == nil && !keyGenIdentityForce {
-			return fmt.Errorf("an identity already exists at %s; refusing to overwrite (use --force to replace it, but the old identity is then lost forever)", path)
-		} else if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		id, err := age.GenerateX25519Identity()
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return err
-		}
-		content := fmt.Sprintf("# created by notenv\n# public key: %s\n%s\n", id.Recipient().String(), id.String())
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			return err
-		}
-		ui.Successf("saved identity to %s", path)
-		ui.Infof("send this recipient to the vault owner:")
-		fmt.Println(id.Recipient().String())
-		return nil
-	},
-}
-
 var keySetPrimaryCmd = &cobra.Command{
 	Use:   "set-primary <name | index>",
 	Short: "Transfer the primary slot to another slot",
@@ -857,9 +817,8 @@ authentication tag must still verify.`,
 func init() {
 	keyAddCmd.Flags().BoolVar(&keyAddMachine, "machine", false, "enroll a machine (CI, an agent) instead of onboarding a teammate")
 	keyAddCmd.Flags().StringVar(&keyAddRecipient, "recipient", "", "with --machine: enroll an existing age1... public key instead of generating an identity")
-	keyGenIdentityCmd.Flags().BoolVar(&keyGenIdentityForce, "force", false, "overwrite an existing identity (the old one is lost forever)")
 	keyListCmd.Flags().BoolVar(&keyListJSON, "json", false, "machine-readable output: vault id, revision, slots")
 	keyTrustCmd.Flags().BoolVar(&keyTrustYes, "yes", false, "pin without the interactive confirmation (for scripts; you have verified the change out of band)")
 	keyForgetCmd.Flags().BoolVar(&keyForgetForce, "force", false, "forget without the interactive confirmation")
-	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyGenIdentityCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd)
+	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd)
 }

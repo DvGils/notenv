@@ -8,7 +8,6 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keyring"
 	"github.com/DvGils/notenv/internal/ui"
@@ -20,39 +19,31 @@ const (
 )
 
 // configuredIdentities returns the age identities available for unlocking a
-// recipient slot. NOTENV_IDENTITY takes precedence: an inline AGE-SECRET-KEY...
-// value, or a path to an identity file. Otherwise the default identity file is
-// used if present. No configured identity is not an error (an empty slice);
-// a configured-but-unreadable source is.
+// recipient slot, from NOTENV_IDENTITY only: an inline AGE-SECRET-KEY...
+// value, or a path to a file the platform materialized (a CI runner's tmpfs).
+// Identities are machine credentials; there is deliberately no notenv-owned
+// file location for one, so a filesystem sweep of a human's machine finds
+// nothing that unlocks a vault. An unset variable is not an error (an empty
+// slice); a set-but-unreadable one is.
 func configuredIdentities() ([]age.Identity, error) {
-	if env := strings.TrimSpace(os.Getenv(identityEnv)); env != "" {
-		if strings.HasPrefix(env, ageSecretKeyStart) {
-			ids, err := age.ParseIdentities(strings.NewReader(env))
-			if err != nil {
-				return nil, fmt.Errorf("%s (inline): %w", identityEnv, err)
-			}
-			return ids, nil
+	env := strings.TrimSpace(os.Getenv(identityEnv))
+	if env == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(env, ageSecretKeyStart) {
+		ids, err := age.ParseIdentities(strings.NewReader(env))
+		if err != nil {
+			return nil, fmt.Errorf("%s (inline): %w", identityEnv, err)
 		}
-		return identitiesFromFile(env)
+		return ids, nil
 	}
-	path, err := config.IdentityPath()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return identitiesFromFile(path)
+	return identitiesFromFile(env)
 }
 
 // creationIdentity returns the X25519 identity NOTENV_IDENTITY explicitly
 // supplies, for promptless vault creation; nil when the variable is unset.
-// Only the environment variable counts here: a default identity file on disk
-// exists for unlocking vaults this machine was invited to, and must never
-// silently change what `setup` creates for a human.
+// A machine that presents an identity owns the vault it creates; a human
+// without one gets the passphrase ceremony.
 func creationIdentity() (*age.X25519Identity, error) {
 	if strings.TrimSpace(os.Getenv(identityEnv)) == "" {
 		return nil, nil
@@ -83,7 +74,8 @@ func identitiesFromFile(path string) ([]age.Identity, error) {
 }
 
 // identityRecipients returns the public keys of the X25519 identities in ids,
-// for telling a not-yet-added teammate what to send the vault owner.
+// for telling a not-yet-enrolled machine's operator what the vault owner
+// needs to enroll it.
 func identityRecipients(ids []age.Identity) []string {
 	var recipients []string
 	for _, id := range ids {
@@ -106,10 +98,10 @@ type unlockResult struct {
 }
 
 // resolveUnlock unlocks an existing header with whatever credential is
-// available: a configured age identity first (the teammate's seamless path),
-// then an interactive passphrase prompt. joinHint controls whether a
-// non-matching identity prints the team-onboarding hint; it is useful on the
-// read path (a teammate running `run` before being added) but misleading on the
+// available: a configured age identity first (the machine path), then an
+// interactive passphrase prompt (the human path). joinHint controls whether a
+// non-matching identity prints the enrollment hint; it is useful on the read
+// path (a machine running `run` before being enrolled) but misleading on the
 // admin path (`key …`), where the operator is managing the vault.
 func resolveUnlock(header *crypto.Header, joinHint bool) (*unlockResult, error) {
 	ids, err := configuredIdentities()
@@ -136,11 +128,12 @@ func resolveUnlock(header *crypto.Header, joinHint bool) (*unlockResult, error) 
 	}
 	if len(ids) > 0 {
 		if joinHint {
-			// Likely a teammate who has not been added yet: point them at the
-			// fix, then fall back to a passphrase in case they hold one.
-			ui.Warnf("your identity matches no slot in this vault")
+			// Likely a machine that has not been enrolled yet: point its
+			// operator at the fix, then fall back to a passphrase prompt in
+			// case a human holds one.
+			ui.Warnf("the %s identity matches no slot in this vault", identityEnv)
 			for _, r := range identityRecipients(ids) {
-				ui.Notef("if you are joining a team, ask the owner to run: notenv key add --recipient %s", r)
+				ui.Notef("to enroll this machine, the vault owner runs: notenv key add --machine <name> --recipient %s", r)
 			}
 			ui.Infof("otherwise, enter your passphrase")
 		} else {
