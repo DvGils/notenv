@@ -48,6 +48,8 @@ jobs:
         run: go test -run='^$' -fuzz='^FuzzSecretLog$' -fuzztime=30s -fuzzminimizetime=1x ./internal/secrets/
       - name: fuzz rotation interleavings (short smoke)
         run: go test -run='^$' -fuzz='^FuzzRotationLog$' -fuzztime=30s -fuzzminimizetime=1x ./internal/secrets/
+      - name: fuzz storage-level attacks (short smoke)
+        run: go test -run='^$' -fuzz='^FuzzAdversaryLog$' -fuzztime=30s -fuzzminimizetime=1x ./internal/secrets/
 
   cross-build:
     runs-on: ubuntu-latest
