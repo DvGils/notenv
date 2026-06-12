@@ -35,6 +35,32 @@ jobs:
       - name: test
         run: go test -race ./...
 
+  # The native key caches (Keychain, DPAPI) and everything platform-shaped
+  # only prove themselves by running, not cross-compiling.
+  test-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      # Runner keychains start locked; the cache tests need a usable default.
+      - name: unlock a keychain (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          security create-keychain -p ci ci.keychain
+          security default-keychain -s ci.keychain
+          security unlock-keychain -p ci ci.keychain
+          security set-keychain-settings ci.keychain
+      - name: test
+        run: go test ./...
+
   fuzz:
     runs-on: ubuntu-latest
     steps:

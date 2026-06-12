@@ -169,9 +169,12 @@ What holds, and against whom.
 ### No-residue
 
 - When a `notenv run` exits, the plaintext (which lived only in the child process's environment) is
-  gone, and on Linux the RAM caches are reclaimed on logout. "The process exits and nothing secret is
-  left behind to discover later" is a real property, and is the reason caching is refused on platforms
-  that cannot guarantee it. :white_check_mark:
+  gone. On Linux the RAM caches are reclaimed on logout; on macOS and Windows the cached master key
+  is ciphertext in the platform store under the user's login credentials, expiring lazily on its
+  next read rather than at the deadline (see
+  [Caching](../guides/caching.md#what-each-platform-guarantees)). "The process exits and no
+  plaintext is left behind to discover later" holds on every platform; "nothing at all is left
+  behind" is the Linux-only stronger form. :white_check_mark: (qualified on macOS/Windows)
 
 ## Adversaries and outcomes (summary)
 

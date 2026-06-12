@@ -1,20 +1,21 @@
 # Caching and performance
 
-To keep the workflow snappy, notenv caches two things on Linux:
+To keep the workflow snappy, notenv caches two things:
 
-- **Your master key** in the kernel keyring, so you are prompted for your passphrase at most once per
-  session (default 1 hour, configurable via `crypto.cache_ttl`).
-- **The encrypted blob** in `XDG_RUNTIME_DIR` (tmpfs), so a warm `notenv run` needs no network at all
-  (default 1 hour, configurable via `storage.cache_ttl`).
+- **Your master key** in the platform's key store, so you are prompted for your passphrase at most
+  once per session (default 1 hour, configurable via `crypto.cache_ttl`): the kernel keyring on
+  Linux, the Keychain on macOS, DPAPI on Windows.
+- **The encrypted blob** in `XDG_RUNTIME_DIR` (tmpfs, Linux only), so a warm `notenv run` needs no
+  network at all (default 1 hour, configurable via `storage.cache_ttl`).
 
 !!! info "Remote vaults only"
 
     A local vault is its own disk, so its reads skip the blob cache and verify the vault manifest
     every time: no second ciphertext copy, nothing to go stale.
 
-Both caches are RAM-backed and cleared on logout or reboot. This is not only a speed-up but a
-**security property**: when the process exits there is no persistent cache for someone to discover
-later. Only ciphertext is ever cached, never plaintext.
+On Linux both caches are RAM-backed and cleared on logout or reboot; on macOS and Windows the key
+cache is ciphertext at rest under your login credentials (see the table below). Only ciphertext or
+key material in a platform store is ever cached, never a plaintext file.
 
 ## Pulling another machine's changes
 
@@ -22,24 +23,27 @@ Changes you make on this machine refresh the cache immediately. To pull a change
 machine before the cache expires, use `notenv run --refresh` (or `notenv cache clear`). Set either
 `cache_ttl` to `"0"` to disable caching.
 
-## Caching is Linux-only, by design
+## What each platform guarantees
 
-| Platform | Cache | Persistence |
+The caches are not identical across platforms, and the differences are stated rather than papered
+over:
+
+| Guarantee | Linux (kernel keyring) | macOS (Keychain) / Windows (DPAPI) |
 |---|---|---|
-| Linux | RAM-backed (kernel keyring + tmpfs) | removed automatically on logout/reboot |
-| macOS | **none, by design** | n/a |
-| Windows | **none, by design** | n/a |
+| Key cache at rest | nothing: RAM only | ciphertext under your login credentials |
+| TTL | kernel-enforced at the deadline | lazy: checked and purged on the next read |
+| Logout / reboot | gone | the entry persists, encrypted, until expiry-on-read |
+| A live same-user process | can read the cache | can read the cache (same on every platform) |
+| Blob cache | tmpfs, RAM-backed | none: every cold read fetches |
 
-The Linux cache relies on the kernel keyring and `tmpfs`: secret material lives in RAM that the OS
-reclaims on logout, so "the process exits and nothing is left behind" is a real guarantee. The
-platform-native stores (macOS Keychain, Windows Credential Manager / DPAPI) give no such cleanup
-guarantee: they persist to disk, and with no daemon there is nothing to evict them. Rather than ship
-a weaker cache under the same name and quietly break the "nothing left behind" property, notenv
-**does not cache on macOS or Windows**.
+The macOS and Windows key caches live in the same custody class notenv already trusts for machine
+identities: the platform secret store, encrypted at rest under the user's login credentials. What
+they cannot promise is the kernel keyring's eviction-at-the-deadline; an expired entry persists
+(encrypted) until the next notenv read touches and deletes it. If that difference matters to you,
+set `crypto.cache_ttl = "0"` and notenv prompts every time.
 
-Those platforms prompt and fetch on each run. For a prompt-free workflow there, enroll the machine
-(`notenv key add --machine`) and present its identity via `NOTENV_IDENTITY` from a secret store you
-control, with no lifecycle managed by notenv. See [Teams and keys](teams-and-keys.md).
+Blob caching stays Linux-only: there is no RAM-backed location to promise elsewhere, and a cold
+fetch is latency, not a prompt.
 
 ## Concurrent writes
 

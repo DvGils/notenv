@@ -857,7 +857,14 @@ func lockFile(lock string) (func(), error) {
 			_ = f.Close()
 			return func() { _ = os.Remove(lock) }, nil
 		}
-		if !errors.Is(err, fs.ErrExist) {
+		// Windows reports a lock file the releasing process is still deleting
+		// as access-denied rather than already-exists (the delete-pending
+		// window); that is contention clearing in microseconds, not a
+		// permission problem, so it spins like ErrExist. A genuine permission
+		// problem there surfaces as the acquisition timeout instead.
+		contended := errors.Is(err, fs.ErrExist) ||
+			(runtime.GOOS == "windows" && errors.Is(err, fs.ErrPermission))
+		if !contended {
 			return nil, err
 		}
 		if info, statErr := os.Stat(lock); statErr == nil && time.Since(info.ModTime()) > stale {

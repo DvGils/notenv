@@ -158,7 +158,7 @@ agent a verb that separates *using* a credential from *knowing* it:
   reads, and captured output is masked.
 - `notenv list` tells the agent which secrets exist and what they are for, never their values.
 
-There is also an experimental MCP server (`notenv mcp`). See the
+There is also an MCP server (`notenv mcp`) and an installable agent skill (`skills/notenv/`). See the
 [AI agents guide](https://dvgils.github.io/notenv/guides/ai-agents/) for the full surface and its
 honest limits.
 

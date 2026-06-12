@@ -2,8 +2,8 @@
 // of the protocol (initialize, ping, tools/list, tools/call as
 // newline-delimited JSON-RPC 2.0) for an agent to call notenv's tools, and
 // nothing more. Hand-rolled deliberately: like internal/ui, it adds zero new
-// supply-chain surface, which matters more than protocol breadth while the
-// server is a prototype.
+// supply-chain surface, and the subset it speaks is small enough to audit in
+// one sitting.
 //
 // Requests are handled sequentially in arrival order; there is no
 // cancellation and no server-initiated traffic. Handlers' results travel as
@@ -27,14 +27,20 @@ import (
 const protocolVersion = "2025-06-18"
 
 // Tool is one callable tool: a name, the description an agent picks it by,
-// a JSON-Schema input declaration, and the handler. A handler error becomes a
-// tool-level error result (isError), not a protocol error: the agent gets to
-// read it and adapt.
+// JSON-Schema input and output declarations, and the handler. A handler error
+// becomes a tool-level error result (isError), not a protocol error: the
+// agent gets to read it and adapt. A non-string handler result is returned
+// both ways the spec wants it: serialized into text content and, when an
+// OutputSchema is declared, as structuredContent. ReadOnly renders as the
+// readOnlyHint annotation, so clients can skip confirmation for tools that
+// cannot change anything.
 type Tool struct {
-	Name        string
-	Description string
-	InputSchema map[string]any
-	Handler     func(ctx context.Context, args json.RawMessage) (string, error)
+	Name         string
+	Description  string
+	ReadOnly     bool
+	InputSchema  map[string]any
+	OutputSchema map[string]any
+	Handler      func(ctx context.Context, args json.RawMessage) (any, error)
 }
 
 // Server serves a fixed tool set over one stdio session.
@@ -154,11 +160,18 @@ func (s *Server) initializeResult(params json.RawMessage) any {
 func (s *Server) toolsResult() any {
 	tools := make([]map[string]any, 0, len(s.Tools))
 	for _, t := range s.Tools {
-		tools = append(tools, map[string]any{
+		entry := map[string]any{
 			"name":        t.Name,
 			"description": t.Description,
 			"inputSchema": t.InputSchema,
-		})
+		}
+		if t.OutputSchema != nil {
+			entry["outputSchema"] = t.OutputSchema
+		}
+		if t.ReadOnly {
+			entry["annotations"] = map[string]any{"readOnlyHint": true}
+		}
+		tools = append(tools, entry)
 	}
 	return map[string]any{"tools": tools}
 }
@@ -176,15 +189,35 @@ func (s *Server) callTool(ctx context.Context, resp response, params json.RawMes
 		if t.Name != p.Name {
 			continue
 		}
-		text, err := t.Handler(ctx, p.Arguments)
-		isError := err != nil
-		if isError {
-			text = err.Error()
+		result, err := t.Handler(ctx, p.Arguments)
+		if err != nil {
+			resp.Result = map[string]any{
+				"content": []map[string]any{{"type": "text", "text": err.Error()}},
+				"isError": true,
+			}
+			return resp
 		}
-		resp.Result = map[string]any{
+		text, ok := result.(string)
+		structured := !ok
+		if structured {
+			data, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				resp.Result = map[string]any{
+					"content": []map[string]any{{"type": "text", "text": err.Error()}},
+					"isError": true,
+				}
+				return resp
+			}
+			text = string(data)
+		}
+		callResult := map[string]any{
 			"content": []map[string]any{{"type": "text", "text": text}},
-			"isError": isError,
+			"isError": false,
 		}
+		if structured && t.OutputSchema != nil {
+			callResult["structuredContent"] = result
+		}
+		resp.Result = callResult
 		return resp
 	}
 	resp.Error = &rpcError{Code: codeBadParams, Message: fmt.Sprintf("unknown tool %q", p.Name)}

@@ -26,7 +26,7 @@ func forceNonInteractive(t *testing.T) {
 // guard passes without listing.
 func TestGuardFlagNamespace(t *testing.T) {
 	ctx := context.Background()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	forceNonInteractive(t)
 	store := memstore.New()
 
@@ -68,7 +68,7 @@ func TestGuardFlagNamespace(t *testing.T) {
 // with no terminal must refuse, not warn and pin.
 func TestGuardNamespaceCheckoutFailsClosed(t *testing.T) {
 	ctx := context.Background()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateConfig(t)
 	forceNonInteractive(t)
 	store := memstore.New()
 	if err := store.Put(ctx, "victim/seg-m1-aaaaaaaaaaaa.age", []byte("x")); err != nil {

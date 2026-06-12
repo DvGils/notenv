@@ -1,0 +1,195 @@
+{
+  "tools": [
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "List the namespaces a storage holds, so you can discover what exists before list_secrets. Needs no unlock: it reads object names only.",
+      "inputSchema": {
+        "properties": {
+          "storage": {
+            "description": "named storage (omit for the machine default)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_namespaces",
+      "outputSchema": {
+        "properties": {
+          "namespaces": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "namespaces"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "List the secrets in a vault namespace: names, human descriptions of what each secret is for, and last-modified times. Never returns secret values. Use it to discover what is available before run_with_secrets.",
+      "inputSchema": {
+        "properties": {
+          "namespace": {
+            "description": "vault namespace to list",
+            "type": "string"
+          },
+          "refresh": {
+            "description": "bypass the local cache and read storage",
+            "type": "boolean"
+          },
+          "storage": {
+            "description": "named storage (omit for the machine default)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace"
+        ],
+        "type": "object"
+      },
+      "name": "list_secrets",
+      "outputSchema": {
+        "properties": {
+          "namespace": {
+            "type": "string"
+          },
+          "secrets": {
+            "items": {
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "modified": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "namespace",
+          "secrets"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Run a command with a namespace's secrets injected as environment variables. Returns the exit code and the command's output, with any injected secret value replaced by \u003cnotenv-masked:NAME\u003e. Secrets are never returned in plaintext; write commands that use the variables by name.",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "description": "argv to execute, e.g. [\"psql\", \"-c\", \"select 1\"]",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "namespace": {
+            "description": "vault namespace to inject",
+            "type": "string"
+          },
+          "refresh": {
+            "description": "bypass the local cache and read storage",
+            "type": "boolean"
+          },
+          "storage": {
+            "description": "named storage (omit for the machine default)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "run_with_secrets",
+      "outputSchema": {
+        "properties": {
+          "duration_s": {
+            "type": "number"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "stdout": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "exit_code",
+          "duration_s",
+          "stdout",
+          "stderr"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "Check a storage read-only for known problem states (unreachable storage, a vanished or unreadable header, a pending rollback, unfinished onboarding, unrecorded or missing objects), with the way out for each. Fixes nothing.",
+      "inputSchema": {
+        "properties": {
+          "storage": {
+            "description": "named storage (omit for the machine default)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "doctor",
+      "outputSchema": {
+        "properties": {
+          "findings": {
+            "items": {
+              "properties": {
+                "level": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "level",
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "problems": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "problems",
+          "findings"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}

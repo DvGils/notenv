@@ -1,12 +1,14 @@
-//go:build !linux
+//go:build !linux && !darwin && !windows
 
 package keyring
 
 import "time"
 
 // nullCache never caches: every Get misses, so every acquisition prompts.
-// Degraded but correct; native macOS/Windows stores come later.
+// Degraded but correct, for platforms with no native store wired up.
 type nullCache struct{}
+
+const cacheIsNull = true
 
 func newCache() Cache { return nullCache{} }
 

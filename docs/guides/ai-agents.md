@@ -33,7 +33,18 @@ the conversation touches next. notenv removes the file and gives the agent a ver
   (`NOTENV_ACCEPT_NAMESPACE=name`), so neither a cloned repository's contract nor a misdirected
   `--namespace` can silently reach another project's secrets.
 
-## Drop this in your `AGENTS.md` / `CLAUDE.md`
+## Two ways to wire an agent up
+
+**A skill for agents with a shell, MCP for agents without one. Same surface either way.**
+
+### The skill
+
+The notenv repository ships an [Agent Skill](https://github.com/DvGils/notenv/tree/main/skills/notenv)
+at `skills/notenv/SKILL.md`: the rules above plus the full CLI surface (discovery, exit codes, the
+environment knobs), in the installable form shell-first agents understand. Install it into your
+agent's skill location (`~/.claude/skills/` for Claude Code, `.agents/skills/` for the
+cross-agent convention, or via a skill installer pointed at the repo). For a lighter touch, this
+block in your `AGENTS.md` / `CLAUDE.md` covers the essentials:
 
 ```markdown
 This project manages secrets with notenv (https://github.com/DvGils/notenv).
@@ -44,7 +55,7 @@ This project manages secrets with notenv (https://github.com/DvGils/notenv).
 - If a command prompts for a passphrase, stop and let the user answer it.
 ```
 
-## The MCP server (experimental)
+### The MCP server
 
 `notenv mcp` serves the same surface over the Model Context Protocol, for agents that are not
 shell-first (or machines with no checkout at all):
@@ -53,13 +64,21 @@ shell-first (or machines with no checkout at all):
 claude mcp add notenv -- notenv mcp        # or any MCP client, stdio transport
 ```
 
-Two tools: `list_secrets` (names, descriptions, modified times, never values) and `run_with_secrets`
-(inject and execute; the agent gets the exit code and masked output). The vault must unlock without
-a prompt. On your own machine, rely on the session-cached key (unlock once with your passphrase,
-then the kernel keyring carries the session); for a standalone or sandboxed agent, enroll it as a
-machine (`notenv key add --machine`) and present the identity via `NOTENV_IDENTITY` from the
-harness's secret store, paired with `NOTENV_READONLY=1` and a read-only storage credential where it
-only reads. It is experimental: the tool surface may still change before it is frozen.
+Four tools, none of which accepts or returns a secret value, none of which writes to a vault:
+`list_namespaces` (discovery, no unlock needed), `list_secrets` (names, descriptions, modified
+times), `run_with_secrets` (inject and execute; the agent gets the exit code and masked output),
+and `doctor` (read-only health findings). Results are typed (`structuredContent` with declared
+output schemas), and the three read tools carry `readOnlyHint` so clients can skip confirmations.
+
+The server is headless, so its environment is the configuration:
+
+- **Unlock:** rely on the session-cached key (unlock once with your passphrase; the platform key
+  store carries the session on Linux, macOS, and Windows), or enroll a standalone agent as a
+  machine (`notenv key add --machine`) with `NOTENV_IDENTITY` from the harness's secret store.
+- **`NOTENV_ACCEPT_NAMESPACE=name,...`**: namespaces the server may join on first use; without it,
+  a namespace that already holds secrets is refused, since nobody is at a prompt.
+- **`NOTENV_READONLY=1`** as a belt, paired with a read-only storage credential where the agent
+  only reads.
 
 ## Honest limits
 

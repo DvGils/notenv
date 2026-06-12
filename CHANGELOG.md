@@ -4,6 +4,47 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.15.0
+
+Deletions become durable, the passphrase prompt stops being a tax on macOS and Windows,
+and the agent surface ships in both formats agents come in.
+
+### Fixed
+
+- **A deleted key can no longer resurrect.** Deletions were the only operation whose
+  evidence compaction destroyed: tombstones were dropped at fold time, so a write that was
+  in flight while the namespace compacted (a slow upload, a laptop suspended mid-`set`)
+  could bring a deleted key back, silently, even when the deletion was strictly newer, with
+  the outcome depending on whether a cleanup happened to run in the window. Snapshots now
+  retain tombstones with full provenance, so a deletion keeps winning exactly what the
+  ordering rule says it wins, compaction is value-transparent again, and a late write that
+  loses is reported as a conflict. The storage format version bumps to 3; 0.14 vaults are
+  not readable by this build (pre-1.0, no migration path). The 0.11 notes called the
+  previous payload change "deliberately the last before the freeze": that claim was wrong
+  and is withdrawn, not replaced. The simulation fuzzer's oracle is now asserted in the
+  compaction world too; three inputs already in its corpus trip the old behavior.
+
+### Added
+
+- **Session key caching on macOS (Keychain) and Windows (DPAPI).** Unlock once per session
+  on every platform instead of once per command. The native stores hold the cached key as
+  ciphertext under your login credentials, the same custody class machine identities
+  already use; what is weaker than the Linux kernel keyring is stated in the
+  [caching guide](https://dvgils.github.io/notenv/guides/caching/): the TTL is enforced
+  lazily on read, and an expired entry persists encrypted until its next touch. Set
+  `crypto.cache_ttl = "0"` to prompt every time. CI now runs the full test suite on macOS
+  and Windows, not just cross-builds.
+- **The MCP server grows up and drops its experimental label.** Four tools, none of which
+  accepts or returns a secret value, none of which writes to a vault: `list_namespaces`
+  (the discovery hop, no unlock needed), `list_secrets`, `run_with_secrets`, and `doctor`
+  (the checkup findings as data). Results are typed (`structuredContent` with declared
+  output schemas) and the read tools carry `readOnlyHint`. A golden file pins the entire
+  tool surface. The headless recipe is documented: session-cached key or `NOTENV_IDENTITY`
+  to unlock, `NOTENV_ACCEPT_NAMESPACE` for first use of existing namespaces.
+- **An installable agent skill** at `skills/notenv/SKILL.md`: the CLI surface and the
+  never-see-values rules in the Agent Skills format shell-first agents understand. A skill
+  for agents with a shell, MCP for agents without one, the same surface either way.
+
 ## 0.14.0
 
 The hardening and dailiness release. A security audit of 0.13 (no High or Medium findings)
