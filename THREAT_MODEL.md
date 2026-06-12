@@ -71,12 +71,22 @@ What holds, and against whom.
   silently alter the header (HMAC), and rolling it back to an older revision is detected on any
   machine that has already seen a newer one. **Deleting the header outright is also detected**: a
   machine that has pinned a vault refuses to treat its missing header as virgin storage (the
-  deliberate-reset escape hatch is `notenv key forget`). They cannot forge a secret value: a blob
-  they cannot encrypt under the master fails to decrypt, and reads **fail closed** (a corrupt or
-  substituted object is surfaced as an error, never silently skipped). Because writes are
-  append-only and verified on read-back, a botched or malicious write is at worst
-  denial-of-service, not silent data loss. ✅ (with caveats; see
+  deliberate-reset escape hatch is `notenv key forget`). **Replacing the vault wholesale is
+  detected**: each storage location is bound locally to the vault identity it held, so a
+  different vault appearing there — however internally consistent — is refused. They cannot
+  forge a secret value: a blob they cannot encrypt under the master fails to decrypt, and reads
+  **fail closed** (a corrupt or substituted object is surfaced as an error, never silently
+  skipped). Because writes are append-only and verified on read-back, a botched or malicious
+  write is at worst denial-of-service, not silent data loss. ✅ (with caveats; see
   [Known limitations](#known-limitations)).
+- **Master rotations carry their own proof.** Each rotation records a transition signed by the
+  outgoing master; a machine still pinned at that master verifies the chain and follows the
+  change silently. The master-changed alarm therefore fires only for a change that **no holder
+  of the pinned master authorized** — it is no longer the routine cost of a teammate rotating,
+  which had trained the `notenv key trust` reflex that defeats the alarm's purpose. A non-holder
+  cannot forge a transition (no old signing key); an **ex-holder can**, which is why offboarding
+  still ends with rotating the storage credential (see
+  [Known limitations](#known-limitations)). ✅
 - **Against an honest race — writes concurrent with a master rotation:** every write confirms,
   after it lands, that the master it was sealed under is still the vault's master, rolling itself
   back otherwise; the rotation re-lists the namespace after its header flip and re-keys anything a
@@ -167,9 +177,14 @@ These are real, documented gaps, not oversights:
   header, so rollback / master-change / vanished-header detection happens on cold unlocks — at
   most one cache TTL (default 1 hour) after the event, not instantly. Writes are unaffected: they
   re-read the header after every write regardless.
-- **A write-capable former holder can fork history.** Someone who kept the master key and retains
-  storage *write* access can fork the vault's history in a way only the owner's pinned machine
-  detects. notenv advises rotating the storage credential on offboarding but, not owning the
+- **A write-capable former holder can fork history — and signed transitions make the fork
+  *quiet* for machines behind the fork point.** Someone who kept a previous master had full
+  authority while they held it, including its signing key: they can author transitions onto
+  their own fork that verify exactly like legitimate ones. A machine whose pin predates the fork
+  follows it silently; a machine pinned past the fork (the owner's, after the rotation that
+  removed the ex-holder) finds no signed path and alarms. This is the fundamental limit of any
+  scheme on dumb storage and the reason offboarding ends with rotating the **storage
+  credential**: no write access, no fork. notenv advises this on `key rm` but, not owning the
   storage, cannot enforce it.
 - **A crash inside a rotation's flip→narrow window.** If `rotate-master` crashes after its header
   flip but before the narrow pass completes, a write that landed during the widen window can be

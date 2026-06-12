@@ -4,7 +4,43 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
-## 0.6.0 (unreleased)
+## 0.7.0 (unreleased)
+
+Multi-machine key continuity: legitimate master rotations now carry cryptographic proof, so
+they propagate to every machine silently — and the master-changed alarm, freed from false
+positives, finally means what it says. This is the release that makes shared vaults usable by
+teams and fleets whose members come and go.
+
+### Added
+
+- **Signed rotation transitions.** Every `key rotate-master` / `key rm` records a transition
+  signed by the *outgoing* master (an Ed25519 key derived from the master secret — nothing new
+  is stored or escrowed). A machine still pinned at that master verifies the chain — multiple
+  rotations deep if it was offline for them — and moves its pin forward without a prompt.
+  `notenv key trust` remains only for changes that carry no proof: a non-holder cannot forge a
+  transition, so the alarm now identifies genuinely unauthorized changes. (An **ex-holder** can
+  forge them — they held the key — so offboarding still ends with rotating the storage
+  credential; the threat model spells out this sharpened limit.)
+- **Vault identity.** Each vault mints a random ID at creation. Local pins are keyed by it, so
+  trust survives relocating a vault to a new remote or base; each storage location is bound to
+  the vault it held, so substituting a *different* vault at a known location is refused —
+  however internally consistent the impostor is.
+- **`notenv key migrate`** upgrades a vault written by an older notenv to the current header
+  format: one lossless, end-to-end-verified header rewrite under your unlocked master. The
+  command is temporary and will be removed once old-format vaults are gone.
+- **Rotation interleaving fuzzing.** The multi-machine simulation now drives master rotations
+  racing writes, compactions, and stale-key recoveries, enforcing after every step that a fold
+  under the vault's current master succeeds (no object stranded under a dead key) and that
+  rotations are value-transparent. A short run joins CI.
+
+### Breaking changes
+
+- **Header format version 2** (adds the vault ID and signing public key). Run
+  `notenv key migrate` once per existing vault; newer notenv versions refuse the old format.
+- Local trust state (`pins.json`) is restructured around vault IDs; prior pins are not carried
+  over — the first unlock per vault re-pins (trust on first use), or run `notenv key trust`.
+
+## 0.6.0
 
 The agent release: notenv's founding property — plaintext never touches disk, exists only in
 the child's environment — turns out to be exactly what AI agents need, because anything an
@@ -47,7 +83,7 @@ rest of the threat model.
   SFTP/WebDAV passwords entered during setup briefly pass through argv (prefer key-based
   SFTP auth).
 
-## 0.5.0 (unreleased)
+## 0.5.0
 
 A security-hardening release driven by an end-to-end review of the design against its own
 threat model. It closes the one honest-parties data-loss race (writes concurrent with a master

@@ -185,8 +185,9 @@ Add `--storage NAME` to any command to target a specific [vault](#multiple-vault
 | `notenv key rotate-master` | Mint a fresh master key and re-encrypt every secret; all slots kept. |
 | `notenv key set-primary <name\|index>` | Transfer the primary (governance) slot. |
 | `notenv key gen-identity` | Generate an age identity on this machine (to join a vault). |
-| `notenv key trust` | Re-pin after a confirmed legitimate master change (shows what changed, asks, clears the alarm). |
+| `notenv key trust` | Re-pin after a confirmed master change that carries no signed proof (shows what changed, asks). |
 | `notenv key forget` | Forget this machine's pin + cached key for a storage (after a deliberate vault reset). |
+| `notenv key migrate` | Upgrade a vault written by an older notenv to the current header format (temporary command). |
 | `notenv key restore-backup` | Restore the header from its pre-write backup. |
 
 ## Configuration
@@ -259,7 +260,9 @@ decrypt. All surviving slots keep working.
 **Other operations:** `notenv key rotate-master` re-keys the vault while keeping every slot (a
 precaution if a machine may be compromised). `notenv key rotate` changes your own passphrase.
 `notenv key list` shows the slots; `notenv key set-primary` transfers the advisory governance
-slot (the one `key rm` refuses to remove).
+slot (the one `key rm` refuses to remove). Re-keys — including offboarding — propagate to the
+other machines automatically: each rotation is signed by the key it replaces, so everyone else
+verifies and follows without prompts or alarms.
 
 ## Multiple vaults
 
@@ -375,21 +378,22 @@ roadmap; see [Status](#status) and the [threat model](./THREAT_MODEL.md).
   separate factor held in your password manager). Most credentials also allow writes, so
   the integrity caveat below applies too.
 - **Write access to your storage (integrity):** the key header is authenticated (an HMAC
-  keyed from the master key) and carries a monotonic revision that each machine pins locally.
-  A party who can *write* your storage but holds no key cannot forge or alter the header
-  undetected; rolling it back to an older version is detected on any machine that has seen
-  a newer one (it refuses and points you at `notenv key trust`, which shows what changed and
-  asks before clearing the alarm), and **deleting the header outright is detected the same
-  way** (a pinned machine refuses to treat the vault as virgin; `notenv key forget` is the
-  deliberate-reset escape hatch). They still cannot forge plaintext: a substituted blob they
-  don't hold the key for fails to decrypt. Two honest limits: on *first* contact with a vault
-  a machine has no prior revision to compare against (trust on first use), and a *former key
-  holder* who kept the master key and retains storage *write* can fork history in a way only
-  the vault owner's machine detects; rotate the storage credential to cut them off (notenv
-  advises this on `key rm` but, not owning the storage, can't enforce it). Deletion of blobs
-  is an availability concern, not confidentiality; object versioning (the default on B2)
-  recovers prior bytes. Per-blob value rollback and cross-machine key continuity are planned
-  hardening.
+  keyed from the master key) and carries a monotonic revision that each machine pins locally,
+  under the vault's own identity. A party who can *write* your storage but holds no key cannot
+  forge or alter the header undetected; rolling it back, deleting it, or swapping in a
+  different vault at the same location are all detected and refused (`notenv key forget` is
+  the deliberate-reset escape hatch). **Legitimate master rotations need no ceremony on other
+  machines**: each rotation is signed by the outgoing master, and a machine pinned at it
+  verifies the chain and follows silently — `notenv key trust` (which shows what changed and
+  asks) remains only for changes that carry no such proof. They still cannot forge plaintext:
+  a substituted blob they don't hold the key for fails to decrypt. Two honest limits: on
+  *first* contact with a vault a machine has no prior pin to compare against (trust on first
+  use), and a *former key holder* who kept the master key and retains storage *write* can
+  fork history — including signing transitions onto the fork — in a way only machines pinned
+  past the fork detect; rotate the storage credential to cut them off (notenv advises this on
+  `key rm` but, not owning the storage, can't enforce it). Deletion of blobs is an
+  availability concern, not confidentiality; object versioning (the default on B2) recovers
+  prior bytes. Per-blob value rollback is planned hardening.
 - **A cloned, untrusted project:** the committed `notenv.toml` can redirect neither your
   storage (machine-only) nor — silently — your namespace: the namespace is pinned per
   checkout, an unusual one is confirmed before first use, and a contract that changes its
@@ -428,18 +432,17 @@ Actively developed and being tested.
 **Working today:** `setup`, `init`, `set`, `unset`, `list`, `run`, `compact`, and `cache`; full
 key and slot management (`notenv key …`); team access by age recipient, passphrase and
 master-key rotation, offboarding by re-key, advisory primary governance, and authenticated +
-version-pinned headers (vanished-header detection included); append-only writes so concurrent
-`set`s never lose each other — including against a concurrent master rotation — with automatic
-compaction keeping reads fast; per-checkout namespace pinning with join confirmation;
-[masked captured output](#using-notenv-with-ai-agents); multiple storages per machine;
-passphrase or identity unlock; Linux key/blob caching. Releases are reproducible,
-cosign-signed, and carry SLSA build provenance.
+version-pinned headers (vanished-header and vault-replacement detection included); **signed
+rotation transitions**, so legitimate re-keys propagate to every machine without prompts;
+append-only writes so concurrent `set`s never lose each other — including against a concurrent
+master rotation — with automatic compaction keeping reads fast; per-checkout namespace pinning
+with join confirmation; [masked captured output](#using-notenv-with-ai-agents); multiple
+storages per machine; passphrase or identity unlock; Linux key/blob caching. Releases are
+reproducible, cosign-signed, and carry SLSA build provenance.
 
 **Planned:**
-- Signed rotation transitions (multi-machine key continuity, so legitimate rotations don't
-  need a manual `notenv key trust`) — the centerpiece of v1, and the prerequisite for
-  fleet/agent vault sharing.
-- Per-blob manifest (detect rollback of an individual secret's value).
+- Per-blob manifest (detect rollback of an individual secret's value), with
+  compare-and-swap writes.
 - An MCP server mode, so agents discover and use notenv through their native tooling.
 - A broker mode: the unlocked key lives in a separate trust domain and execs children on
   behalf of agents, turning "agents shouldn't see credentials" from a convention into a
