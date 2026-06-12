@@ -16,18 +16,27 @@ func testServer() *Server {
 			Name:        "echo",
 			Description: "echoes its input",
 			InputSchema: map[string]any{"type": "object"},
-			Handler: func(_ context.Context, args json.RawMessage) (string, error) {
+			Handler: func(_ context.Context, args json.RawMessage) (any, error) {
 				var p struct {
 					Text string `json:"text"`
 					Fail bool   `json:"fail"`
 				}
 				if err := json.Unmarshal(args, &p); err != nil {
-					return "", err
+					return nil, err
 				}
 				if p.Fail {
-					return "", errors.New("the tool failed")
+					return nil, errors.New("the tool failed")
 				}
 				return p.Text, nil
+			},
+		}, {
+			Name:         "stats",
+			Description:  "returns a structured result",
+			ReadOnly:     true,
+			InputSchema:  map[string]any{"type": "object"},
+			OutputSchema: map[string]any{"type": "object", "properties": map[string]any{"count": map[string]any{"type": "integer"}}},
+			Handler: func(context.Context, json.RawMessage) (any, error) {
+				return map[string]any{"count": 3}, nil
 			},
 		}},
 	}
@@ -74,7 +83,7 @@ func TestSession(t *testing.T) {
 		t.Fatalf("initialize must echo the client's protocol revision, got %v", init["protocolVersion"])
 	}
 	tools := resps[1]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "echo" {
+	if len(tools) != 2 || tools[0].(map[string]any)["name"] != "echo" {
 		t.Fatalf("tools/list = %v", tools)
 	}
 	call := resps[2]["result"].(map[string]any)
@@ -139,5 +148,37 @@ func TestInitializeDefaultsVersion(t *testing.T) {
 	got := resps[0]["result"].(map[string]any)["protocolVersion"]
 	if got != protocolVersion {
 		t.Fatalf("protocolVersion = %v, want %v", got, protocolVersion)
+	}
+}
+
+// TestStructuredResult: a non-string handler result travels both ways the
+// spec wants it (JSON text content and structuredContent), and the tool list
+// carries the output schema and the read-only annotation.
+func TestStructuredResult(t *testing.T) {
+	resps := session(t,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"stats","arguments":{}}}`,
+	)
+	tools := resps[1]["result"].(map[string]any)["tools"].([]any)
+	stats := tools[1].(map[string]any)
+	if stats["outputSchema"] == nil {
+		t.Fatal("tools/list must carry the output schema")
+	}
+	if ann, ok := stats["annotations"].(map[string]any); !ok || ann["readOnlyHint"] != true {
+		t.Fatalf("read-only tool must carry readOnlyHint, got %v", stats["annotations"])
+	}
+	echo := tools[0].(map[string]any)
+	if _, has := echo["annotations"]; has {
+		t.Fatal("a tool without ReadOnly must carry no annotations (spec defaults apply)")
+	}
+	call := resps[2]["result"].(map[string]any)
+	sc, ok := call["structuredContent"].(map[string]any)
+	if !ok || sc["count"] != float64(3) {
+		t.Fatalf("structuredContent = %v", call["structuredContent"])
+	}
+	text := call["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, `"count": 3`) {
+		t.Fatalf("text content must carry the serialized result, got %q", text)
 	}
 }

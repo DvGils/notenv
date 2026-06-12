@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -30,7 +31,7 @@ the header unverified. Exit code 0 means no findings, 1 means look above.`,
 		if err != nil {
 			return err
 		}
-		c := &checkup{}
+		c := &checkup{print: true}
 		runDoctor(cmd, store, c)
 		if c.problems == 0 {
 			ui.Successf("no findings")
@@ -41,13 +42,44 @@ the header unverified. Exit code 0 means no findings, 1 means look above.`,
 	},
 }
 
-// checkup counts findings; output goes straight to ui so each check reports
-// in place.
-type checkup struct{ problems int }
+// finding is one checkup line: level "ok", "note", or "problem", and the
+// text that says what and, for problems, the way out.
+type finding struct {
+	Level string `json:"level"`
+	Text  string `json:"text"`
+}
 
-func (c *checkup) ok(format string, a ...any)      { ui.Successf(format, a...) }
-func (c *checkup) note(format string, a ...any)    { ui.Notef(format, a...) }
-func (c *checkup) problem(format string, a ...any) { c.problems++; ui.Warnf(format, a...) }
+// checkup collects findings; with print set, each check also reports in
+// place through ui (the CLI experience). The MCP doctor tool reads the
+// collected findings instead.
+type checkup struct {
+	print    bool
+	problems int
+	findings []finding
+}
+
+func (c *checkup) emit(level, format string, a ...any) {
+	text := fmt.Sprintf(format, a...)
+	c.findings = append(c.findings, finding{Level: level, Text: text})
+	if !c.print {
+		return
+	}
+	switch level {
+	case "ok":
+		ui.Successf("%s", text)
+	case "note":
+		ui.Notef("%s", text)
+	default:
+		ui.Warnf("%s", text)
+	}
+}
+
+func (c *checkup) ok(format string, a ...any)   { c.emit("ok", format, a...) }
+func (c *checkup) note(format string, a ...any) { c.emit("note", format, a...) }
+func (c *checkup) problem(format string, a ...any) {
+	c.problems++
+	c.emit("problem", format, a...)
+}
 
 func runDoctor(cmd *cobra.Command, store *headerTarget, c *checkup) {
 	ctx := cmd.Context()

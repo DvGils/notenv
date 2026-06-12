@@ -45,10 +45,6 @@ type headerTarget struct {
 // target, not a project contract. Storage selection honors --storage, else the
 // machine default / sole storage.
 func loadHeaderStore() (*headerTarget, error) {
-	user, err := config.LoadUser()
-	if err != nil {
-		return nil, err
-	}
 	// --storage wins; otherwise honor the project's local binding if we're
 	// inside one. Outside any project, fall through to default / sole storage. A
 	// corrupt binding is a hard error: these commands are destructive, so we
@@ -66,6 +62,17 @@ func loadHeaderStore() (*headerTarget, error) {
 			}
 			storageName = binding.Storage
 		}
+	}
+	return headerTargetFor(storageName)
+}
+
+// headerTargetFor opens a named storage (or the machine default) for header
+// operations, with no checkout in the loop: the MCP tools resolve storage
+// per call this way.
+func headerTargetFor(storageName string) (*headerTarget, error) {
+	user, err := config.LoadUser()
+	if err != nil {
+		return nil, err
 	}
 	eff, err := config.ResolveStorage(user, storageName)
 	if err != nil {
