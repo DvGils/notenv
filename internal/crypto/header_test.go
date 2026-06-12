@@ -296,10 +296,9 @@ func TestParseHeaderRejectsBad(t *testing.T) {
 	}
 }
 
-// A provisional slot survives the marshal round-trip, is absent from the
-// canonical bytes when unset, and is cleared by rotating the slot to an own
-// passphrase.
-func TestProvisionalSlotLifecycle(t *testing.T) {
+// A provisional slot survives the marshal round-trip and is absent from the
+// canonical bytes when unset.
+func TestProvisionalSlotRoundTrip(t *testing.T) {
 	header, mk, err := NewHeader("owner pass", "owner")
 	if err != nil {
 		t.Fatal(err)
@@ -322,24 +321,38 @@ func TestProvisionalSlotLifecycle(t *testing.T) {
 	if !parsed.Slots[1].Provisional || parsed.Slots[1].TS != 1765500000 {
 		t.Fatalf("provisional/ts lost in round-trip: %+v", parsed.Slots[1])
 	}
+}
 
-	unlocked, idx, slotKey, err := parsed.Unlock("temp onboarding pass")
+// Rotating a provisional slot to an own passphrase clears the flag, keeps the
+// creation time, kills the temporary passphrase, and preserves the master.
+func TestProvisionalRotationClears(t *testing.T) {
+	header, mk, err := NewHeader("owner pass", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := header.AddPassphraseSlot("temp onboarding pass", "alice", mk); err != nil {
+		t.Fatal(err)
+	}
+	header.Slots[1].Provisional = true
+	header.Slots[1].TS = 1765500000
+
+	unlocked, idx, slotKey, err := header.Unlock("temp onboarding pass")
 	if err != nil || idx != 1 {
 		t.Fatalf("Unlock with temp passphrase: idx=%d err=%v", idx, err)
 	}
-	if err := parsed.RotateSlot(idx, "alice's own pass", slotKey); err != nil {
+	if err := header.RotateSlot(idx, "alice's own pass", slotKey); err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Slots[1].Provisional {
+	if header.Slots[1].Provisional {
 		t.Fatal("RotateSlot must clear Provisional")
 	}
-	if parsed.Slots[1].TS != 1765500000 {
+	if header.Slots[1].TS != 1765500000 {
 		t.Fatal("RotateSlot must not touch TS")
 	}
-	if _, _, _, err := parsed.Unlock("temp onboarding pass"); err == nil {
+	if _, _, _, err := header.Unlock("temp onboarding pass"); err == nil {
 		t.Fatal("the temporary passphrase must stop opening the slot after rotation")
 	}
-	again, _, _, err := parsed.Unlock("alice's own pass")
+	again, _, _, err := header.Unlock("alice's own pass")
 	if err != nil {
 		t.Fatal(err)
 	}

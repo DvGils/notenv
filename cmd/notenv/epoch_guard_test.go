@@ -161,8 +161,7 @@ func TestImportCarriesDescriptionsForward(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prev, err = a.appendGuarded(ctx, view, prev, 1, secrets.Write{Key: "DB_URL", Value: "old", Description: "primary DSN", TS: 100})
-	if err != nil {
+	if _, err = a.appendGuarded(ctx, view, prev, 1, secrets.Write{Key: "DB_URL", Value: "old", Description: "primary DSN", TS: 100}); err != nil {
 		t.Fatalf("seed write: %v", err)
 	}
 
