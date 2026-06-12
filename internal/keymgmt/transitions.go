@@ -90,6 +90,40 @@ func FollowRotations(ctx context.Context, store backend.Backend, h *crypto.Heade
 // pinned master to the observed one.
 var ErrNoPath = errors.New("no signed rotation path from the pinned master to the current one")
 
+// Descends proves that the master a header now wraps descends, through valid
+// signed transitions, from some past signing key the caller recognizes (via
+// accept). It serves the onboarding fingerprint: the code in hand digests a
+// signing key that may have been rotated away between `key add` and first
+// contact, so the verifier must accept any recognized ancestor, not only the
+// current key. The caller checks the current key itself before calling; this
+// only searches history. Revisions are unbounded below: the fingerprint
+// carries no revision, and the chain's signatures are what bind it.
+func Descends(ctx context.Context, store backend.Backend, h *crypto.Header, mk *crypto.MasterKey, accept func(signPub string) bool) error {
+	ts, err := loadTransitions(ctx, store)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrNoPath, err)
+	}
+	mkSignPub, err := mk.SignPub()
+	if err != nil {
+		return err
+	}
+	if mkSignPub != h.SignPub {
+		return ErrNoPath
+	}
+	tried := map[string]bool{}
+	for i := range ts {
+		from := ts[i].FromSignPub
+		if ts[i].VaultID != h.VaultID || tried[from] || !accept(from) {
+			continue
+		}
+		tried[from] = true
+		if walk(ts, h.VaultID, from, 0, mkSignPub, mk.PublicKey(), h.Revision, map[string]bool{}) {
+			return nil
+		}
+	}
+	return ErrNoPath
+}
+
 // walk searches depth-first for a valid chain from `from` (at fromRevision) to
 // the target signing key. Multiple entries can share a from-key (a rotation
 // retried after a failed flip leaves orphan siblings), so every candidate is

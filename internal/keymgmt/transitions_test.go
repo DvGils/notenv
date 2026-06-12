@@ -155,3 +155,30 @@ func TestFollowRotationsHonorsRevisionCeiling(t *testing.T) {
 		t.Fatal("a hop beyond the observed revision must not walk")
 	}
 }
+
+// TestDescends: the onboarding-fingerprint walker accepts any recognized
+// ancestor signing key connected to the unlocked master by valid transitions,
+// and nothing else.
+func TestDescends(t *testing.T) {
+	ctx := context.Background()
+	store, firstMK, _, currentMK := rotatedVault(t, 2)
+	header := mustParse(t, store)
+	firstSignPub, err := firstMK.SignPub()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := keymgmt.Descends(ctx, store, header, currentMK, func(signPub string) bool {
+		return signPub == firstSignPub
+	}); err != nil {
+		t.Fatalf("the original signing key is an ancestor of the current master: %v", err)
+	}
+	if err := keymgmt.Descends(ctx, store, header, currentMK, func(string) bool { return false }); err == nil {
+		t.Fatal("recognizing no key must not walk")
+	}
+	if err := keymgmt.Descends(ctx, store, header, currentMK, func(signPub string) bool {
+		return signPub == "unrelated"
+	}); err == nil {
+		t.Fatal("an unrelated key must not walk")
+	}
+}

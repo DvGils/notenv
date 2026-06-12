@@ -1,8 +1,10 @@
 package keyring
 
 // tempWords is the EFF short wordlist (eff_short_wordlist_1, 1296 words),
-// chosen for short, distinct, easy-to-type words. Six words drawn uniformly
-// give ~62 bits of entropy before scrypt stretching.
+// chosen for short, distinct, easy-to-type words; the list's one hyphenated
+// entry ("yo-yo") is replaced with "yarn" so a hyphen-joined passphrase always has
+// exactly as many hyphens as word boundaries. Six words drawn uniformly give
+// ~62 bits of entropy before scrypt stretching.
 var tempWords = []string{
 	"acid", "acorn", "acre", "acts", "afar", "affix", "aged", "agent",
 	"agile", "aging", "agony", "ahead", "aide", "aids", "aim", "ajar",
@@ -164,6 +166,6 @@ var tempWords = []string{
 	"wing", "wink", "wipe", "wired", "wiry", "wise", "wish", "wispy",
 	"wok", "wolf", "womb", "wool", "woozy", "word", "work", "worry",
 	"wound", "woven", "wrath", "wreck", "wrist", "xerox", "yahoo", "yam",
-	"yard", "year", "yeast", "yelp", "yield", "yo-yo", "yodel", "yoga",
-	"yoyo", "yummy", "zebra", "zero", "zesty", "zippy", "zone", "zoom",
+	"yard", "year", "yeast", "yelp", "yield", "yoyo", "yodel", "yoga",
+	"yarn", "yummy", "zebra", "zero", "zesty", "zippy", "zone", "zoom",
 }

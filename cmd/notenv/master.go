@@ -60,6 +60,13 @@ func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache,
 		if err != nil {
 			return nil, false, err
 		}
+		// The fingerprint check precedes the trust check: it exists to refuse
+		// a substituted vault before anything pins it on first use.
+		if res.fingerprint != "" {
+			if err := verifyOnboardingFingerprint(ctx, store, header, res.mk, res.fingerprint); err != nil {
+				return nil, false, err
+			}
+		}
 		if err := trustHeader(ctx, store, scope, header, res.mk); err != nil {
 			return nil, false, err
 		}

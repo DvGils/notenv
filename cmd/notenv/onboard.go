@@ -4,12 +4,50 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keymgmt"
 	"github.com/DvGils/notenv/internal/keyring"
 	"github.com/DvGils/notenv/internal/ui"
 )
+
+// onboardingStringRe matches the string `key add` prints: the generated
+// six-word passphrase, a slash, and the vault fingerprint. Only generated
+// passphrases have this shape (the wordlist is pure lowercase letters), so a
+// prompt entry matching it is split; a chosen passphrase that happens to
+// match is covered by the retry in resolveUnlock.
+var onboardingStringRe = regexp.MustCompile(`^([a-z]+(?:-[a-z]+){5})/([a-z2-7]{12})$`)
+
+// splitOnboardingString splits a prompt entry into passphrase and
+// fingerprint; the fingerprint is empty when the entry is a plain passphrase.
+func splitOnboardingString(s string) (pass, fingerprint string) {
+	m := onboardingStringRe.FindStringSubmatch(s)
+	if m == nil {
+		return s, ""
+	}
+	return m[1], m[2]
+}
+
+// verifyOnboardingFingerprint checks the header storage served against the
+// code from the onboarding string: it must digest the vault's identity and
+// current signing key, or an ancestor signing key connected to the unlocked
+// master by valid signed transitions (a rotation between `key add` and first
+// contact is legitimate and proves itself). Runs before the first pin is
+// written, so a substituted vault is refused instead of trusted on first use.
+func verifyOnboardingFingerprint(ctx context.Context, store keymgmt.Vault, h *crypto.Header, mk *crypto.MasterKey, code string) error {
+	if crypto.Fingerprint(h.VaultID, h.SignPub) == code {
+		ui.Successf("onboarding code verified: this is the vault you were invited to")
+		return nil
+	}
+	if err := keymgmt.Descends(ctx, store, h, mk, func(signPub string) bool {
+		return crypto.Fingerprint(h.VaultID, signPub) == code
+	}); err != nil {
+		return fmt.Errorf("the onboarding code does not match this vault, and no signed rotation connects this vault to one it matches. The storage may be presenting a substituted vault; verify with whoever onboarded you before trusting anything here")
+	}
+	ui.Successf("onboarding code verified: the vault was re-keyed since your invite, and the rotation proves itself")
+	return nil
+}
 
 // enforceProvisional is the onboarding gate. A provisional slot is still
 // wrapped under the temporary passphrase its issuer generated and therefore

@@ -39,5 +39,10 @@ func TestWordlistIntegrity(t *testing.T) {
 			t.Fatalf("empty or duplicate word %q", w)
 		}
 		uniq[w] = true
+		for _, r := range w {
+			if r < 'a' || r > 'z' {
+				t.Fatalf("word %q is not pure lowercase letters; hyphen-joined passphrases and the onboarding-string parser depend on it", w)
+			}
+		}
 	}
 }
