@@ -14,6 +14,8 @@ import (
 // enforces the TTL.
 type kernelCache struct{}
 
+const cacheIsNull = false
+
 func newCache() Cache { return kernelCache{} }
 
 func keyDesc(scope string) string { return "notenv:" + scope }
