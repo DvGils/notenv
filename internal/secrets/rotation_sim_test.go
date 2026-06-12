@@ -28,6 +28,9 @@ func (v *chaosVault) GetHeader(ctx context.Context) ([]byte, error) { return v.h
 func (v *chaosVault) PutHeader(ctx context.Context, raw []byte) error {
 	return v.hs.PutHeader(ctx, raw)
 }
+func (v *chaosVault) SwapHeader(ctx context.Context, base, updated []byte) error {
+	return v.hs.SwapHeader(ctx, base, updated)
+}
 func (v *chaosVault) BackupHeader(ctx context.Context) error { return v.hs.BackupHeader(ctx) }
 func (v *chaosVault) RestoreHeaderBackup(ctx context.Context) error {
 	return v.hs.RestoreHeaderBackup(ctx)

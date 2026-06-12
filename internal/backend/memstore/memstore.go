@@ -9,6 +9,7 @@
 package memstore
 
 import (
+	"bytes"
 	"context"
 	"strings"
 
@@ -86,6 +87,18 @@ func (s *Store) PutHeader(_ context.Context, raw []byte) error {
 	}
 	s.header = stored
 	return nil
+}
+
+// SwapHeader is a true compare-and-swap: the compare and the store happen in
+// one step with nothing interleaving (the Store is single-goroutine by
+// contract), so code tested against this fake sees the strongest semantics the
+// interface allows. The store goes through PutHeader so corruption hooks and
+// the put counter keep working.
+func (s *Store) SwapHeader(ctx context.Context, base, updated []byte) error {
+	if !bytes.Equal(s.header, base) {
+		return backend.ErrHeaderChanged
+	}
+	return s.PutHeader(ctx, updated)
 }
 
 // BackupHeader copies the header to ".prev", a no-op when versioned or when no

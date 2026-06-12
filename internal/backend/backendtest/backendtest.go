@@ -116,6 +116,9 @@ func HeaderStoreContract(t *testing.T, newStore func(t *testing.T) backend.Heade
 	t.Helper()
 	t.Run("GetHeaderNotFoundWhenEmpty", func(t *testing.T) { testHeaderMissing(t, newStore) })
 	t.Run("PutGetRoundTrip", func(t *testing.T) { testHeaderRoundTrip(t, newStore) })
+	t.Run("SwapHeaderCreatesWhenAbsent", func(t *testing.T) { testSwapCreate(t, newStore) })
+	t.Run("SwapHeaderReplacesOnMatch", func(t *testing.T) { testSwapReplace(t, newStore) })
+	t.Run("SwapHeaderRefusesOnMismatch", func(t *testing.T) { testSwapMismatch(t, newStore) })
 	t.Run("BackupNoHeaderIsNoop", func(t *testing.T) { testBackupNoHeader(t, newStore) })
 	t.Run("RestoreWithoutBackupIsNotFound", func(t *testing.T) { testRestoreWithoutBackup(t, newStore) })
 	t.Run("BackupThenRestoreRecoversPriorHeader", func(t *testing.T) { testBackupThenRestore(t, newStore, versioned) })
@@ -141,6 +144,50 @@ func testHeaderRoundTrip(t *testing.T, newStore func(t *testing.T) backend.Heade
 	if !bytes.Equal(got, want) {
 		t.Fatalf("round trip mismatch: got %q want %q", got, want)
 	}
+}
+
+func testSwapCreate(t *testing.T, newStore func(t *testing.T) backend.HeaderStore) {
+	ctx := context.Background()
+	s := newStore(t)
+	if err := s.SwapHeader(ctx, nil, []byte("v1")); err != nil {
+		t.Fatalf("SwapHeader(nil base) on empty store: %v", err)
+	}
+	assertHeader(t, s, []byte("v1"), "create-swap did not store")
+}
+
+func testSwapReplace(t *testing.T, newStore func(t *testing.T) backend.HeaderStore) {
+	ctx := context.Background()
+	s := newStore(t)
+	if err := s.PutHeader(ctx, []byte("v1")); err != nil {
+		t.Fatalf("PutHeader: %v", err)
+	}
+	if err := s.SwapHeader(ctx, []byte("v1"), []byte("v2")); err != nil {
+		t.Fatalf("SwapHeader with matching base: %v", err)
+	}
+	assertHeader(t, s, []byte("v2"), "swap did not replace")
+}
+
+func testSwapMismatch(t *testing.T, newStore func(t *testing.T) backend.HeaderStore) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	// A non-nil base against an empty store must refuse: the operation started
+	// from a header that no longer exists.
+	if err := s.SwapHeader(ctx, []byte("v0"), []byte("v1")); !errors.Is(err, backend.ErrHeaderChanged) {
+		t.Fatalf("SwapHeader with base against empty store: want ErrHeaderChanged, got %v", err)
+	}
+	if err := s.PutHeader(ctx, []byte("other")); err != nil {
+		t.Fatalf("PutHeader: %v", err)
+	}
+	if err := s.SwapHeader(ctx, []byte("v0"), []byte("v1")); !errors.Is(err, backend.ErrHeaderChanged) {
+		t.Fatalf("SwapHeader with stale base: want ErrHeaderChanged, got %v", err)
+	}
+	// A nil base against an existing header must refuse: "create" lost to a
+	// writer that initialized first.
+	if err := s.SwapHeader(ctx, nil, []byte("v1")); !errors.Is(err, backend.ErrHeaderChanged) {
+		t.Fatalf("SwapHeader(nil base) against existing header: want ErrHeaderChanged, got %v", err)
+	}
+	assertHeader(t, s, []byte("other"), "failed swaps must not modify the header")
 }
 
 func testBackupNoHeader(t *testing.T, newStore func(t *testing.T) backend.HeaderStore) {
