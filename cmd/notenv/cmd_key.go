@@ -199,19 +199,24 @@ type keyListJSONOutput struct {
 }
 
 type slotOutput struct {
-	Index     int    `json:"index"`
-	Name      string `json:"name,omitempty"`
-	Type      string `json:"type"`
-	Primary   bool   `json:"primary,omitempty"`
-	PublicKey string `json:"public_key,omitempty"`
+	Index       int    `json:"index"`
+	Name        string `json:"name,omitempty"`
+	Type        string `json:"type"`
+	Primary     bool   `json:"primary,omitempty"`
+	Provisional bool   `json:"provisional,omitempty"`
+	Added       string `json:"added,omitempty"`
+	PublicKey   string `json:"public_key,omitempty"`
 }
 
 func keyListOutput(h *crypto.Header) keyListJSONOutput {
 	out := keyListJSONOutput{VaultID: h.VaultID, Revision: h.Revision, Slots: make([]slotOutput, 0, len(h.Slots))}
 	for i, slot := range h.Slots {
-		s := slotOutput{Index: i, Name: slot.Name, Type: slot.Type, Primary: slot.Primary}
+		s := slotOutput{Index: i, Name: slot.Name, Type: slot.Type, Primary: slot.Primary, Provisional: slot.Provisional}
 		if s.Type == "" {
 			s.Type = crypto.SlotPassphrase
+		}
+		if slot.TS > 0 {
+			s.Added = time.Unix(slot.TS, 0).UTC().Format(time.RFC3339)
 		}
 		if slot.Type == crypto.SlotRecipient {
 			s.PublicKey = slot.PublicKey
@@ -221,20 +226,34 @@ func keyListOutput(h *crypto.Header) keyListJSONOutput {
 	return out
 }
 
+// slotPrincipal renders a slot's principal for humans: passphrases are for
+// people, identities are for machines. A provisional slot is still a human
+// slot, but the holder has not replaced the onboarding passphrase yet, which
+// is the more important fact to show.
+func slotPrincipal(slot crypto.Slot) string {
+	if slot.Type == crypto.SlotRecipient {
+		return "machine (identity)"
+	}
+	if slot.Provisional {
+		return "human (provisional)"
+	}
+	return "human (passphrase)"
+}
+
 // printSlots renders the slots as a table. The fingerprint column shows a
 // recipient slot's public key; passphrase slots have no public value, so they
 // show a dash.
 func printSlots(h *crypto.Header) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tTYPE\tPRIMARY\tFINGERPRINT")
+	fmt.Fprintln(w, "NAME\tPRINCIPAL\tPRIMARY\tADDED\tFINGERPRINT")
 	for _, slot := range h.Slots {
-		typ := slot.Type
-		if typ == "" {
-			typ = crypto.SlotPassphrase
-		}
 		primary := ""
 		if slot.Primary {
 			primary = "yes"
+		}
+		added := "-"
+		if slot.TS > 0 {
+			added = time.Unix(slot.TS, 0).UTC().Format("2006-01-02")
 		}
 		name := dashIfEmpty(slot.Name)
 		// The public key is a user-facing fingerprint only for recipient slots;
@@ -243,9 +262,26 @@ func printSlots(h *crypto.Header) {
 		if slot.Type == crypto.SlotRecipient {
 			fingerprint = dashIfEmpty(slot.PublicKey)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, typ, primary, fingerprint)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", name, slotPrincipal(slot), primary, added, fingerprint)
 	}
 	_ = w.Flush()
+	warnStaleProvisional(h)
+}
+
+// warnStaleProvisional flags provisional slots older than a week: the holder
+// never replaced the onboarding passphrase, so the issuer still knows their
+// credential and the onboarding is not done.
+func warnStaleProvisional(h *crypto.Header) {
+	const staleAfter = 7 * 24 * time.Hour
+	for _, slot := range h.Slots {
+		if !slot.Provisional || slot.TS <= 0 {
+			continue
+		}
+		age := time.Since(time.Unix(slot.TS, 0))
+		if age >= staleAfter {
+			ui.Warnf("slot %q has been provisional for %d days; its holder never replaced the onboarding passphrase (resend it, or remove the slot)", dashIfEmpty(slot.Name), int(age.Hours()/24))
+		}
+	}
 }
 
 func dashIfEmpty(s string) string {
