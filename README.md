@@ -385,15 +385,19 @@ roadmap; see [Status](#status) and the [threat model](./THREAT_MODEL.md).
   the deliberate-reset escape hatch). **Legitimate master rotations need no ceremony on other
   machines**: each rotation is signed by the outgoing master, and a machine pinned at it
   verifies the chain and follows silently — `notenv key trust` (which shows what changed and
-  asks) remains only for changes that carry no such proof. They still cannot forge plaintext:
-  a substituted blob they don't hold the key for fails to decrypt. Two honest limits: on
-  *first* contact with a vault a machine has no prior pin to compare against (trust on first
-  use), and a *former key holder* who kept the master key and retains storage *write* can
-  fork history — including signing transitions onto the fork — in a way only machines pinned
-  past the fork detect; rotate the storage credential to cut them off (notenv advises this on
-  `key rm` but, not owning the storage, can't enforce it). Deletion of blobs is an
-  availability concern, not confidentiality; object versioning (the default on B2) recovers
-  prior bytes. Per-blob value rollback is planned hardening.
+  asks) remains only for changes that carry no such proof. **Every stored secret object is
+  bound to that authenticated header**: the header carries a manifest of the vault's objects
+  (a keyed fingerprint of each), and every object names the key it was written under — so
+  deleting a stored write, reverting it, resurrecting a compacted one, or copying a real
+  object into another namespace alarms with the object named, instead of silently changing
+  what `notenv run` injects. They still cannot forge plaintext: a substituted blob they don't
+  hold the key for fails to decrypt. Two honest limits: on *first* contact with a vault a
+  machine has no prior pin to compare against (trust on first use), and a *former key holder*
+  who kept the master key and retains storage *write* can fork history — including signing
+  transitions onto the fork — in a way only machines pinned past the fork detect; rotate the
+  storage credential to cut them off (notenv advises this on `key rm` but, not owning the
+  storage, can't enforce it). Deletion of blobs remains an availability concern: detection
+  doesn't recover bytes — object versioning (the default on B2) does.
 - **A cloned, untrusted project:** the committed `notenv.toml` can redirect neither your
   storage (machine-only) nor — silently — your namespace: the namespace is pinned per
   checkout, an unusual one is confirmed before first use, and a contract that changes its
@@ -433,7 +437,9 @@ Actively developed and being tested.
 key and slot management (`notenv key …`); team access by age recipient, passphrase and
 master-key rotation, offboarding by re-key, advisory primary governance, and authenticated +
 version-pinned headers (vanished-header and vault-replacement detection included); **signed
-rotation transitions**, so legitimate re-keys propagate to every machine without prompts;
+rotation transitions**, so legitimate re-keys propagate to every machine without prompts; a
+**header manifest binding every stored object** to the authenticated header, so storage-level
+tamper with any single secret (revert, delete, replay, relocate) alarms naming the object;
 append-only writes so concurrent `set`s never lose each other — including against a concurrent
 master rotation — with automatic compaction keeping reads fast; per-checkout namespace pinning
 with join confirmation; [masked captured output](#using-notenv-with-ai-agents); multiple
@@ -441,8 +447,6 @@ storages per machine; passphrase or identity unlock; Linux key/blob caching. Rel
 reproducible, cosign-signed, and carry SLSA build provenance.
 
 **Planned:**
-- Per-blob manifest (detect rollback of an individual secret's value), with
-  compare-and-swap writes.
 - An MCP server mode, so agents discover and use notenv through their native tooling.
 - A broker mode: the unlocked key lives in a separate trust domain and execs children on
   behalf of agents, turning "agents shouldn't see credentials" from a convention into a

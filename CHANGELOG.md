@@ -4,7 +4,50 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
-## 0.7.0 (unreleased)
+## 0.8.0 (unreleased)
+
+Every stored secret is now bound to the vault's authenticated header. Until now the header was
+tamper-evident but the objects holding the values were not: a party with storage write access
+(but no key) could delete a write, revert it via a versioned remote, resurrect a compacted one,
+or copy a real object into another namespace — all silently. Each of those now alarms, naming
+the object. This is the last planned storage-format change before v1 freezes the format.
+
+### Added
+
+- **The object manifest.** The header records every segment and snapshot: its object key and a
+  keyed fingerprint of its content (keyed from the master, so the world-readable header is no
+  guessing oracle against secret values; computed over plaintext, so rotations re-encrypting in
+  place don't disturb it). Folds trust the manifest, not the storage listing — anything missing,
+  altered, relocated, or replayed fails closed with the object named. Objects also carry the key
+  they were written under inside the encrypted payload, killing copy/rename attacks including
+  cross-namespace injection.
+- **Conditional header writes.** Every `set`/`unset`/`compact` records itself in the manifest
+  through a header compare-and-swap that doubles as the master-epoch check (replacing the
+  post-write verify of 0.5): concurrent writers retry against fresh state instead of clobbering
+  each other, and a write racing a rotation rolls itself back exactly as before. On rclone the
+  swap is read-compare-put-readback — a windowed best effort whose one undetectable ordering
+  self-heals (see below); a backend with native conditional writes can implement it atomically.
+- **In-flight write adoption.** A write whose recording never landed (crashed writer, lost swap
+  race) still folds — with a warning — and the next compaction records it durably. Snapshots
+  track each machine's folded sequence high-water mark, which is what lets a fold tell an
+  honest in-flight segment from a maliciously resurrected one, exactly.
+- **A storage-attacker simulation.** Arbitrary honest histories, then one storage-level attack;
+  the next fold must catch it naming the object (or, for the provably value-neutral moves,
+  change nothing). Fuzzed in CI alongside the existing two simulations, which now also drive
+  crashed writers. CI fuzzing was also unstarved (bounded minimization) and the curated corpora
+  now live in `testdata/fuzz/`, replaying as regular tests; `gocyclo -over 15` joins CI.
+
+### Breaking changes
+
+- **Header format version 3** (adds the manifest) and **payload format version 2** (objects are
+  self-naming). Run `notenv key migrate` once per existing vault: it rewrites every object in
+  place under your unlocked master and records the manifest in one verified header write. The
+  command now migrates version-2 vaults only (upgrade older vaults with notenv 0.7 first) and
+  will be removed once version-2 vaults are gone.
+- The header revision now advances on every write, not just key operations (each write is a
+  header write). Pins advance along with it; no action needed.
+
+## 0.7.0
 
 Multi-machine key continuity: legitimate master rotations now carry cryptographic proof, so
 they propagate to every machine silently — and the master-changed alarm, freed from false

@@ -73,9 +73,14 @@ What holds, and against whom.
   machine that has pinned a vault refuses to treat its missing header as virgin storage (the
   deliberate-reset escape hatch is `notenv key forget`). **Replacing the vault wholesale is
   detected**: each storage location is bound locally to the vault identity it held, so a
-  different vault appearing there — however internally consistent — is refused. They cannot
-  forge a secret value: a blob they cannot encrypt under the master fails to decrypt, and reads
-  **fail closed** (a corrupt or substituted object is surfaced as an error, never silently
+  different vault appearing there — however internally consistent — is refused. **Every stored
+  object is bound to that authenticated header**: the header carries a manifest (object key →
+  keyed MAC of its plaintext; keyed so the public header is no guessing oracle against secret
+  values), each payload names the object key it was written under, and reads check both — so
+  deleting a recorded object, reverting it to a different value, resurrecting a compacted one,
+  or copying a real object to another name or namespace alarms with the object named. They
+  cannot forge a secret value: a blob they cannot encrypt under the master fails to decrypt, and
+  reads **fail closed** (a corrupt or substituted object is surfaced as an error, never silently
   skipped). Because writes are append-only and verified on read-back, a botched or malicious
   write is at worst denial-of-service, not silent data loss. ✅ (with caveats; see
   [Known limitations](#known-limitations)).
@@ -87,13 +92,14 @@ What holds, and against whom.
   cannot forge a transition (no old signing key); an **ex-holder can**, which is why offboarding
   still ends with rotating the storage credential (see
   [Known limitations](#known-limitations)). ✅
-- **Against an honest race — writes concurrent with a master rotation:** every write confirms,
-  after it lands, that the master it was sealed under is still the vault's master, rolling itself
-  back otherwise; the rotation re-lists the namespace after its header flip and re-keys anything a
-  not-yet-aware writer sealed under the old master. A write that escapes both would have to land
-  after the rotation's re-list yet confirm before its flip — impossible, since the write lands
-  before it confirms. So for every non-crash interleaving, no committed write ends up readable by
-  nobody (the crash residual is in [Known limitations](#known-limitations)). ✅
+- **Against an honest race — writes concurrent with a master rotation:** every write records
+  itself in the vault manifest through the header compare-and-swap, which re-reads and verifies
+  the header first — a rotation that landed since the writer unlocked surfaces right there, and
+  the writer rolls its object back. The rotation's flip goes through the same swap, so it aborts
+  if any write recorded itself after the rotation began. Either the write records first (the
+  rotation aborts and a re-run re-keys it) or the flip lands first (the write's swap sees the
+  new master and rolls back): for every non-crash interleaving, no committed write ends up
+  readable by nobody (the crash residual is in [Known limitations](#known-limitations)). ✅
 - **Against a malicious committed contract (a cloned repository):** the contract cannot choose
   where this machine reads or writes (storage is machine-config only), and the **namespace it
   names is pinned per checkout** on first use — pinning a namespace other than the directory's
@@ -126,7 +132,7 @@ What holds, and against whom.
 |---|---|---|---|
 | Storage provider / read-only credential | Holds (ciphertext only) | n/a | Metadata leaks (below) |
 | Network MITM on storage | Holds | Holds | Payload is ciphertext regardless of TLS |
-| Storage **write** credential, no key | Holds | Holds, with caveats | Can DoS / fork history; detected, not prevented |
+| Storage **write** credential, no key | Holds | Holds | Object tamper (revert / delete / replay / copy) alarms via the header manifest; DoS and wholesale history forks detected, not prevented |
 | Former key holder (had the master) | **Lost for past secrets** | n/a | Rotate master + storage credential to limit future |
 | Local attacker, no live session | Holds | Holds | Nothing secret on disk |
 | Local attacker **with** live session + cached key | **Lost** | n/a | Out of scope (see below) |
@@ -186,13 +192,21 @@ These are real, documented gaps, not oversights:
   scheme on dumb storage and the reason offboarding ends with rotating the **storage
   credential**: no write access, no fork. notenv advises this on `key rm` but, not owning the
   storage, cannot enforce it.
-- **A crash inside a rotation's flip→narrow window.** If `rotate-master` crashes after its header
-  flip but before the narrow pass completes, a write that landed during the widen window can be
-  left sealed under the replaced master. The fold then fails closed naming the object; re-set that
-  key (or recover the object's prior version on a versioned remote). The window is seconds wide
-  and requires the crash inside it. This residual is accepted deliberately: the alternative — a
-  rotation-in-progress marker writers must honor — puts a lock-like object on every write path
-  and adds a stuck-marker failure mode that blocks all writers until manually cleared.
+- **A write that crashed mid-protocol and was then orphaned by a rotation.** A `set` lands its
+  object, then records it in the vault manifest; a writer that dies between the two leaves an
+  unrecorded object. Folds still include it (with a warning) and the next compaction records it
+  durably — but a master rotation deliberately leaves unrecorded objects alone (touching one
+  would race its writer's own rollback), so an orphan that meets a rotation first is left sealed
+  under the replaced master. The fold then fails closed naming the object; remove it and re-set
+  that key. This residual is accepted deliberately: the alternative — a rotation-in-progress
+  marker writers must honor — puts a lock-like object on every write path and adds a
+  stuck-marker failure mode that blocks all writers until manually cleared.
+- **The manifest swap on rclone is a windowed compare-and-swap, not an atomic one.** Object
+  stores expose no conditional write through rclone, so two machines recording writes in the
+  same sub-second window can race. A detected loss retries cleanly; the one undetectable
+  ordering leaves an unrecorded-but-still-included object that the next compaction adopts —
+  never a lost value, never an alarm against an honest writer. A backend with native
+  conditional writes can close the window for real.
 - **Primary-slot governance is advisory.** In shared-master team mode every slot holder has the
   master key, so "who may remove slots" is tooling-enforced, not cryptographic.
 - **Tombstone garbage collection.** Compaction drops delete-tombstones; a stale concurrent write at
