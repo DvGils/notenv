@@ -17,7 +17,7 @@ import (
 func TestEnsureMasterAlarmsOnVanishedHeader(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	scope := "test-scope"
-	if err := config.WritePin(scope, config.Pin{Revision: 4, MasterPub: "age1pinned"}); err != nil {
+	if err := config.WritePin(scope, "vault-1", config.Pin{Revision: 4, MasterPub: "age1pinned"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -35,7 +35,7 @@ func TestEnsureMasterAlarmsOnVanishedHeader(t *testing.T) {
 	if store.Header() != nil {
 		t.Fatal("storage must be untouched")
 	}
-	if _, have, _ := config.ReadPin(scope); !have {
-		t.Fatal("the pin must survive the alarm")
+	if _, bound, _ := config.ScopeVault(scope); !bound {
+		t.Fatal("the scope binding must survive the alarm")
 	}
 }

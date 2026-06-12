@@ -26,7 +26,7 @@ import (
 //
 // The unwrapped master key (never the passphrase) is cached best-effort in
 // the session keyring. Returns created=true when a header was written.
-func ensureMaster(ctx context.Context, store backend.HeaderStore, cache keyring.Cache, scope string, ttl time.Duration) (*crypto.MasterKey, bool, error) {
+func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache, scope string, ttl time.Duration) (*crypto.MasterKey, bool, error) {
 	var raw []byte
 	var missing bool
 	if err := ui.Spin("Reading key header", func() error {
@@ -53,21 +53,22 @@ func ensureMaster(ctx context.Context, store backend.HeaderStore, cache keyring.
 		if err != nil {
 			return nil, false, err
 		}
-		if err := trustHeader(scope, header, res.mk); err != nil {
+		if err := trustHeader(ctx, store, scope, header, res.mk); err != nil {
 			return nil, false, err
 		}
 		cacheMaster(cache, scope, res.mk, ttl)
 		return res.mk, false, nil
 	}
 
-	// No header. If this machine has pinned one for this storage before, its
-	// absence is the loudest alarm the pin system can raise — a wiped or
+	// No header. If this machine has pinned a vault at this storage before,
+	// its absence is the loudest alarm the pin system can raise — a wiped or
 	// replaced vault — not an invitation to quietly initialize a fresh one
 	// (which would also overwrite the pin and silence the alarm forever).
-	if pin, have, err := config.ReadPin(scope); err != nil {
+	if vaultID, bound, err := config.ScopeVault(scope); err != nil {
 		return nil, false, err
-	} else if have {
-		return nil, false, fmt.Errorf("no key header found, but this machine pinned one for this storage (revision %d, master %s): the vault may have been wiped or replaced. Restore the header (`notenv key restore-backup`, or the remote's version history), or, ONLY if you deliberately reset this storage, run `notenv key forget` and set up again", pin.Revision, pin.MasterPub)
+	} else if bound {
+		pin, _, _ := config.ReadPin(vaultID)
+		return nil, false, fmt.Errorf("no key header found, but this machine pinned vault %s at this storage (revision %d, master %s): the vault may have been wiped or replaced. Restore the header (`notenv key restore-backup`, or the remote's version history), or, ONLY if you deliberately reset this storage, run `notenv key forget` and set up again", vaultID, pin.Revision, pin.MasterPub)
 	}
 
 	pass, err := keyring.PromptNewPassphrase("Choose a passphrase for this storage: ")

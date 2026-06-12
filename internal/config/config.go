@@ -393,11 +393,29 @@ func Resolve(u *User, f *contract.File, contractDir, storageName string) (Effect
 }
 
 // Pin is a per-vault rollback anchor: the highest header revision this machine
-// has seen and the master public key it expects. It is not secret (the threat
-// is storage write, not local read), so it lives in a plain local file.
+// has seen, plus the master's encryption and signing public keys it expects.
+// It is not secret (the threat is storage write, not local read), so it lives
+// in a plain local file.
+//
+// Pins are keyed by the vault's own ID, not by where the vault happens to be
+// stored, so trust survives relocating a vault to another remote or base. A
+// separate scope → vault-ID binding records which vault each storage location
+// held: without it, substituting a header with a freshly minted vault ID would
+// sidestep the pin entirely (no pin under the new ID, trust on first use).
+// A bound scope whose header claims a different vault ID — or no header at
+// all — is therefore an alarm, never a fresh start.
 type Pin struct {
 	Revision  int    `json:"revision"`
 	MasterPub string `json:"master_pub"`
+	SignPub   string `json:"sign_pub"`
+}
+
+// trustState is the on-disk shape of pins.json.
+type trustState struct {
+	// Vaults maps vault ID → pin.
+	Vaults map[string]Pin `json:"vaults"`
+	// Scopes maps storage scope (CacheScope) → the vault ID seen there.
+	Scopes map[string]string `json:"scopes"`
 }
 
 func pinPath() (string, error) {
@@ -408,7 +426,8 @@ func pinPath() (string, error) {
 	return filepath.Join(dir, "pins.json"), nil
 }
 
-func loadPins() (map[string]Pin, error) {
+func loadTrust() (*trustState, error) {
+	state := &trustState{Vaults: map[string]Pin{}, Scopes: map[string]string{}}
 	path, err := pinPath()
 	if err != nil {
 		return nil, err
@@ -416,52 +435,23 @@ func loadPins() (map[string]Pin, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return map[string]Pin{}, nil
+			return state, nil
 		}
 		return nil, err
 	}
-	pins := map[string]Pin{}
-	if err := json.Unmarshal(data, &pins); err != nil {
+	if err := json.Unmarshal(data, state); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return pins, nil
+	if state.Vaults == nil {
+		state.Vaults = map[string]Pin{}
+	}
+	if state.Scopes == nil {
+		state.Scopes = map[string]string{}
+	}
+	return state, nil
 }
 
-// ReadPin returns the stored pin for a storage scope (have=false if none).
-func ReadPin(scope string) (p Pin, have bool, err error) {
-	pins, err := loadPins()
-	if err != nil {
-		return Pin{}, false, err
-	}
-	p, have = pins[scope]
-	return p, have, nil
-}
-
-// WritePin records the pin for a storage scope.
-func WritePin(scope string, p Pin) error {
-	pins, err := loadPins()
-	if err != nil {
-		return err
-	}
-	pins[scope] = p
-	return savePins(pins)
-}
-
-// DeletePin removes the pin for a storage scope (`notenv key forget`, after a
-// deliberate vault reset). Removing an absent pin is a no-op.
-func DeletePin(scope string) error {
-	pins, err := loadPins()
-	if err != nil {
-		return err
-	}
-	if _, ok := pins[scope]; !ok {
-		return nil
-	}
-	delete(pins, scope)
-	return savePins(pins)
-}
-
-func savePins(pins map[string]Pin) error {
+func saveTrust(state *trustState) error {
 	path, err := pinPath()
 	if err != nil {
 		return err
@@ -469,23 +459,89 @@ func savePins(pins map[string]Pin) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(pins, "", "  ")
+	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0o600)
 }
 
+// ReadPin returns the stored pin for a vault (have=false if none).
+func ReadPin(vaultID string) (p Pin, have bool, err error) {
+	state, err := loadTrust()
+	if err != nil {
+		return Pin{}, false, err
+	}
+	p, have = state.Vaults[vaultID]
+	return p, have, nil
+}
+
+// WritePin records the pin for a vault and binds the scope it was seen at.
+func WritePin(scope, vaultID string, p Pin) error {
+	state, err := loadTrust()
+	if err != nil {
+		return err
+	}
+	state.Vaults[vaultID] = p
+	state.Scopes[scope] = vaultID
+	return saveTrust(state)
+}
+
+// ScopeVault returns the vault ID previously seen at a storage scope
+// (bound=false if this machine has never pinned anything there).
+func ScopeVault(scope string) (vaultID string, bound bool, err error) {
+	state, err := loadTrust()
+	if err != nil {
+		return "", false, err
+	}
+	vaultID, bound = state.Scopes[scope]
+	return vaultID, bound, nil
+}
+
+// ForgetScope removes a scope's binding and its vault's pin (`notenv key
+// forget`, after a deliberate vault reset). The pin survives if another scope
+// still references the vault (the same vault reachable through two storage
+// configurations). Forgetting an unbound scope is a no-op.
+func ForgetScope(scope string) error {
+	state, err := loadTrust()
+	if err != nil {
+		return err
+	}
+	vaultID, bound := state.Scopes[scope]
+	if !bound {
+		return nil
+	}
+	delete(state.Scopes, scope)
+	stillReferenced := false
+	for _, id := range state.Scopes {
+		if id == vaultID {
+			stillReferenced = true
+			break
+		}
+	}
+	if !stillReferenced {
+		delete(state.Vaults, vaultID)
+	}
+	return saveTrust(state)
+}
+
+// ErrMasterChanged reports that an observed header wraps a different master
+// than the pinned one. The caller distinguishes it from other pin failures
+// because it has a second chance: a chain of signed transitions from the
+// pinned master can prove the change legitimate before the alarm stands.
+var ErrMasterChanged = errors.New("the vault's master key changed unexpectedly: a legitimate rotation on another machine, or a substitution attack. If you have confirmed it is legitimate, run `notenv key trust`; otherwise treat the storage as compromised")
+
 // CheckPin compares an observed header (revision, master public key) against the
 // stored pin. It returns advance=true when the pin should move forward (or on
-// first contact), or an actionable error on a rollback or unexpected
-// master-change alarm.
+// first contact), or an actionable error: ErrMasterChanged for an unexpected
+// master (the caller may try signed transitions before alarming), or a
+// rollback error for an older revision.
 func CheckPin(stored Pin, have bool, obsRevision int, obsMasterPub string) (advance bool, err error) {
 	if !have {
 		return true, nil // trust on first use
 	}
 	if obsMasterPub != stored.MasterPub {
-		return false, errors.New("the vault's master key changed unexpectedly: a legitimate rotation on another machine, or a substitution attack. If you have confirmed it is legitimate, run `notenv key trust`; otherwise treat the storage as compromised")
+		return false, ErrMasterChanged
 	}
 	if obsRevision < stored.Revision {
 		return false, fmt.Errorf("the header is older than one this machine already trusted (revision %d < %d): possible rollback. If you have confirmed it is legitimate, run `notenv key trust`", obsRevision, stored.Revision)

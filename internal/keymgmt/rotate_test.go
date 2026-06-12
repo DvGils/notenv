@@ -147,8 +147,9 @@ func TestRotateMasterOnFlipBeforeNarrow(t *testing.T) {
 	oldMK, _ := seedVault(t, store, blobs)
 	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
 
-	// 2 widen Puts succeed, the flip (a PutHeader) succeeds, the first narrow Put fails.
-	store.FailPutAfter(2, errors.New("simulated blip in narrow"))
+	// 2 widen Puts and the transition record succeed, the flip (a PutHeader)
+	// succeeds, the first narrow Put fails.
+	store.FailPutAfter(3, errors.New("simulated blip in narrow"))
 	base := store.Header()
 	header, _ := crypto.ParseHeader(base)
 
