@@ -529,7 +529,7 @@ func checkPayload(version int, object, key string) error {
 	case version > formatVersion:
 		return fmt.Errorf("%s was written by a newer notenv (format v%d, this build understands up to v%d); upgrade notenv", key, version, formatVersion)
 	case version < formatVersion:
-		return fmt.Errorf("%s was written by an older notenv (format v%d); run `notenv key migrate` to upgrade this vault in place", key, version)
+		return fmt.Errorf("%s was written by an older notenv (format v%d), and this version no longer reads it; upgrade the vault with notenv 0.8 (`notenv key migrate`) first", key, version)
 	case object != key:
 		return fmt.Errorf("object %s declares it was written as %s: it was copied or renamed, and is not trusted", key, object)
 	}

@@ -38,14 +38,16 @@ import (
 // an incompatible change.
 //
 // Version 2 added VaultID and SignPub; version 3 added the object manifest
-// (see manifest.go). The previous version's headers are upgraded by
-// `notenv key migrate` (a lossless rewrite under the same master).
+// (see manifest.go). There is no in-place upgrade path in this version:
+// notenv 0.8 was the last to carry `notenv key migrate`, so older vaults go
+// through it first.
 const headerVersion = 3
 
-// Header is the parsed header object. Fields added by later format versions
-// carry omitempty so a header sealed before the field existed reproduces its
-// original canonical bytes when re-marshaled — its authentication tag must
-// stay verifiable for the migration that upgrades it.
+// Header is the parsed header object. Optional-shaped fields carry omitempty
+// so a parsed header reproduces the exact canonical bytes it was sealed over
+// (a vault that has never stored a secret has no manifest, and its tag was
+// computed without the key present); changing a tag's presence rules breaks
+// verification of every header already sealed under the old rules.
 type Header struct {
 	Version   int    `json:"version"`
 	VaultID   string `json:"vault_id,omitempty"` // random, minted once at creation; the stable identity pins and transitions are scoped to, surviving relocation of the vault to another remote/base
@@ -313,7 +315,7 @@ func ParseHeader(data []byte) (*Header, error) {
 		return nil, fmt.Errorf("corrupt header: %w", err)
 	}
 	if h.Version < headerVersion {
-		return nil, fmt.Errorf("header version %d is from an older notenv; run `notenv key migrate` to upgrade this vault in place", h.Version)
+		return nil, fmt.Errorf("header version %d is from an older notenv, and this version no longer reads it; upgrade the vault with notenv 0.8 (`notenv key migrate`) first", h.Version)
 	}
 	if h.Version > headerVersion {
 		return nil, fmt.Errorf("unsupported header version %d (this notenv supports version %d); upgrade notenv", h.Version, headerVersion)

@@ -187,7 +187,6 @@ Add `--storage NAME` to any command to target a specific [vault](#multiple-vault
 | `notenv key gen-identity` | Generate an age identity on this machine (to join a vault). |
 | `notenv key trust` | Re-pin after a confirmed master change that carries no signed proof (shows what changed, asks). |
 | `notenv key forget` | Forget this machine's pin + cached key for a storage (after a deliberate vault reset). |
-| `notenv key migrate` | Upgrade a vault written by an older notenv to the current header format (temporary command). |
 | `notenv key restore-backup` | Restore the header from its pre-write backup. |
 
 ## Configuration
