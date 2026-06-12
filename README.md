@@ -25,7 +25,7 @@ There is no server to run, no SaaS to sign up for, and nothing to install beyond
 hold the key; storage only ever sees ciphertext. When syncing across machines starts to matter,
 `notenv vault copy` moves the same vault to a cloud remote in one command.
 
-## 📖 Documentation
+## Documentation
 
 Full docs live at **[dvgils.github.io/notenv](https://dvgils.github.io/notenv/)**:
 
