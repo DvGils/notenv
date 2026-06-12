@@ -44,25 +44,34 @@ import (
 const formatVersion = 2
 
 // segment is one append: a single key write or deletion, ordered across
-// machines by a Lamport clock and, within a machine, by Seq.
+// machines by a Lamport clock and, within a machine, by Seq. Description and
+// TS are advisory metadata riding the write: TS is wall-clock Unix seconds
+// (clocks lie, so it is never used for ordering — Lamport is the truth), and
+// both are carried into snapshot entries so compaction preserves them.
 type segment struct {
-	Version int    `json:"v"`
-	Object  string `json:"object"`
-	Machine string `json:"machine"`
-	Seq     int    `json:"seq"`
-	Lamport int    `json:"lamport"`
-	Key     string `json:"key"`
-	Value   string `json:"value,omitempty"`
-	Deleted bool   `json:"deleted,omitempty"`
+	Version     int    `json:"v"`
+	Object      string `json:"object"`
+	Machine     string `json:"machine"`
+	Seq         int    `json:"seq"`
+	Lamport     int    `json:"lamport"`
+	Key         string `json:"key"`
+	Value       string `json:"value,omitempty"`
+	Deleted     bool   `json:"deleted,omitempty"`
+	Description string `json:"desc,omitempty"`
+	TS          int64  `json:"ts,omitempty"`
 }
 
 // entry is one key's winning write in a snapshot, carrying the provenance
-// needed to merge the snapshot deterministically against later segments.
+// needed to merge the snapshot deterministically against later segments, plus
+// the write's advisory metadata — without it here, the first compaction would
+// destroy every description and timestamp.
 type entry struct {
-	Value   string `json:"value"`
-	Lamport int    `json:"lamport"`
-	Machine string `json:"machine"`
-	Seq     int    `json:"seq"`
+	Value       string `json:"value"`
+	Lamport     int    `json:"lamport"`
+	Machine     string `json:"machine"`
+	Seq         int    `json:"seq"`
+	Description string `json:"desc,omitempty"`
+	TS          int64  `json:"ts,omitempty"`
 }
 
 // snapshot is a folded namespace state: every live key with its provenance,
@@ -101,11 +110,20 @@ func For(store backend.Backend, name string, master *crypto.MasterKey, machine s
 // reads stay fast without anyone running `notenv compact` by hand.
 const DefaultCompactThreshold = 16
 
+// Meta is a live key's advisory metadata: what the secret is for and when its
+// winning write happened (wall-clock Unix seconds; 0 means the write predates
+// timestamps). Advisory means exactly that — nothing orders or trusts by it.
+type Meta struct {
+	Description string
+	TS          int64
+}
+
 // State is a folded namespace: the resolved secrets and any same-key conflicts
 // detected during the fold. lamport is the highest Lamport folded, the basis
 // for the next write's clock; segments is how many segment objects it folded.
 type State struct {
 	Secrets   map[string]string
+	Meta      map[string]Meta
 	Conflicts []Conflict
 	// Adoptable lists objects the fold trusted as honest in-flight writes (see
 	// classify) but the manifest does not record yet, with the entries a writer
@@ -161,6 +179,7 @@ func (n *Namespace) Fold(ctx context.Context) (*State, error) {
 	acc, maxLamport := accumulate(l)
 	state := &State{
 		Secrets:   map[string]string{},
+		Meta:      map[string]Meta{},
 		Adoptable: l.adoptable,
 		Prunable:  l.prunable,
 		Strays:    l.strays,
@@ -170,6 +189,7 @@ func (n *Namespace) Fold(ctx context.Context) (*State, error) {
 	for key, w := range acc {
 		if !w.deleted {
 			state.Secrets[key] = w.value
+			state.Meta[key] = Meta{Description: w.description, TS: w.ts}
 		}
 		if len(w.tied) > 1 {
 			state.Conflicts = append(state.Conflicts, w.conflict(key))
@@ -181,25 +201,38 @@ func (n *Namespace) Fold(ctx context.Context) (*State, error) {
 	return state, nil
 }
 
+// Write is one key change to append: a value (with optional advisory
+// metadata) or a deletion. TS is the write's wall-clock Unix seconds, supplied
+// by the caller so this package never reads a clock; 0 omits it.
+type Write struct {
+	Key         string
+	Value       string
+	Description string
+	TS          int64
+	Deleted     bool
+}
+
 // Append writes one key change as a new segment and returns the resulting
 // state, the object key the segment landed under (so the caller can remove the
 // write again if recording it in the manifest fails), and the manifest entry
 // that records it. prev is the fold this write builds on; its Lamport sets the
 // new clock.
-func (n *Namespace) Append(ctx context.Context, prev *State, seq int, key, value string, deleted bool) (*State, string, crypto.ManifestEntry, error) {
+func (n *Namespace) Append(ctx context.Context, prev *State, seq int, w Write) (*State, string, crypto.ManifestEntry, error) {
 	objKey, err := n.objectKey("seg-" + n.machine)
 	if err != nil {
 		return nil, "", crypto.ManifestEntry{}, err
 	}
 	seg := segment{
-		Version: formatVersion,
-		Object:  objKey,
-		Machine: n.machine,
-		Seq:     seq,
-		Lamport: prev.lamport + 1,
-		Key:     key,
-		Value:   value,
-		Deleted: deleted,
+		Version:     formatVersion,
+		Object:      objKey,
+		Machine:     n.machine,
+		Seq:         seq,
+		Lamport:     prev.lamport + 1,
+		Key:         w.Key,
+		Value:       w.Value,
+		Deleted:     w.Deleted,
+		Description: w.Description,
+		TS:          w.TS,
 	}
 	raw, err := json.Marshal(seg)
 	if err != nil {
@@ -571,36 +604,49 @@ func putVerified(ctx context.Context, store backend.Backend, key string, sealed 
 
 // winner tracks the leading write for a key during a fold.
 type winner struct {
-	value   string
-	machine string
-	seq     int
-	lamport int
-	deleted bool
-	tied    map[string]struct{} // machines that wrote at the leading Lamport
+	value       string
+	machine     string
+	seq         int
+	lamport     int
+	deleted     bool
+	description string
+	ts          int64
+	tied        map[string]struct{} // machines that wrote at the leading Lamport
+}
+
+// lead replaces the winner's write wholesale; metadata rides the winning write.
+func (w *winner) lead(e entry, deleted bool) {
+	w.value, w.machine, w.seq, w.lamport, w.deleted = e.Value, e.Machine, e.Seq, e.Lamport, deleted
+	w.description, w.ts = e.Description, e.TS
 }
 
 // accumulate replays a namespace's snapshots and segments into the winning
 // write per key (last write wins by Lamport, then machine, then Seq) and
-// returns the highest Lamport seen.
+// returns the highest Lamport seen. Writes travel as entries: a snapshot's
+// entries directly, a segment reshaped into one.
 func accumulate(l *loaded) (map[string]*winner, int) {
 	acc := map[string]*winner{}
 	maxLamport := 0
-	apply := func(key, value, machine string, seq, lamport int, deleted bool) {
-		if lamport > maxLamport {
-			maxLamport = lamport
+	apply := func(key string, e entry, deleted bool) {
+		if e.Lamport > maxLamport {
+			maxLamport = e.Lamport
 		}
 		w := acc[key]
 		if w == nil {
-			acc[key] = &winner{value: value, machine: machine, seq: seq, lamport: lamport, deleted: deleted, tied: map[string]struct{}{machine: {}}}
+			w = &winner{tied: map[string]struct{}{}}
+			w.lead(e, deleted)
+			w.tied[e.Machine] = struct{}{}
+			acc[key] = w
 			return
 		}
 		switch {
-		case lamport > w.lamport:
-			*w = winner{value: value, machine: machine, seq: seq, lamport: lamport, deleted: deleted, tied: map[string]struct{}{machine: {}}}
-		case lamport == w.lamport:
-			w.tied[machine] = struct{}{}
-			if leads(machine, seq, w.machine, w.seq) {
-				w.value, w.machine, w.seq, w.deleted = value, machine, seq, deleted
+		case e.Lamport > w.lamport:
+			w.lead(e, deleted)
+			w.tied = map[string]struct{}{e.Machine: {}}
+		case e.Lamport == w.lamport:
+			w.tied[e.Machine] = struct{}{}
+			if leads(e.Machine, e.Seq, w.machine, w.seq) {
+				w.lead(e, deleted)
 			}
 		}
 	}
@@ -612,11 +658,11 @@ func accumulate(l *loaded) (map[string]*winner, int) {
 			maxLamport = s.Lamport
 		}
 		for key, e := range s.Entries {
-			apply(key, e.Value, e.Machine, e.Seq, e.Lamport, false)
+			apply(key, e, false)
 		}
 	}
 	for _, s := range l.segments {
-		apply(s.Key, s.Value, s.Machine, s.Seq, s.Lamport, s.Deleted)
+		apply(s.Key, entry{Value: s.Value, Lamport: s.Lamport, Machine: s.Machine, Seq: s.Seq, Description: s.Description, TS: s.TS}, s.Deleted)
 	}
 	return acc, maxLamport
 }
@@ -640,7 +686,7 @@ func foldSnapshot(l *loaded) snapshot {
 		if w.deleted {
 			continue
 		}
-		s.Entries[key] = entry{Value: w.value, Lamport: w.lamport, Machine: w.machine, Seq: w.seq}
+		s.Entries[key] = entry{Value: w.value, Lamport: w.lamport, Machine: w.machine, Seq: w.seq, Description: w.description, TS: w.ts}
 	}
 	return s
 }
@@ -671,12 +717,15 @@ func (w *winner) conflict(key string) Conflict {
 // The classification slices are dropped on purpose — the caller's manifest
 // update consumes them alongside the new segment's own entry.
 func (s *State) with(seg segment) *State {
-	next := &State{Secrets: make(map[string]string, len(s.Secrets)), lamport: seg.Lamport}
+	next := &State{Secrets: make(map[string]string, len(s.Secrets)), Meta: make(map[string]Meta, len(s.Meta)), lamport: seg.Lamport}
 	maps.Copy(next.Secrets, s.Secrets)
+	maps.Copy(next.Meta, s.Meta)
 	if seg.Deleted {
 		delete(next.Secrets, seg.Key)
+		delete(next.Meta, seg.Key)
 	} else {
 		next.Secrets[seg.Key] = seg.Value
+		next.Meta[seg.Key] = Meta{Description: seg.Description, TS: seg.TS}
 	}
 	for _, c := range s.Conflicts {
 		if c.Key != seg.Key {

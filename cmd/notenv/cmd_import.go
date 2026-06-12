@@ -97,7 +97,7 @@ func vetImport(a *app, pairs []dotenv.Pair) (items []importItem, skipped []strin
 			skipped = append(skipped, key)
 			continue
 		}
-		items = append(items, importItem{key: key, storageKey: a.contract.StorageKey(key), value: p.Value})
+		items = append(items, importItem{key: key, storageKey: a.storageKey(key), value: p.Value})
 	}
 	sort.Strings(skipped)
 	return items, skipped, nil
@@ -114,6 +114,10 @@ func reportDryRun(file string, items []importItem, skipped []string) {
 }
 
 func runImport(cmd *cobra.Command, a *app, file string, items []importItem, skipped []string) error {
+	// --dry-run never reaches here, so a read-only storage still vets a file.
+	if err := a.requireWritable("import secrets"); err != nil {
+		return err
+	}
 	if len(items) == 0 {
 		return errors.New("every assignment was empty; nothing to import")
 	}
@@ -137,22 +141,28 @@ func runImport(cmd *cobra.Command, a *app, file string, items []importItem, skip
 	}); err != nil {
 		return err
 	}
-	a.cacheFolded(view.mk, updated.Secrets)
+	a.cacheFolded(view.mk, updated)
 	reportConflicts(updated.Conflicts)
 	a.maybeCompact(ctx, view.mk, state.SegmentCount()+len(items)-1)
 
-	for _, it := range items {
-		if _, declared := a.contract.Secrets[it.key]; declared {
-			continue
-		}
-		if err := contract.Declare(a.contractPath, it.key); err != nil {
-			ui.Warnf("could not declare %s in %s: %v; add it by hand or `notenv run` won't inject it", it.key, contract.FileName, err)
+	if a.contract != nil {
+		for _, it := range items {
+			if _, declared := a.contract.Secrets[it.key]; declared {
+				continue
+			}
+			if err := contract.Declare(a.contractPath, it.key); err != nil {
+				ui.Warnf("could not declare %s in %s: %v; add it by hand or `notenv run` won't inject it", it.key, contract.FileName, err)
+			}
 		}
 	}
 	for _, key := range skipped {
 		ui.Warnf("skipped %s: empty value", key)
 	}
-	ui.Successf("imported %d secrets into namespace %q (%d new, %d updated); keys declared in %s", len(items), a.namespace, len(items)-updatedKeys, updatedKeys, contract.FileName)
+	if a.contract != nil {
+		ui.Successf("imported %d secrets into namespace %q (%d new, %d updated); keys declared in %s", len(items), a.namespace, len(items)-updatedKeys, updatedKeys, contract.FileName)
+	} else {
+		ui.Successf("imported %d secrets into namespace %q (%d new, %d updated)", len(items), a.namespace, len(items)-updatedKeys, updatedKeys)
+	}
 	ui.Notef("every value is now encrypted in your vault — you can delete %s", file)
 	return nil
 }

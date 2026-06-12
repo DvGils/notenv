@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/contract"
@@ -425,5 +426,122 @@ func TestDefaultVaultDirIsNamePartitioned(t *testing.T) {
 	}
 	if filepath.Base(a) != "work" {
 		t.Fatalf("vault dir %q must end in its name", a)
+	}
+}
+
+// TestResolveNamespace: an explicit namespace combines with a selected
+// storage into a full Effective — no contract, no directory — and an invalid
+// namespace is refused before any storage is touched.
+func TestResolveNamespace(t *testing.T) {
+	u := &config.User{
+		Default: "personal",
+		Storage: map[string]config.StorageEntry{"personal": {Remote: "b2", Base: "p"}},
+	}
+	eff, err := config.ResolveNamespace(u, "", "ops")
+	if err != nil {
+		t.Fatalf("ResolveNamespace: %v", err)
+	}
+	if eff.StorageName != "personal" || eff.Namespace != "ops" {
+		t.Fatalf("resolved %+v, want personal/ops", eff)
+	}
+	if eff.CacheTTL != config.DefaultCacheTTL || eff.BlobCacheTTL != config.DefaultBlobCacheTTL {
+		t.Fatalf("TTLs not defaulted: %+v", eff)
+	}
+	if _, err := config.ResolveNamespace(u, "", "../evil"); err == nil {
+		t.Fatal("an invalid namespace must be refused")
+	}
+}
+
+// TestNamespaceAcceptance: acceptance is per (scope, namespace), persists,
+// and is dropped with the scope's trust state by ForgetScope — including for
+// a scope that never pinned a vault.
+func TestNamespaceAcceptance(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	ok, err := config.NamespaceAccepted("scopeA", "ops")
+	if err != nil || ok {
+		t.Fatalf("fresh state: accepted=%v err=%v, want false", ok, err)
+	}
+	if err := config.AcceptNamespace("scopeA", "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := config.NamespaceAccepted("scopeA", "ops"); !ok {
+		t.Fatal("acceptance must persist")
+	}
+	if ok, _ := config.NamespaceAccepted("scopeA", "other"); ok {
+		t.Fatal("acceptance must be per namespace")
+	}
+	if ok, _ := config.NamespaceAccepted("scopeB", "ops"); ok {
+		t.Fatal("acceptance must be per scope")
+	}
+	if err := config.ForgetScope("scopeA"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := config.NamespaceAccepted("scopeA", "ops"); ok {
+		t.Fatal("ForgetScope must drop the scope's namespace acceptances")
+	}
+}
+
+// TestReadOnlyStorageEntry: read_only round-trips through the rendered config
+// and lands on the Effective for both resolution paths.
+func TestReadOnlyStorageEntry(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if _, err := config.UpsertStorage("ro", config.StorageEntry{Remote: "b2", Base: "x", ReadOnly: true}, false); err != nil {
+		t.Fatal(err)
+	}
+	u, err := config.LoadUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eff, err := config.ResolveStorage(u, "ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eff.ReadOnly {
+		t.Fatal("read_only must survive the config round-trip")
+	}
+	eff, err = config.ResolveNamespace(u, "ro", "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eff.ReadOnly {
+		t.Fatal("ResolveNamespace must carry read_only")
+	}
+}
+
+// TestReadOnlyEnv: NOTENV_READONLY counts for any value but "" and "0".
+func TestReadOnlyEnv(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "0": false, "1": true, "true": true} {
+		t.Setenv("NOTENV_READONLY", value)
+		if got := config.ReadOnlyEnv(); got != want {
+			t.Fatalf("NOTENV_READONLY=%q: got %v, want %v", value, got, want)
+		}
+	}
+}
+
+// TestLocalVaultsNeverBlobCache: a local vault's reads must always verify
+// the manifest, so its Effective disables the ciphertext cache even when the
+// entry sets cache_ttl; remote storages keep honoring it.
+func TestLocalVaultsNeverBlobCache(t *testing.T) {
+	u := &config.User{
+		Default: "local",
+		Storage: map[string]config.StorageEntry{
+			"local":  {Path: "/tmp/vault", CacheTTL: "2h"},
+			"remote": {Remote: "b2", Base: "x", CacheTTL: "2h"},
+		},
+	}
+	eff, err := config.ResolveNamespace(u, "local", "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eff.BlobCacheTTL != 0 {
+		t.Fatalf("local BlobCacheTTL = %v, want 0", eff.BlobCacheTTL)
+	}
+	eff, err = config.ResolveNamespace(u, "remote", "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eff.BlobCacheTTL != 2*time.Hour {
+		t.Fatalf("remote BlobCacheTTL = %v, want 2h", eff.BlobCacheTTL)
 	}
 }

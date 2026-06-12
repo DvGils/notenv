@@ -32,10 +32,12 @@ storage as a whole, independent of any single project.`,
 }
 
 // headerTarget is a storage opened for header operations together with its
-// local-state scope (key cache, rollback pins).
+// local-state scope (key cache, rollback pins) and, when writes are refused,
+// the reason (readOnlyReason).
 type headerTarget struct {
 	vaultStorage
-	scope string
+	scope    string
+	readOnly string
 }
 
 // loadHeaderStore builds the storage backend for header operations. The header
@@ -69,7 +71,7 @@ func loadHeaderStore() (*headerTarget, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &headerTarget{vaultStorage: openStorage(eff), scope: eff.Scope()}, nil
+	return &headerTarget{vaultStorage: openStorage(eff), scope: eff.Scope(), readOnly: readOnlyReason(eff.StorageName, eff.ReadOnly)}, nil
 }
 
 // trustHeader is the read-side integrity check run after every unlock: it
@@ -152,6 +154,8 @@ func recacheMaster(store *headerTarget, mk *crypto.MasterKey) {
 	cacheMaster(cache, scope, mk, ttl)
 }
 
+var keyListJSON bool
+
 var keyListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List the key slots in the storage header",
@@ -176,9 +180,45 @@ var keyListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if keyListJSON {
+			return printJSON(keyListOutput(header))
+		}
 		printSlots(header)
 		return nil
 	},
+}
+
+// keyListJSONOutput is the frozen shape of `key list --json`. Slots carry
+// their index because the rm/set-primary selectors accept one; public_key
+// appears only on recipient slots (a passphrase slot's key is internal).
+// Extensions are additive fields only.
+type keyListJSONOutput struct {
+	VaultID  string       `json:"vault_id"`
+	Revision int          `json:"revision"`
+	Slots    []slotOutput `json:"slots"`
+}
+
+type slotOutput struct {
+	Index     int    `json:"index"`
+	Name      string `json:"name,omitempty"`
+	Type      string `json:"type"`
+	Primary   bool   `json:"primary,omitempty"`
+	PublicKey string `json:"public_key,omitempty"`
+}
+
+func keyListOutput(h *crypto.Header) keyListJSONOutput {
+	out := keyListJSONOutput{VaultID: h.VaultID, Revision: h.Revision, Slots: make([]slotOutput, 0, len(h.Slots))}
+	for i, slot := range h.Slots {
+		s := slotOutput{Index: i, Name: slot.Name, Type: slot.Type, Primary: slot.Primary}
+		if s.Type == "" {
+			s.Type = crypto.SlotPassphrase
+		}
+		if slot.Type == crypto.SlotRecipient {
+			s.PublicKey = slot.PublicKey
+		}
+		out.Slots = append(out.Slots, s)
+	}
+	return out
 }
 
 // printSlots renders the slots as a table. The fingerprint column shows a
@@ -229,6 +269,9 @@ recover a prior object version through the remote's version history instead.`,
 		if err != nil {
 			return err
 		}
+		if store.readOnly != "" {
+			return fmt.Errorf("%s; refusing to restore the header (a recovery is still a storage write)", store.readOnly)
+		}
 		if err := ui.Spin("Restoring header from backup", func() error {
 			return keymgmt.RestoreBackup(cmd.Context(), store)
 		}); err != nil {
@@ -256,8 +299,12 @@ type unlocked struct {
 // unlockHeader reads and unlocks the header for a mutating operation. Unlike
 // most commands it does not use the master-key cache: a key operation needs to
 // know which slot the caller holds and to hold the credential itself for the
-// post-write verification, so it always prompts.
+// post-write verification, so it always prompts. Every mutating key command
+// funnels through here, so this is also where read-only policy refuses them.
 func unlockHeader(ctx context.Context, store *headerTarget) (*unlocked, error) {
+	if store.readOnly != "" {
+		return nil, fmt.Errorf("%s; refusing to modify the vault header", store.readOnly)
+	}
 	if err := store.Preflight(ctx); err != nil {
 		return nil, err
 	}
@@ -755,6 +802,7 @@ func init() {
 	keyAddCmd.Flags().StringVar(&keyAddRecipient, "recipient", "", "add a teammate by their age1… public key")
 	keyAddCmd.Flags().StringVar(&keyAddName, "name", "", "name for the new slot (passphrase slots default to user@host)")
 	keyGenIdentityCmd.Flags().BoolVar(&keyGenIdentityForce, "force", false, "overwrite an existing identity (the old one is lost forever)")
+	keyListCmd.Flags().BoolVar(&keyListJSON, "json", false, "machine-readable output: vault id, revision, slots")
 	keyTrustCmd.Flags().BoolVar(&keyTrustYes, "yes", false, "pin without the interactive confirmation (for scripts; you have verified the change out of band)")
 	keyForgetCmd.Flags().BoolVar(&keyForgetForce, "force", false, "forget without the interactive confirmation")
 	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyGenIdentityCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd)

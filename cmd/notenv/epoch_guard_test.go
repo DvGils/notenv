@@ -89,7 +89,7 @@ func TestAppendGuardedWritesAndRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := a.appendGuarded(ctx, view, prev, 1, "K", "v", false)
+	updated, err := a.appendGuarded(ctx, view, prev, 1, secrets.Write{Key: "K", Value: "v"})
 	if err != nil {
 		t.Fatalf("appendGuarded: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestAppendGuardedRollsBackOnEpochChange(t *testing.T) {
 	}
 	newMK := rotateHeader(t, store) // the flip lands before our write records itself
 
-	if _, err := a.appendGuarded(ctx, view, prev, 1, "K", "v", false); err == nil {
+	if _, err := a.appendGuarded(ctx, view, prev, 1, secrets.Write{Key: "K", Value: "v"}); err == nil {
 		t.Fatal("appendGuarded must fail when the master changed mid-write")
 	}
 	if keys, _ := store.List(ctx, "proj/"); len(keys) != 0 {
@@ -144,5 +144,48 @@ func TestAppendGuardedRollsBackOnEpochChange(t *testing.T) {
 	// The namespace still folds cleanly for a holder of the new master.
 	if _, err := secrets.For(store, "proj", newMK, "m2", nil).Fold(ctx); err != nil {
 		t.Fatalf("namespace must stay clean for the new master: %v", err)
+	}
+}
+
+// TestImportCarriesDescriptionsForward: a batch import overwrites values, not
+// what the keys mean — each write re-carries the key's existing description.
+func TestImportCarriesDescriptionsForward(t *testing.T) {
+	ctx := context.Background()
+	a, _, mk := guardApp(t)
+
+	view, err := a.view(ctx, mk)
+	if err != nil {
+		t.Fatalf("view: %v", err)
+	}
+	prev, err := a.namespaceFor(view).Fold(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev, err = a.appendGuarded(ctx, view, prev, 1, secrets.Write{Key: "DB_URL", Value: "old", Description: "primary DSN", TS: 100})
+	if err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+
+	view, err = a.view(ctx, mk) // re-read: the batch records against the manifest holding the seed
+	if err != nil {
+		t.Fatalf("view: %v", err)
+	}
+	prev, err = a.namespaceFor(view).Fold(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := []importItem{
+		{key: "DB_URL", storageKey: "DB_URL", value: "new"},
+		{key: "FRESH", storageKey: "FRESH", value: "x"},
+	}
+	updated, err := a.appendGuardedBatch(ctx, view, prev, items)
+	if err != nil {
+		t.Fatalf("appendGuardedBatch: %v", err)
+	}
+	if got := updated.Meta["DB_URL"].Description; got != "primary DSN" {
+		t.Fatalf("DB_URL description = %q, want carried forward", got)
+	}
+	if got := updated.Meta["FRESH"].Description; got != "" {
+		t.Fatalf("FRESH description = %q, want empty", got)
 	}
 }

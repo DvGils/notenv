@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -16,7 +17,10 @@ import (
 	"github.com/DvGils/notenv/internal/ui"
 )
 
-var setStdin bool
+var (
+	setStdin       bool
+	setDescription string
+)
 
 var setCmd = &cobra.Command{
 	Use:   "set KEY",
@@ -32,6 +36,9 @@ var setCmd = &cobra.Command{
 		}
 		a, err := loadApp(cmd.Context())
 		if err != nil {
+			return err
+		}
+		if err := a.requireWritable("set a secret"); err != nil {
 			return err
 		}
 
@@ -55,17 +62,26 @@ var setCmd = &cobra.Command{
 			return err
 		}
 
+		storageKey := a.storageKey(key)
+		// A set without --description re-states the value, not what the key
+		// means: the existing description rides along. --description "" clears.
+		desc := state.Meta[storageKey].Description
+		if cmd.Flags().Changed("description") {
+			desc = setDescription
+		}
+		w := secrets.Write{Key: storageKey, Value: value, Description: desc, TS: time.Now().Unix()}
+
 		var updated *secrets.State
 		if err := ui.Spin("Uploading encrypted segment", func() error {
 			var aerr error
-			updated, aerr = a.appendGuarded(ctx, view, state, seq, a.contract.StorageKey(key), value, false)
+			updated, aerr = a.appendGuarded(ctx, view, state, seq, w)
 			return aerr
 		}); err != nil {
 			return err
 		}
 		// Refresh the local cache with the new folded state, so the next `run`
 		// on this machine is instant and coherent.
-		a.cacheFolded(view.mk, updated.Secrets)
+		a.cacheFolded(view.mk, updated)
 		ui.Successf("%s set in namespace %q", key, a.namespace)
 		// Report from the post-write state: this write settles its own key's
 		// conflict, so only genuinely unresolved ones surface.
@@ -73,11 +89,14 @@ var setCmd = &cobra.Command{
 		a.maybeCompact(ctx, view.mk, state.SegmentCount())
 
 		// Convenience: keep the committed contract in sync with reality.
-		if _, declared := a.contract.Secrets[key]; !declared {
-			if err := contract.Declare(a.contractPath, key); err != nil {
-				ui.Warnf("could not declare %s in %s: %v; add it by hand or `notenv run` won't inject it", key, contract.FileName, err)
-			} else {
-				ui.Successf("declared %s in %s (required); commit it", key, contract.FileName)
+		// Projectless writes have no contract to sync.
+		if a.contract != nil {
+			if _, declared := a.contract.Secrets[key]; !declared {
+				if err := contract.Declare(a.contractPath, key); err != nil {
+					ui.Warnf("could not declare %s in %s: %v; add it by hand or `notenv run` won't inject it", key, contract.FileName, err)
+				} else {
+					ui.Successf("declared %s in %s (required); commit it", key, contract.FileName)
+				}
 			}
 		}
 		return nil
@@ -108,4 +127,5 @@ func readValue(key string) (string, error) {
 
 func init() {
 	setCmd.Flags().BoolVar(&setStdin, "stdin", false, "read the value from stdin (for multiline or piped values)")
+	setCmd.Flags().StringVar(&setDescription, "description", "", "what this secret is and how to use it, shown by `list` (omit to keep the current one; \"\" clears)")
 }

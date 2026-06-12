@@ -201,7 +201,7 @@ func (s *rotSim) guardedWrite(m *rotMachine, key, value string, deleted, crash b
 	}
 	m.seq++
 	ns := For(s.v.cv, "proj", m.mk, m.id, nil) // Append never reads the manifest
-	updated, objKey, entry, err := ns.Append(s.ctx, m.view, m.seq, key, value, deleted)
+	updated, objKey, entry, err := ns.Append(s.ctx, m.view, m.seq, Write{Key: key, Value: value, Deleted: deleted})
 	if err != nil {
 		return // interrupted upload: nothing landed
 	}

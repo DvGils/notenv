@@ -23,6 +23,9 @@ lost. Avoid running two compactions against the same namespace at once.`,
 		if err != nil {
 			return err
 		}
+		if err := a.requireWritable("compact the namespace (it rewrites and deletes objects)"); err != nil {
+			return err
+		}
 		ctx := cmd.Context()
 		if _, err := a.withMaster(ctx, func(mk *crypto.MasterKey) error {
 			return ui.Spin(fmt.Sprintf("Compacting namespace %q", a.namespace), func() error {

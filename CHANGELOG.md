@@ -4,7 +4,65 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
-## 0.10.0 (unreleased)
+## 0.11.0 (unreleased)
+
+The agent-surface release. Software that uses your vault on your behalf — coding agents,
+MCP clients, CI — can now discover what exists, address it from anywhere, parse what it
+reads, and be constrained to read-only; and the payload format takes its last change
+before the v1 freeze.
+
+### Added
+
+- **Per-secret descriptions and write timestamps.** `notenv set KEY --description "…"`
+  records what a secret is and how to use it; every write now also carries an advisory
+  wall-clock timestamp (informational only — Lamport order remains the truth). `list`
+  shows both in a table on a terminal; piped output stays bare names, one per line.
+  A `set` without `--description` carries the existing note forward (`--description ""`
+  clears); imports carry notes forward too. Both fields survive compaction and ride the
+  winning write under conflicts. This is deliberately the **last payload change before
+  the freeze** — the fields are advisory and omitted when empty, so the format version
+  does not bump and 0.10 vaults are read unchanged.
+- **Projectless vaults: a global `--namespace` flag.** `notenv run --storage b2
+  --namespace ops -- psql` works from any directory — no `notenv.toml`, no checkout.
+  The flag bypasses the contract entirely: `run` injects every secret in the namespace
+  under its storage key, and the contract-sync conveniences don't apply. First use of a
+  namespace that already holds secrets is confirmed once per (storage, namespace) and
+  recorded user-level (there is no checkout to pin in); `notenv key forget` drops those
+  acceptances with the rest of a storage's trust state.
+- **Read-only mode (policy).** `read_only = true` on a storage entry, or
+  `NOTENV_READONLY=1` for the whole process, refuses every mutating command — set,
+  unset, import, compact, the mutating `key` family, vault copy — and refuses to create
+  a vault on virgin storage from a read command. Honestly framed: this constrains
+  cooperating clients (an honest agent having an accident), it does not contain
+  adversaries — anyone who can decrypt can forge writes with their own tooling.
+  *Enforced* read-only is the storage credential's job: put a read-only B2 application
+  key behind the rclone remote, or read-only directory permissions on a local vault.
+- **`--json` on `list` and `key list`.** Frozen, additively-extensible shapes designed
+  for machine consumers: `list --json` gives `{namespace, secrets: [{name, description?,
+  modified?}]}` (never values); `key list --json` gives `{vault_id, revision, slots}`.
+  Golden tests pin both shapes.
+- **`run` exit codes agents can read** (docker's convention): the child's own code
+  passes through untouched; **125** is notenv's own failure, **126** the command was
+  found but cannot run, **127** the command was not found. Until now notenv's failures
+  exited 1, indistinguishable from a child that exited 1.
+- **`notenv mcp` (experimental).** A Model Context Protocol server over stdio with two
+  tools: `list_secrets` (names, descriptions, modified times — never values) and
+  `run_with_secrets` (inject and execute; returns exit code and output with every
+  injected value masked). An MCP-driven agent on a machine with no checkout can discover
+  secrets, use them, and never see one. Hand-rolled minimal protocol: zero new
+  dependencies. Experimental: the tool surface may still change.
+
+### Changed
+
+- **Local vaults no longer cache folded blobs.** The blob cache exists to skip a network
+  round-trip, and its warm path skips manifest verification — a trade justified against
+  a network, not against the same disk. A local vault now verifies the manifest on every
+  read and keeps no second ciphertext copy; `cache_ttl` is remote-only. (The master-key
+  cache is unchanged.)
+- The local folded-blob cache layout is now versioned and carries the secret metadata;
+  blobs cached by earlier versions are silently re-fetched once.
+
+## 0.10.0
 
 The adoption release. Until now the first secret was twenty minutes away — install rclone,
 make a bucket, mint credentials, walk a config wizard. It is now three commands on a clean

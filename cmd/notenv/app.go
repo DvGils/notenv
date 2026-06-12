@@ -18,11 +18,14 @@ import (
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keymgmt"
 	"github.com/DvGils/notenv/internal/keyring"
+	"github.com/DvGils/notenv/internal/runner"
 	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
 // app wires contract, config, and backend together for one command invocation.
+// contract is nil in projectless mode (--namespace): the vault is addressed
+// directly, with no checkout to declare, rename, or narrow anything.
 type app struct {
 	contract     *contract.File
 	contractPath string
@@ -33,9 +36,35 @@ type app struct {
 	blobs        blobcache.Cache
 	cacheScope   string // length-prefixed remote+base (config.CacheScope): one key per storage base
 	cacheTTL     time.Duration
+	readOnly     string // non-empty: why mutating commands are refused (requireWritable)
+}
+
+// readOnlyReason returns why writes to a storage are refused, or "" when
+// writable: the per-storage policy or the process-wide env switch.
+func readOnlyReason(storageName string, readOnly bool) string {
+	if readOnly {
+		return fmt.Sprintf("storage %q is read-only (read_only = true in the machine config)", storageName)
+	}
+	if config.ReadOnlyEnv() {
+		return "NOTENV_READONLY is set"
+	}
+	return ""
+}
+
+// requireWritable refuses a mutating command against read-only storage. The
+// refusal is policy for cooperating clients, not containment: it exists so an
+// honest agent can't destroy anything by accident.
+func (a *app) requireWritable(action string) error {
+	if a.readOnly == "" {
+		return nil
+	}
+	return fmt.Errorf("%s; refusing to %s", a.readOnly, action)
 }
 
 func loadApp(ctx context.Context) (*app, error) {
+	if namespaceFlag != "" {
+		return projectlessApp(ctx, storageFlag, namespaceFlag)
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -85,7 +114,92 @@ func loadApp(ctx context.Context) (*app, error) {
 		blobs:        blobcache.New(eff.BlobCacheTTL),
 		cacheScope:   eff.Scope(),
 		cacheTTL:     eff.CacheTTL,
+		readOnly:     readOnlyReason(eff.StorageName, eff.ReadOnly),
 	}, nil
+}
+
+// projectlessApp is loadApp for an explicitly named namespace (--namespace,
+// or a per-call MCP argument): the vault addressed directly. Storage selection
+// is the explicit name or the machine default — there is no checkout to carry
+// a binding — and first use of a namespace that already holds secrets is
+// confirmed against the user-level acceptance record instead of a local pin.
+func projectlessApp(ctx context.Context, storageName, namespace string) (*app, error) {
+	user, err := config.LoadUser()
+	if err != nil {
+		return nil, err
+	}
+	eff, err := config.ResolveNamespace(user, storageName, namespace)
+	if err != nil {
+		return nil, err
+	}
+	store := openStorage(eff)
+	if err := guardFlagNamespace(ctx, store, eff.Scope(), eff.Namespace); err != nil {
+		return nil, err
+	}
+	machine, err := config.MachineID()
+	if err != nil {
+		return nil, err
+	}
+	return &app{
+		namespace:  eff.Namespace,
+		machine:    machine,
+		store:      store,
+		cache:      keyring.DefaultCache(),
+		blobs:      blobcache.New(eff.BlobCacheTTL),
+		cacheScope: eff.Scope(),
+		cacheTTL:   eff.CacheTTL,
+		readOnly:   readOnlyReason(eff.StorageName, eff.ReadOnly),
+	}, nil
+}
+
+// storageKey maps a declared env name to the key it is stored under; without
+// a contract there is nothing to rename, so the name is the key.
+func (a *app) storageKey(key string) string {
+	if a.contract != nil {
+		return a.contract.StorageKey(key)
+	}
+	return key
+}
+
+// buildEnv resolves the env the child runs with: the contract's declared vars
+// when a project is loaded, otherwise every secret in the namespace under its
+// storage key — a projectless run has no contract to narrow, rename, or
+// require anything.
+func (a *app) buildEnv(base []string, secretMap map[string]string) ([]string, error) {
+	if a.contract != nil {
+		return a.contract.BuildEnv(base, secretMap)
+	}
+	env := base
+	for _, key := range slices.Sorted(maps.Keys(secretMap)) {
+		if !contract.ValidEnvName(key) {
+			ui.Warnf("skipping %q: not a valid environment variable name", key)
+			continue
+		}
+		env = append(env, key+"="+secretMap[key])
+	}
+	return env, nil
+}
+
+// injectedSecrets pairs each env var notenv injects with its value — the exact
+// strings the output masker scrubs. With a contract, only resolved declared
+// vars count (required-but-missing ones already failed buildEnv); without one,
+// everything buildEnv injects.
+func (a *app) injectedSecrets(secretMap map[string]string) []runner.Secret {
+	var out []runner.Secret
+	if a.contract != nil {
+		for envKey := range a.contract.Secrets {
+			if value, ok := secretMap[a.contract.StorageKey(envKey)]; ok {
+				out = append(out, runner.Secret{Name: envKey, Value: value})
+			}
+		}
+		return out
+	}
+	for key, value := range secretMap {
+		if contract.ValidEnvName(key) {
+			out = append(out, runner.Secret{Name: key, Value: value})
+		}
+	}
+	return out
 }
 
 // vaultView is one verified read of the vault header: the trust root a
@@ -150,12 +264,12 @@ func (a *app) vault() (keymgmt.Vault, error) {
 // it would poison every fold once the old master is gone — drops the now-stale
 // local caches, and reports what happened. The user re-runs the command, which
 // unlocks the new master (running the pin checks) and writes cleanly.
-func (a *app) appendGuarded(ctx context.Context, view *vaultView, prev *secrets.State, seq int, key, value string, deleted bool) (*secrets.State, error) {
+func (a *app) appendGuarded(ctx context.Context, view *vaultView, prev *secrets.State, seq int, w secrets.Write) (*secrets.State, error) {
 	v, err := a.vault()
 	if err != nil {
 		return nil, err
 	}
-	updated, objKey, entry, err := a.namespaceFor(view).Append(ctx, prev, seq, key, value, deleted)
+	updated, objKey, entry, err := a.namespaceFor(view).Append(ctx, prev, seq, w)
 	if err != nil {
 		return nil, err
 	}
@@ -192,13 +306,17 @@ func (a *app) appendGuardedBatch(ctx context.Context, view *vaultView, prev *sec
 		}
 	}
 	delta := crypto.ManifestDelta{Add: map[string]crypto.ManifestEntry{}, Prune: prev.Prunable}
+	now := time.Now().Unix()
 	for _, it := range items {
 		seq, err := config.NextSeq(a.cacheScope, a.namespace)
 		if err != nil {
 			rollback()
 			return nil, err
 		}
-		next, objKey, entry, err := ns.Append(ctx, state, seq, it.storageKey, it.value, false)
+		// An import overwrites values, not what the keys mean: each write
+		// carries the key's existing description forward.
+		w := secrets.Write{Key: it.storageKey, Value: it.value, Description: prev.Meta[it.storageKey].Description, TS: now}
+		next, objKey, entry, err := ns.Append(ctx, state, seq, w)
 		if err != nil {
 			rollback()
 			return nil, err
@@ -275,11 +393,18 @@ func reportStrays(state *secrets.State) {
 	}
 }
 
+// resolved is a namespace's secrets as run/list consume them: the values plus
+// each live key's advisory metadata.
+type resolved struct {
+	secrets map[string]string
+	meta    map[string]secrets.Meta
+}
+
 // fetchSecrets resolves the namespace's secrets for run/list. It serves a warm,
 // fully-local copy from the folded-blob cache when both the blob and the master
 // are cached; otherwise it folds from storage and repopulates the cache.
 // refresh skips the cache to pull another machine's changes.
-func (a *app) fetchSecrets(ctx context.Context, refresh bool) (map[string]string, error) {
+func (a *app) fetchSecrets(ctx context.Context, refresh bool) (*resolved, error) {
 	if !refresh {
 		if cached, ok := a.cachedSecrets(); ok {
 			return cached, nil
@@ -292,15 +417,15 @@ func (a *app) fetchSecrets(ctx context.Context, refresh bool) (map[string]string
 	if !state.HasHistory() {
 		return nil, fmt.Errorf("no secrets stored yet for namespace %q; use `notenv set KEY` first", a.namespace)
 	}
-	a.cacheFolded(view.mk, state.Secrets)
+	a.cacheFolded(view.mk, state)
 	reportConflicts(state.Conflicts)
-	return state.Secrets, nil
+	return &resolved{secrets: state.Secrets, meta: state.Meta}, nil
 }
 
 // cachedSecrets opens the warm folded-blob cache with no network: it needs both
 // the blob and the master already cached, and is a clean miss if either is
 // absent or stale.
-func (a *app) cachedSecrets() (map[string]string, bool) {
+func (a *app) cachedSecrets() (*resolved, bool) {
 	cached, ok := a.blobs.Get(a.cacheScope, a.namespace)
 	if !ok {
 		return nil, false
@@ -317,18 +442,18 @@ func (a *app) cachedSecrets() (map[string]string, bool) {
 	if err != nil {
 		return nil, false
 	}
-	secrets, err := decodePayload(plaintext)
+	res, err := decodePayload(plaintext)
 	if err != nil {
 		return nil, false
 	}
-	return secrets, true
+	return res, true
 }
 
 // cacheFolded stores the folded secrets as a single sealed blob, so the next
 // run on this machine is instant. Best-effort: a cache failure never fails the
 // command.
-func (a *app) cacheFolded(mk *crypto.MasterKey, folded map[string]string) {
-	plaintext, err := encodePayload(folded)
+func (a *app) cacheFolded(mk *crypto.MasterKey, state *secrets.State) {
+	plaintext, err := encodePayload(state)
 	if err != nil {
 		return
 	}
@@ -404,20 +529,38 @@ func (a *app) master(ctx context.Context) (*crypto.MasterKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	mk, _, err := ensureMaster(ctx, v, a.cache, a.cacheScope, a.cacheTTL)
+	mk, _, err := ensureMaster(ctx, v, a.cache, a.cacheScope, a.cacheTTL, a.readOnly)
 	return mk, err
 }
 
-// The blob payload is a flat map[string]string, JSON-serialized, encrypted
-// as one age message.
-func decodePayload(plaintext []byte) (map[string]string, error) {
-	secrets := map[string]string{}
-	if err := json.Unmarshal(plaintext, &secrets); err != nil {
-		return nil, fmt.Errorf("corrupt payload: %w", err)
-	}
-	return secrets, nil
+// cachePayloadVersion stamps the local folded-blob payload. The blob is
+// machine-local with a short TTL, so a version mismatch is just a cache miss —
+// but the check must be exact: without it, a blob in another layout could
+// decode as an empty (or wrong) secret set instead of missing.
+const cachePayloadVersion = 1
+
+// cachePayload is the folded-blob layout: the secrets and their metadata,
+// JSON-serialized, encrypted as one age message.
+type cachePayload struct {
+	Version int                     `json:"v"`
+	Secrets map[string]string       `json:"secrets"`
+	Meta    map[string]secrets.Meta `json:"meta,omitempty"`
 }
 
-func encodePayload(secrets map[string]string) ([]byte, error) {
-	return json.Marshal(secrets)
+func decodePayload(plaintext []byte) (*resolved, error) {
+	var p cachePayload
+	if err := json.Unmarshal(plaintext, &p); err != nil {
+		return nil, fmt.Errorf("corrupt payload: %w", err)
+	}
+	if p.Version != cachePayloadVersion {
+		return nil, fmt.Errorf("cached payload v%d, want v%d", p.Version, cachePayloadVersion)
+	}
+	if p.Meta == nil {
+		p.Meta = map[string]secrets.Meta{}
+	}
+	return &resolved{secrets: p.Secrets, meta: p.Meta}, nil
+}
+
+func encodePayload(state *secrets.State) ([]byte, error) {
+	return json.Marshal(cachePayload{Version: cachePayloadVersion, Secrets: state.Secrets, Meta: state.Meta})
 }

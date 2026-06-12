@@ -128,6 +128,10 @@ What holds, and against whom.
   value passes through), values shorter than 6 bytes are skipped, and a live terminal is wired
   through untouched unless `--mask` is given. This is **accident-proofing for the dominant
   real-world leak, not a boundary** — see [Non-goals](#non-goals). ✅ (qualified)
+- The experimental MCP server (`notenv mcp`) keeps the same line: its tools list names and
+  descriptions or run commands with secrets injected, always masking the captured output —
+  no tool returns a secret value to the model. The same qualification applies: this bounds
+  what an honest agent sees, not what code running as your user can do. ✅ (qualified)
 
 ### No-residue
 
@@ -169,6 +173,14 @@ notenv does **not** defend these, by design. Treating them as in-scope would be 
   accidents, not intent. The same trust model as ssh-agent. A broker that holds the unlocked key
   in a separate trust domain — agents *use*, provably cannot *extract* — is planned, and until it
   exists notenv makes no agent-containment claim.
+- **Read-only mode as containment.** `read_only = true` and `NOTENV_READONLY` make notenv refuse
+  mutating commands — accident-proofing for cooperating clients, same family as masking. They do
+  not constrain an adversary: with a single master key, **read capability is write capability**
+  (the manifest MACs that authenticate objects derive from the master), so anyone who can decrypt
+  can author valid writes with their own tooling. *Enforced* read-only comes from the storage
+  credential (a read-only B2 application key behind the remote; read-only directory permissions
+  on a local vault). Cryptographic read-only identities require splitting decrypt from
+  manifest-signing — a header redesign, explicitly v2 territory.
 - **Exfiltration by a process legitimately holding a secret.** A child handed `$KEY` can send it
   anywhere it has network access to. No secrets manager fixes egress; that is sandbox and
   network-policy territory.
