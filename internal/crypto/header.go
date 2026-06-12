@@ -1,6 +1,8 @@
 package crypto
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,21 +30,28 @@ import (
 // attacker with storage access can brute-force a weak passphrase offline
 // (scrypt-hardened). The escrowed passphrase is the root of trust.
 
-// headerVersion is the header's on-storage format version. There is one format:
-// the indirect slot model with header authentication + a monotonic revision (see
-// auth.go). ParseHeader accepts only exactly this version with a valid auth tag,
-// with no lenient or unversioned path, since accepting an unauthenticated or
-// unknown-version header would be a security hole. The segment/snapshot payloads
-// (internal/secrets) are versioned by the same exact-match rule. Bump only on a
-// future incompatible change.
-const headerVersion = 1
+// headerVersion is the header's on-storage format version. ParseHeader accepts
+// only exactly this version with a valid auth tag, with no lenient or
+// unversioned path, since accepting an unauthenticated or unknown-version
+// header would be a security hole. The segment/snapshot payloads
+// (internal/secrets) are versioned by the same exact-match rule. Bump only on
+// an incompatible change.
+//
+// Version 2 added VaultID and SignPub; version 1 headers are upgraded by
+// `notenv key migrate` (a lossless rewrite under the same master).
+const headerVersion = 2
 
-// Header is the parsed header object.
+// Header is the parsed header object. VaultID and SignPub carry omitempty so
+// that a version-1 header (sealed before the fields existed) reproduces its
+// original canonical bytes when re-marshaled — its authentication tag must
+// stay verifiable for the migration that upgrades it.
 type Header struct {
 	Version   int    `json:"version"`
-	Recipient string `json:"recipient"` // master public key (decorative)
-	Revision  int    `json:"revision"`  // monotonic; bumped on every write (anti-rollback)
-	Master    []byte `json:"master"`    // master identity, age-encrypted to every slot's public key
+	VaultID   string `json:"vault_id,omitempty"` // random, minted once at creation; the stable identity pins and transitions are scoped to, surviving relocation of the vault to another remote/base
+	Recipient string `json:"recipient"`          // master public key (decorative)
+	SignPub   string `json:"sign_pub,omitempty"` // the master's Ed25519 public key (derived from the master secret); pins store it, rotation transitions are verified against it
+	Revision  int    `json:"revision"`           // monotonic; bumped on every write (anti-rollback)
+	Master    []byte `json:"master"`             // master identity, age-encrypted to every slot's public key
 	Slots     []Slot `json:"slots"`
 	Auth      []byte `json:"auth,omitempty"` // HMAC over the header keyed from the master (see auth.go)
 }
@@ -79,7 +88,11 @@ func NewHeader(passphrase, slotName string) (*Header, *MasterKey, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	header := &Header{Version: headerVersion, Revision: 1}
+	vaultID, err := NewVaultID()
+	if err != nil {
+		return nil, nil, err
+	}
+	header := &Header{Version: headerVersion, VaultID: vaultID, Revision: 1}
 	if err := header.AddPassphraseSlot(passphrase, slotName, mk); err != nil {
 		return nil, nil, err
 	}
@@ -88,6 +101,15 @@ func NewHeader(passphrase, slotName string) (*Header, *MasterKey, error) {
 		return nil, nil, err
 	}
 	return header, mk, nil
+}
+
+// NewVaultID mints a vault's stable random identity.
+func NewVaultID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate vault id: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // GenerateMasterKey mints a fresh master key with no header (used by rotation).
@@ -192,7 +214,9 @@ func (h *Header) PrimarySlot() int {
 	return -1
 }
 
-// rewrapMaster re-encrypts the master identity to every slot's public key.
+// rewrapMaster re-encrypts the master identity to every slot's public key and
+// refreshes the header fields that name the master (its encryption recipient
+// and its signing public key).
 func (h *Header) rewrapMaster(mk *MasterKey) error {
 	recipients := make([]age.Recipient, 0, len(h.Slots))
 	for _, slot := range h.Slots {
@@ -206,8 +230,13 @@ func (h *Header) rewrapMaster(mk *MasterKey) error {
 	if err != nil {
 		return fmt.Errorf("wrap master key: %w", err)
 	}
+	signPub, err := mk.SignPub()
+	if err != nil {
+		return err
+	}
 	h.Master = wrapped
 	h.Recipient = mk.identity.Recipient().String()
+	h.SignPub = signPub
 	return nil
 }
 
@@ -278,8 +307,17 @@ func ParseHeader(data []byte) (*Header, error) {
 	if err := json.Unmarshal(data, &h); err != nil {
 		return nil, fmt.Errorf("corrupt header: %w", err)
 	}
-	if h.Version != headerVersion {
-		return nil, fmt.Errorf("unsupported header version %d (this notenv supports version %d)", h.Version, headerVersion)
+	if h.Version < headerVersion {
+		return nil, fmt.Errorf("header version %d is from an older notenv; run `notenv key migrate` to upgrade this vault in place", h.Version)
+	}
+	if h.Version > headerVersion {
+		return nil, fmt.Errorf("unsupported header version %d (this notenv supports version %d); upgrade notenv", h.Version, headerVersion)
+	}
+	if h.VaultID == "" {
+		return nil, errors.New("corrupt header: no vault id")
+	}
+	if h.SignPub == "" {
+		return nil, errors.New("corrupt header: no signing public key")
 	}
 	if len(h.Slots) == 0 {
 		return nil, errors.New("corrupt header: no key slots")
