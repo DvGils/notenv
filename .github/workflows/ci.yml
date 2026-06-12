@@ -26,8 +26,12 @@ jobs:
           fi
       - name: vet
         run: go vet ./...
+      # gocyclo and ineffassign are tool dependencies in go.mod, so their
+      # versions and hashes are pinned by go.sum like every other module.
       - name: gocyclo
-        run: go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -over 15 .
+        run: go tool gocyclo -over 15 .
+      - name: ineffassign
+        run: go tool ineffassign ./...
       - name: test
         run: go test -race ./...
 

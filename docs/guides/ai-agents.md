@@ -48,9 +48,12 @@ claude mcp add notenv -- notenv mcp        # or any MCP client, stdio transport
 ```
 
 Two tools: `list_secrets` (names, descriptions, modified times, never values) and `run_with_secrets`
-(inject and execute; the agent gets the exit code and masked output). The vault must unlock without a
-prompt, so set `NOTENV_IDENTITY` or rely on a session-cached key. It is experimental: the tool
-surface may still change before it is frozen.
+(inject and execute; the agent gets the exit code and masked output). The vault must unlock without
+a prompt. On your own machine, rely on the session-cached key (unlock once with your passphrase,
+then the kernel keyring carries the session); for a standalone or sandboxed agent, enroll it as a
+machine (`notenv key add --machine`) and present the identity via `NOTENV_IDENTITY` from the
+harness's secret store, paired with `NOTENV_READONLY=1` and a read-only storage credential where it
+only reads. It is experimental: the tool surface may still change before it is frozen.
 
 ## Honest limits
 

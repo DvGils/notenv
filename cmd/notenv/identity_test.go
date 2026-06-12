@@ -85,37 +85,17 @@ func TestConfiguredIdentitiesFromEnvPath(t *testing.T) {
 	}
 }
 
-func TestConfiguredIdentitiesDefaultFile(t *testing.T) {
-	cfg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", cfg)
-	t.Setenv(identityEnv, "") // force the default-file path
+// With NOTENV_IDENTITY unset there are no identities at all: identities are
+// machine credentials and notenv owns no file location for one.
+func TestConfiguredIdentitiesUnsetEnv(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(identityEnv, "")
 
-	// No file yet: not an error, just empty.
 	ids, err := configuredIdentities()
 	if err != nil {
-		t.Fatalf("configuredIdentities (missing): %v", err)
+		t.Fatalf("configuredIdentities: %v", err)
 	}
 	if len(ids) != 0 {
 		t.Fatalf("expected no identities, got %d", len(ids))
-	}
-
-	id, err := age.GenerateX25519Identity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(cfg, "notenv")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "identity"), []byte(id.String()+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	ids, err = configuredIdentities()
-	if err != nil {
-		t.Fatalf("configuredIdentities (present): %v", err)
-	}
-	if len(ids) != 1 {
-		t.Fatalf("got %d identities, want 1", len(ids))
 	}
 }

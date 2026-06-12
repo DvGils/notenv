@@ -48,14 +48,16 @@ func TestListJSONShape(t *testing.T) {
 }
 
 // TestKeyListJSONShape pins the frozen `key list --json` shape: indexed
-// slots, normalized type, public_key only on recipient slots.
+// slots, normalized type, public_key only on recipient slots, provisional
+// and added only when set.
 func TestKeyListJSONShape(t *testing.T) {
 	h := &crypto.Header{
 		VaultID:  "vault-1",
 		Revision: 7,
 		Slots: []crypto.Slot{
 			{Name: "demian@legion", Primary: true, Type: crypto.SlotPassphrase, PublicKey: "age1internal"},
-			{Name: "bob", Type: crypto.SlotRecipient, PublicKey: "age1bob"},
+			{Name: "alice", Type: crypto.SlotPassphrase, PublicKey: "age1internal2", Provisional: true, TS: 1765900800},
+			{Name: "ci", Type: crypto.SlotRecipient, PublicKey: "age1ci", TS: 1765900800},
 		},
 	}
 	got := mustJSON(t, keyListOutput(h))
@@ -71,9 +73,17 @@ func TestKeyListJSONShape(t *testing.T) {
     },
     {
       "index": 1,
-      "name": "bob",
+      "name": "alice",
+      "type": "passphrase",
+      "provisional": true,
+      "added": "2025-12-16T16:00:00Z"
+    },
+    {
+      "index": 2,
+      "name": "ci",
       "type": "recipient",
-      "public_key": "age1bob"
+      "added": "2025-12-16T16:00:00Z",
+      "public_key": "age1ci"
     }
   ]
 }`

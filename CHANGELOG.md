@@ -4,6 +4,59 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.13.0
+
+The principals release: passphrases are for people, identities are for machines. A vault
+concentrates risk, so no file at rest may be key-equivalent; this release makes that a
+structural property instead of advice. Teammates onboard with a one-time passphrase and end
+up with a credential only they know; machines enroll with an identity that lives in the
+platform's secret store; the on-disk identity file ceases to exist.
+
+### Added
+
+- **Teammate onboarding with a one-time passphrase.** `notenv key add alice` generates a
+  high-entropy onboarding passphrase (six wordlist words), prints it once, and marks the
+  slot provisional. Alice's first notenv command refuses to proceed until she replaces it
+  with a passphrase only she knows; the one-time passphrase stops working at that moment,
+  and the issuer no longer knows any credential of hers. An interceptor would need the
+  passphrase and storage read access during that window; `key rotate-master` is the remedy
+  if you suspect one.
+- **Machine enrollment.** `notenv key add --machine ci` enrolls a CI job or agent: it
+  prints a new age identity exactly once, for the platform's secret store, and saves it
+  nowhere. `--recipient age1...` enrolls a public key the machine generated itself. Pair
+  with `NOTENV_READONLY=1` and a read-only storage credential where the machine only reads.
+- **`key list` speaks principals.** The table shows human (passphrase), human
+  (provisional), or machine (identity), plus when each slot was added, and warns about
+  provisional slots older than a week (the holder never finished onboarding). The `--json`
+  shape gains `provisional` and `added`, both omitted when unset.
+
+### Changed
+
+- **Header format v4.** Slots carry the provisional flag and an advisory creation time.
+  Older builds refuse a v4 header loudly; this build does not read v3 vaults (pre-1.0,
+  no migration path, consistent with earlier format bumps).
+- **`key add` is name-first.** The slot name is a positional argument; the `--passphrase`
+  and `--name` flags are gone. Adding a backup passphrase slot for yourself is the same
+  flow as onboarding a teammate: replace the one-time passphrase on first use.
+- **`NOTENV_IDENTITY` is the only identity source.** Inline value, or a path your platform
+  materialized. notenv no longer reads (or writes) any identity file of its own.
+
+### Removed
+
+- **`notenv key gen-identity` and the default identity file.** A plaintext age identity at
+  a well-known path was the one key-equivalent artifact notenv left at rest, exactly the
+  kind of path infostealers harvest. Humans never need one (passphrases plus the session
+  cache cover every interactive flow), and machines get theirs from a secret store. There
+  is no notenv-owned credential path left for a stealer list to name.
+
+### Documentation
+
+- **The threat model states the credential model.** A new "Credentials at rest" section
+  sets the bar (no file at rest may be key-equivalent), scores every unlock path against
+  it, and names the honest residuals of concentrating secrets in a vault: the offline
+  brute-force surface against a passphrase slot, and the onboarding window. The teams, CI,
+  agents, and new-machine guides are rewritten around the split.
+
 ## 0.12.0
 
 The documentation release. notenv gets a proper documentation site, the README becomes a

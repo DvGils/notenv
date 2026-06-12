@@ -5,22 +5,26 @@ human and no interactive config: an agent, a CI job, a container.
 
 ## `NOTENV_IDENTITY`
 
-Path to an age identity file that is a slot on the vault. When set, notenv unlocks with it and never
-prompts for a passphrase. This is the promptless path for CI, agents, and any non-interactive run.
+An age identity that is a machine slot on the vault: the inline `AGE-SECRET-KEY...` value, or a
+path to a file your platform materialized (a CI runner's tmpfs). When set, notenv unlocks with it
+and never prompts for a passphrase. This is the machine path: CI, agents, any non-interactive run.
 
 ```sh
-export NOTENV_IDENTITY=/secure/path/to/identity
+export NOTENV_IDENTITY="$CI_SECRET_NOTENV_IDENTITY"
 notenv run -- ./deploy.sh
 ```
 
-Generate an identity with `notenv key gen-identity` and add its public recipient to the vault with
-`notenv key add --recipient age1...`. On virgin storage, a supplied identity also creates the vault
+Enroll a machine with `notenv key add --machine NAME`, which prints a new identity exactly once for
+the platform's secret store, or `notenv key add --machine NAME --recipient age1...` to enroll a key
+the machine generated itself. On virgin storage, a supplied identity also creates the vault
 promptless, with that identity's recipient as the only slot.
 
 !!! warning
 
-    The identity file is an on-disk credential you place and control. Protect it: a vault that unlocks
-    only with an identity is unrecoverable if you lose it.
+    The identity is key-equivalent for the whole vault, which is why notenv never stores one on
+    disk: its at-rest protection is your platform's secret store, and humans use passphrases
+    instead (see [Teams and keys](../guides/teams-and-keys.md)). A vault that unlocks only with an
+    identity is unrecoverable if you lose it.
 
 ## `NOTENV_READONLY`
 

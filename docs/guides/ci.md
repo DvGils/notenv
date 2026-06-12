@@ -6,22 +6,28 @@ vault from outside the repo.
 
 ## Unlock without a prompt
 
-Set `NOTENV_IDENTITY` to an age identity that is a slot on the vault. notenv unlocks with it and
-never prompts:
+Enroll the job as a **machine slot** and present its identity via `NOTENV_IDENTITY`:
 
 ```sh
-export NOTENV_IDENTITY=/secure/path/to/identity   # an age identity file you provision
+notenv key add --machine ci      # on your machine: prints the identity exactly once
+```
+
+Paste the printed `AGE-SECRET-KEY...` into your CI provider's secret store (the one credential the
+job needs) and expose it to the job:
+
+```sh
+export NOTENV_IDENTITY="$CI_SECRET_NOTENV_IDENTITY"   # inline value, or a path the runner wrote
 notenv run -- npm test
 ```
 
-Provision that identity through your CI provider's own secret store (the one credential CI needs).
-Generate it with `notenv key gen-identity` and add its public recipient to the vault with
-`notenv key add --recipient age1...`.
+`NOTENV_IDENTITY` accepts the identity inline or as a path to a file the runner materialized.
+notenv itself never stores an identity on disk anywhere.
 
 !!! note "Why an identity, not a passphrase"
 
-    Passphrase prompts read the terminal device directly so they reach a human, not a script. In CI
-    there is no human, so use an identity: an on-disk credential you place and control.
+    Passphrases are for people, identities are for machines. Passphrase prompts read the terminal
+    device directly so they reach a human, not a script; in CI there is no human. The identity's
+    at-rest protection is the platform secret store that already guards your deploy keys.
 
 ## Pin the vault from outside the repo
 

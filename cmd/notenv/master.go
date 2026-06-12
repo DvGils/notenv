@@ -63,6 +63,9 @@ func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache,
 		if err := trustHeader(ctx, store, scope, header, res.mk); err != nil {
 			return nil, false, err
 		}
+		if _, err := enforceProvisional(ctx, store, scope, readOnly, header, raw, res); err != nil {
+			return nil, false, err
+		}
 		cacheMaster(cache, scope, res.mk, ttl)
 		return res.mk, false, nil
 	}
@@ -117,6 +120,7 @@ func createMaster(ctx context.Context, store keymgmt.Vault) (*crypto.MasterKey, 
 		if err != nil {
 			return err
 		}
+		h.Slots[0].TS = time.Now().Unix()
 		// Creation goes through the same safe-write protocol as every other
 		// header write: read back, authenticate, and re-unlock with the new
 		// passphrase before the user walks away believing escrow is done.
@@ -148,6 +152,7 @@ func createWithIdentity(ctx context.Context, store keymgmt.Vault, id *age.X25519
 		if err != nil {
 			return err
 		}
+		h.Slots[0].TS = time.Now().Unix()
 		h.Revision = 0 // SafePut owns the revision; the stored header starts at 1
 		verify := func(hh *crypto.Header) (*crypto.MasterKey, error) { m, _, e := hh.UnlockIdentity(id); return m, e }
 		if err := keymgmt.SafePut(ctx, store, h, nil, key, verify); err != nil {
