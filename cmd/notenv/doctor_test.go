@@ -100,3 +100,48 @@ func TestDoctorNamesEveryPlantedFault(t *testing.T) {
 		t.Fatal("doctor must not write")
 	}
 }
+
+// TestDoctorVerifiesObjectContent: with a session master, doctor reads every
+// live recorded object and flags one that does not decrypt or whose manifest
+// MAC does not match (a fold would fail closed on either). A folded entry that
+// is absent is not a finding, since a fold never reads it.
+func TestDoctorVerifiesObjectContent(t *testing.T) {
+	isolateConfig(t)
+	ctx := context.Background()
+	store := memstore.New()
+	header, mk, err := crypto.NewHeader("owner pass", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := []byte("a secret payload")
+	mac, err := mk.ObjectMAC(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := mk.Encrypt(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, "proj/seg-ok.age", sealed); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, "proj/seg-baddecrypt.age", []byte("not an age message")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, "proj/seg-badmac.age", sealed); err != nil {
+		t.Fatal(err)
+	}
+	header.Manifest = map[string]crypto.ManifestEntry{
+		"proj/seg-ok.age":         {MAC: mac},
+		"proj/seg-baddecrypt.age": {MAC: mac},               // correct MAC, but the bytes do not decrypt
+		"proj/seg-badmac.age":     {MAC: "0000"},            // decrypts, but the MAC will not match
+		"proj/snap-folded.age":    {MAC: "x", Folded: true}, // folded + absent: a fold skips it
+	}
+
+	c := &checkup{}
+	checkObjects(doctorCmdCtx(t), &headerTarget{vaultStorage: doctorStore{store}, scope: "scope"}, c, header, mk)
+	if c.problems != 2 {
+		t.Fatalf("want 2 findings (does-not-decrypt + MAC-mismatch), got %d", c.problems)
+	}
+}

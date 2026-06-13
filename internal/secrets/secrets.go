@@ -580,7 +580,7 @@ func checkPayload(version int, object, key string) error {
 // objectKey builds a unique key under the namespace from a name prefix and a
 // random suffix, so no two writes ever collide on a name.
 func (n *Namespace) objectKey(prefix string) (string, error) {
-	buf := make([]byte, 6)
+	buf := make([]byte, 8) // 64 bits of randomness: collision-safe well past any realistic object count
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}

@@ -401,7 +401,46 @@ func (st StorageEntry) check(name string) error {
 	case st.Path == "" && st.Remote == "":
 		return fmt.Errorf("storage %q has neither path nor remote configured; fix it in %s or re-run `notenv setup --name %s`", name, confPath, name)
 	}
+	if err := checkRemoteTarget(st.Remote, st.Base); err != nil {
+		return fmt.Errorf("storage %q: %w (fix it in %s)", name, err, confPath)
+	}
 	return nil
+}
+
+// checkRemoteTarget guards the remote name and base path that reach the rclone
+// exec boundary as positional operands. The sink there already separates flags
+// from operands with a `--` marker, so this is defense in depth and a
+// correctness gate: it rejects a remote that could smuggle a flag or break the
+// `remote:path` split, a base that could traverse out of its prefix, and the
+// control characters that belong in neither.
+func checkRemoteTarget(remote, base string) error {
+	if remote != "" {
+		if strings.HasPrefix(remote, "-") {
+			return fmt.Errorf("rclone remote %q may not start with '-'", remote)
+		}
+		if strings.ContainsRune(remote, ':') {
+			return fmt.Errorf("rclone remote %q may not contain ':' (it separates the remote from the path)", remote)
+		}
+		if hasControlChar(remote) {
+			return fmt.Errorf("rclone remote %q contains a control character", remote)
+		}
+	}
+	if base != "" {
+		if strings.HasPrefix(base, "-") {
+			return fmt.Errorf("base path %q may not start with '-'", base)
+		}
+		if hasControlChar(base) {
+			return fmt.Errorf("base path %q contains a control character", base)
+		}
+		if slices.Contains(strings.Split(base, "/"), "..") {
+			return fmt.Errorf("base path %q may not contain a '..' segment", base)
+		}
+	}
+	return nil
+}
+
+func hasControlChar(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0
 }
 
 // storageEffective fills the storage half of an Effective from a named entry,

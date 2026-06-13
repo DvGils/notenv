@@ -139,13 +139,17 @@ func TestProbeAndPreflight(t *testing.T) {
 	}
 }
 
-// TestObjectPathGuard: keys that could escape the vault directory are refused.
+// TestObjectPathGuard: keys that could escape the vault directory are refused,
+// while a ".." that is part of a path segment (not a component) is allowed.
 func TestObjectPathGuard(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
-	for _, key := range []string{"", "/etc/passwd", "../outside", "ns/../../outside"} {
+	for _, key := range []string{"", "/etc/passwd", "../outside", "ns/../../outside", `ns\..\outside`} {
 		if err := s.Put(ctx, key, []byte("x")); err == nil {
 			t.Errorf("Put(%q) must be refused", key)
 		}
+	}
+	if err := s.Put(ctx, "ns/a..b.age", []byte("x")); err != nil {
+		t.Errorf("Put(ns/a..b.age) must be allowed (the '..' is inside a segment): %v", err)
 	}
 }

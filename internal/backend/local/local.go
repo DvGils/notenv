@@ -20,6 +20,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -232,10 +233,13 @@ func (s *Storage) RestoreHeaderBackup(ctx context.Context) error {
 }
 
 // objectPath maps an object key to its file, refusing keys that could escape
-// the vault directory. Keys come from validated namespaces and generated
-// object names, so this is a guard rail, not an expected path.
+// the vault directory: an absolute key, a backslash (a separator on Windows, so
+// it could traverse there), or a ".." path component. Keys come from validated
+// namespaces and generated object names, so this is a guard rail, not an
+// expected path.
 func (s *Storage) objectPath(key string) (string, error) {
-	if key == "" || strings.HasPrefix(key, "/") || strings.Contains(key, "..") {
+	if key == "" || strings.HasPrefix(key, "/") || strings.ContainsRune(key, '\\') ||
+		slices.Contains(strings.Split(key, "/"), "..") {
 		return "", fmt.Errorf("invalid object key %q", key)
 	}
 	return filepath.Join(s.Path, filepath.FromSlash(key)), nil

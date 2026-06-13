@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -56,12 +57,41 @@ func ReadSecret(label string) (string, error) {
 	}
 
 	fmt.Fprint(os.Stderr, label)
-	value, err := term.ReadPassword(int(tty.Fd()))
+	value, err := readHidden(int(tty.Fd()))
 	fmt.Fprintln(os.Stderr)
 	if err != nil {
 		return "", fmt.Errorf("read hidden input: %w", err)
 	}
 	return string(value), nil
+}
+
+// readHidden reads a line with echo disabled, restoring the terminal if an
+// interrupt arrives mid-read. term.ReadPassword leaves SIGINT enabled and
+// restores the terminal only on a normal return, so a Ctrl-C at the prompt would
+// otherwise kill the process with echo still off, leaving the shell unable to
+// show what the user types next (and inviting them to type a secret blind). The
+// guard saves the pre-prompt state and restores it before the interrupt takes
+// the process down, exiting with the shell's Ctrl-C convention.
+func readHidden(fd int) ([]byte, error) {
+	state, err := term.GetState(fd)
+	if err != nil {
+		return term.ReadPassword(fd) // not a terminal state we can save; read as-is
+	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	defer signal.Stop(sig)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-sig:
+			_ = term.Restore(fd, state)
+			fmt.Fprintln(os.Stderr)
+			os.Exit(130) // 128 + SIGINT
+		case <-done:
+		}
+	}()
+	return term.ReadPassword(fd)
 }
 
 // PromptPassphrase asks for an existing passphrase (non-empty).
