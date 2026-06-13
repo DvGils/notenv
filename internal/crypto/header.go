@@ -38,12 +38,14 @@ import (
 // an incompatible change.
 //
 // Version 2 added VaultID and SignPub; version 3 added the object manifest
-// (see manifest.go); version 4 added per-slot Provisional and TS. Provisional
-// gates onboarding, so a version that ignored it would silently reseal the
-// header without the gate; the exact-match rule makes that a loud refusal
-// instead. This build reads only version 4: there is no in-place upgrade path
-// for older vaults.
-const headerVersion = 4
+// (see manifest.go); version 4 added per-slot Provisional and TS; version 5
+// moved the rotation history into the header (the Transitions field), so a
+// master change and its signed record land in one compare-and-swap rather than
+// two writes that can race. The exact-match rule matters here too: a v4 reader
+// would drop Transitions and reseal the header without the chain, stranding any
+// machine pinned at an older master. This build reads only version 5; there is
+// no in-place upgrade path for older vaults.
+const headerVersion = 5
 
 // Header is the parsed header object. Optional-shaped fields carry omitempty
 // so a parsed header reproduces the exact canonical bytes it was sealed over
@@ -62,7 +64,14 @@ type Header struct {
 	// header: full object key → plaintext MAC (see manifest.go). Nil only on a
 	// vault that has never stored a secret.
 	Manifest map[string]ManifestEntry `json:"manifest,omitempty"`
-	Auth     []byte                   `json:"auth,omitempty"` // HMAC over the header keyed from the master (see auth.go)
+	// Transitions is the vault's rotation history: the signed record of every
+	// master change, each authorized by the master it replaced. A machine pinned
+	// at an older master walks this chain to follow a legitimate rotation without
+	// alarming (see internal/keymgmt). It rides in the header so a rotation's
+	// record and its header flip land in one compare-and-swap, never as two
+	// writes that race; nil until the first rotation.
+	Transitions []Transition `json:"transitions,omitempty"`
+	Auth        []byte       `json:"auth,omitempty"` // HMAC over the header keyed from the master (see auth.go)
 }
 
 // Slot is one credential that can unlock the master. Name identifies its owner

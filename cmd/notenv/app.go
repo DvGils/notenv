@@ -256,7 +256,7 @@ func (a *app) view(ctx context.Context, mk *crypto.MasterKey) (*vaultView, error
 	if h.Recipient != mk.PublicKey() {
 		return nil, fmt.Errorf("%w; re-run the command to unlock the current key", keymgmt.ErrEpochChanged)
 	}
-	if err := trustHeader(ctx, v, a.cacheScope, h, mk); err != nil {
+	if err := trustHeader(a.cacheScope, h, mk); err != nil {
 		return nil, err
 	}
 	return &vaultView{header: h, raw: raw, mk: mk}, nil

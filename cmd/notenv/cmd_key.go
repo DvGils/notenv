@@ -88,7 +88,7 @@ func headerTargetFor(storageName string) (*headerTarget, error) {
 // proves the pinned master authorized it; otherwise (and for a rollback or a
 // wholesale vault replacement) it is refused, recoverable with
 // `notenv key trust` after out-of-band verification.
-func trustHeader(ctx context.Context, store keymgmt.Vault, scope string, h *crypto.Header, mk *crypto.MasterKey) error {
+func trustHeader(scope string, h *crypto.Header, mk *crypto.MasterKey) error {
 	if err := h.Verify(mk); err != nil {
 		return fmt.Errorf("%w; refusing to use this vault", err)
 	}
@@ -105,7 +105,7 @@ func trustHeader(ctx context.Context, store keymgmt.Vault, scope string, h *cryp
 	}
 	advance, err := config.CheckPin(stored, have, h.Revision, mk.PublicKey())
 	if errors.Is(err, config.ErrMasterChanged) {
-		if keymgmt.FollowRotations(ctx, store, h, stored.SignPub, stored.Revision, mk) == nil {
+		if keymgmt.FollowRotations(h, stored.SignPub, stored.Revision, mk) == nil {
 			ui.Notef("the master key was rotated on another machine; verified the signed rotation chain and moved this machine's pin forward")
 			advance, err = true, nil
 		}
@@ -415,11 +415,11 @@ func unlockHeader(ctx context.Context, store *headerTarget, gateProvisional bool
 	// The fingerprint check precedes the trust check: it exists to refuse
 	// a substituted vault before anything pins it on first use.
 	if res.fingerprint != "" {
-		if err := verifyOnboardingFingerprint(ctx, store, header, res.mk, res.fingerprint); err != nil {
+		if err := verifyOnboardingFingerprint(header, res.mk, res.fingerprint); err != nil {
 			return nil, err
 		}
 	}
-	if err := trustHeader(ctx, store, store.scope, header, res.mk); err != nil {
+	if err := trustHeader(store.scope, header, res.mk); err != nil {
 		return nil, err
 	}
 	if gateProvisional {

@@ -263,32 +263,32 @@ func TestParseHeaderRejectsBad(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := good.Marshal()
-	if !strings.Contains(string(raw), `"version": 4`) {
-		t.Fatalf("expected version 4 header, got:\n%s", raw)
+	if !strings.Contains(string(raw), `"version": 5`) {
+		t.Fatalf("expected version 5 header, got:\n%s", raw)
 	}
 
 	const idAndKey = `"vault_id":"v1","sign_pub":"ab",`
 	if _, err := ParseHeader([]byte(`{"version":99,` + idAndKey + `"master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
 		t.Error("want error for a newer version")
 	}
-	for _, old := range []string{"1", "2", "3"} {
+	for _, old := range []string{"1", "2", "3", "4"} {
 		if _, err := ParseHeader([]byte(`{"version":` + old + `,` + idAndKey + `"master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil || !strings.Contains(err.Error(), "older storage format") {
 			t.Errorf("version %s must report an unreadable older format, got %v", old, err)
 		}
 	}
-	if _, err := ParseHeader([]byte(`{"version":4,"sign_pub":"ab","master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
+	if _, err := ParseHeader([]byte(`{"version":5,"sign_pub":"ab","master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
 		t.Error("want error for missing vault id")
 	}
-	if _, err := ParseHeader([]byte(`{"version":4,"vault_id":"v1","master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
+	if _, err := ParseHeader([]byte(`{"version":5,"vault_id":"v1","master":"AA==","slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
 		t.Error("want error for missing signing public key")
 	}
-	if _, err := ParseHeader([]byte(`{"version":4,` + idAndKey + `"master":"AA==","slots":[],"auth":"AA=="}`)); err == nil {
+	if _, err := ParseHeader([]byte(`{"version":5,` + idAndKey + `"master":"AA==","slots":[],"auth":"AA=="}`)); err == nil {
 		t.Error("want error for empty slots")
 	}
-	if _, err := ParseHeader([]byte(`{"version":4,` + idAndKey + `"slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
+	if _, err := ParseHeader([]byte(`{"version":5,` + idAndKey + `"slots":[{"public_key":"x"}],"auth":"AA=="}`)); err == nil {
 		t.Error("want error for missing master")
 	}
-	if _, err := ParseHeader([]byte(`{"version":4,` + idAndKey + `"master":"AA==","slots":[{"public_key":"x"}]}`)); err == nil {
+	if _, err := ParseHeader([]byte(`{"version":5,` + idAndKey + `"master":"AA==","slots":[{"public_key":"x"}]}`)); err == nil {
 		t.Error("want error for missing authentication tag")
 	}
 	if _, err := ParseHeader([]byte(`not json`)); err == nil {
