@@ -43,6 +43,12 @@ Full docs live at **[dvgils.github.io/notenv](https://dvgils.github.io/notenv/)*
 
 ## Install
 
+With uv (or pipx, or pip; the package carries the prebuilt binary, no Python code runs):
+
+```sh
+uv tool install notenv
+```
+
 With Go:
 
 ```sh
