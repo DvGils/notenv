@@ -841,7 +841,14 @@ func MachineID() (string, error) {
 // segments even when a freshly listed remote is briefly stale, so two of its
 // writes never share a sequence number. The read-modify-write is locked, so two
 // concurrent processes on the machine can't read the same counter and collide.
-func NextSeq(scope, namespace string) (int, error) {
+//
+// floor is the high-water this machine has already written to the namespace, as
+// observed in the latest fold. seq.json is disposable per-machine state (a
+// restore that drops it, a storage rename that re-scopes it), and a counter that
+// reset below floor would reissue numbers storage has already folded, which a
+// later fold flags as a replay. Catching up to floor before incrementing keeps
+// every write above what is already recorded, so a lost counter is a non-event.
+func NextSeq(scope, namespace string, floor int) (int, error) {
 	dir, err := Dir()
 	if err != nil {
 		return 0, err
@@ -867,6 +874,9 @@ func NextSeq(scope, namespace string) (int, error) {
 		return 0, err
 	}
 	key := scope + "\x00" + namespace
+	if seqs[key] < floor {
+		seqs[key] = floor
+	}
 	seqs[key]++
 	next := seqs[key]
 	data, err := json.MarshalIndent(seqs, "", "  ")

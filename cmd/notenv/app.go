@@ -332,7 +332,7 @@ func (a *app) appendGuardedBatch(ctx context.Context, view *vaultView, prev *sec
 	delta := crypto.ManifestDelta{Add: map[string]crypto.ManifestEntry{}, Prune: prev.Prunable}
 	now := time.Now().Unix()
 	for _, w := range writes {
-		seq, err := config.NextSeq(a.cacheScope, a.namespace)
+		seq, err := config.NextSeq(a.cacheScope, a.namespace, state.HighWater(a.machine))
 		if err != nil {
 			rollback()
 			return nil, err

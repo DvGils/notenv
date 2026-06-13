@@ -147,6 +147,7 @@ type State struct {
 
 	lamport  int
 	segments int
+	seqs     map[string]int // per-machine seq high-water; the floor for a machine's next write
 }
 
 // Conflict reports a key written concurrently on more than one machine (equal
@@ -167,6 +168,13 @@ func (s *State) HasHistory() bool { return s.lamport > 0 }
 // SegmentCount is how many uncompacted segment objects this fold read, the
 // signal a caller uses to decide whether the next write should compact.
 func (s *State) SegmentCount() int { return s.segments }
+
+// HighWater is the highest seq this fold attributes to machine: the floor its
+// next write must clear. A local seq counter that was lost or reset (it is
+// disposable per-machine state) cannot then reissue a number already on storage,
+// which a later fold would mistake for a replay. Zero for a machine with no
+// folded writes.
+func (s *State) HighWater(machine string) int { return s.seqs[machine] }
 
 // Exists reports whether a namespace has any stored object yet. It only lists,
 // so it needs no master key.
@@ -193,6 +201,7 @@ func (n *Namespace) Fold(ctx context.Context) (*State, error) {
 		Strays:    l.strays,
 		lamport:   maxLamport,
 		segments:  len(l.segKeys),
+		seqs:      observedSeqs(l.snapshots, l.segments),
 	}
 	for key, w := range acc {
 		if !w.deleted {
@@ -378,13 +387,35 @@ type loaded struct {
 }
 
 // foldedSeq is machine's seq high-water mark across the recorded snapshots:
-// everything that machine wrote up to it has been folded.
+// everything that machine wrote up to it has been folded away by compaction.
+// This is the replay line: an unrecorded segment at or below it can only be an
+// object that was already folded and removed, then put back. A recorded but
+// not-yet-compacted segment is deliberately NOT counted, since a concurrent
+// in-flight write of the same machine can legitimately carry a lower seq.
 func (l *loaded) foldedSeq(machine string) int {
 	mark := 0
 	for _, s := range l.snapshots {
 		mark = max(mark, s.Seqs[machine])
 	}
 	return mark
+}
+
+// observedSeqs is the per-machine seq high-water across the given snapshots and
+// segments: the highest seq each machine is known to have written, recorded or
+// in flight. It is the floor a fresh write must clear so a lost or reset local
+// counter can never reissue a number that already exists on storage. (It is not
+// the replay line; that is foldedSeq, snapshots only.)
+func observedSeqs(snapshots []snapshot, segments []segment) map[string]int {
+	seqs := map[string]int{}
+	for _, s := range snapshots {
+		for machine, seq := range s.Seqs {
+			seqs[machine] = max(seqs[machine], seq)
+		}
+	}
+	for _, seg := range segments {
+		seqs[seg.Machine] = max(seqs[seg.Machine], seg.Seq)
+	}
+	return seqs
 }
 
 // load assembles the namespace from its manifest entries, then classifies
@@ -507,7 +538,7 @@ func (n *Namespace) classify(ctx context.Context, l *loaded, key string) error {
 		return err
 	}
 	if seg.Seq <= l.foldedSeq(seg.Machine) {
-		return fmt.Errorf("object %s is not recorded in the vault manifest, and machine %s's writes up to its seq are already folded: it looks like a deleted write that was put back (replayed); remove it to continue, e.g. `rclone deletefile`", key, seg.Machine)
+		return fmt.Errorf("object %s is not recorded in the vault manifest, and machine %s's writes up to its seq are already folded: it looks like a deleted write that was put back (replayed). If you did not just restore older storage onto this remote, treat it as storage tampering. Remove it to continue, e.g. `rclone deletefile`", key, seg.Machine)
 	}
 	mac, err := n.master.ObjectMAC(plain)
 	if err != nil {
@@ -684,15 +715,7 @@ func accumulate(l *loaded) (map[string]*winner, int) {
 // snapshots' marks and every segment), so the marks never regress.
 func foldSnapshot(l *loaded) snapshot {
 	acc, maxLamport := accumulate(l)
-	s := snapshot{Version: formatVersion, Lamport: maxLamport, Seqs: map[string]int{}, Entries: map[string]entry{}}
-	for _, prior := range l.snapshots {
-		for machine, seq := range prior.Seqs {
-			s.Seqs[machine] = max(s.Seqs[machine], seq)
-		}
-	}
-	for _, seg := range l.segments {
-		s.Seqs[seg.Machine] = max(s.Seqs[seg.Machine], seg.Seq)
-	}
+	s := snapshot{Version: formatVersion, Lamport: maxLamport, Seqs: observedSeqs(l.snapshots, l.segments), Entries: map[string]entry{}}
 	for key, w := range acc {
 		if w.deleted {
 			s.Entries[key] = entry{Lamport: w.lamport, Machine: w.machine, Seq: w.seq, TS: w.ts, Deleted: true}
@@ -727,9 +750,15 @@ func (w *winner) conflict(key string) Conflict {
 // with returns the state after applying one freshly written segment: the
 // segment is now the sole leader for its key, clearing any prior conflict there.
 // The classification slices are dropped on purpose: the caller's manifest
-// update consumes them alongside the new segment's own entry.
+// update consumes them alongside the new segment's own entry. The seq high-water
+// carries forward (raised for this segment's machine), so a batch's later writes
+// floor against the writes already in it.
 func (s *State) with(seg segment) *State {
-	next := &State{Secrets: make(map[string]string, len(s.Secrets)), Meta: make(map[string]Meta, len(s.Meta)), lamport: seg.Lamport}
+	next := &State{Secrets: make(map[string]string, len(s.Secrets)), Meta: make(map[string]Meta, len(s.Meta)), lamport: seg.Lamport, seqs: maps.Clone(s.seqs)}
+	if next.seqs == nil {
+		next.seqs = map[string]int{}
+	}
+	next.seqs[seg.Machine] = max(next.seqs[seg.Machine], seg.Seq)
 	maps.Copy(next.Secrets, s.Secrets)
 	maps.Copy(next.Meta, s.Meta)
 	if seg.Deleted {
