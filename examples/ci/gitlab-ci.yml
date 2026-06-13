@@ -1,0 +1,31 @@
+# Run tests with secrets pulled from a notenv vault on a cloud remote.
+#
+# Set these as masked CI/CD variables (Settings > CI/CD > Variables):
+#   - NOTENV_IDENTITY: a machine slot key. Generate it once on your machine with
+#       notenv key add --machine ci
+#     and paste the printed AGE-SECRET-KEY... value into the variable.
+#   - B2_KEY_ID and B2_APP_KEY: the credentials for your rclone remote.
+#
+# No passphrase, and no .env file, ever reaches the runner.
+
+test:
+  image: node:22
+  variables:
+    # Define the rclone remote from the environment. rclone reads
+    # RCLONE_CONFIG_<NAME>_* natively, and notenv shells out to rclone.
+    RCLONE_CONFIG_NOTENV_TYPE: b2
+    RCLONE_CONFIG_NOTENV_ACCOUNT: $B2_KEY_ID
+    RCLONE_CONFIG_NOTENV_KEY: $B2_APP_KEY
+    RCLONE_CONFIG_NOTENV_HARD_DELETE: "false" # keep B2's object versioning
+    # NOTENV_IDENTITY is set as a masked variable and inherited automatically.
+  before_script:
+    # Install rclone, then the latest notenv release binary (image-agnostic:
+    # needs only curl and tar). On a Python image, `pip install notenv` also works.
+    - |
+      apt-get update && apt-get install -y rclone curl
+      ver="$(curl -fsSL https://api.github.com/repos/DvGils/notenv/releases/latest | sed -n 's/.*"tag_name": *"\(.*\)".*/\1/p')"
+      curl -fsSL "https://github.com/DvGils/notenv/releases/download/${ver}/notenv_${ver#v}_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin notenv
+      notenv init --remote notenv --base my-bucket/notenv
+  script:
+    - notenv run -- npm test
+    # A vault failure exits 125, never the child's code.

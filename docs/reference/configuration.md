@@ -13,15 +13,15 @@ needs. It contains no secret values.
 namespace = "my-project"   # optional; defaults to the directory name
 
 [secrets]
-DATABASE_URL = { required = true }
-SENTRY_DSN   = { required = false }
+DATABASE_URL = {}                               # declared, and required by default
+SENTRY_DSN   = { required = false }             # optional: run proceeds if it is missing
 STRIPE_KEY   = { name = "stripe-secret-key" }   # use a different storage key name
 ```
 
 | Field | Meaning |
 |---|---|
 | `namespace` | The namespace this project reads. Defaults to the directory name. Pinned per checkout. |
-| `[secrets] KEY = { required = bool }` | Declare an environment variable. `required = true` fails `run` if it is missing. |
+| `[secrets] KEY = { required = bool }` | Declare an environment variable. `required` defaults to `true` (declaring a secret means you need it), so `run` fails if it is missing; set `required = false` to make it optional. |
 | `{ name = "..." }` | Store the secret under a different key name than the environment variable. |
 
 ## `~/.config/notenv/config.toml` (per machine, not committed)
@@ -65,7 +65,7 @@ of the two forms is set.
 | Field | Meaning |
 |---|---|
 | `mode` | `passphrase` (the default unlock mode). |
-| `cache_ttl` | Master-key cache lifetime (Linux only). `"0"` disables. |
+| `cache_ttl` | Master-key cache lifetime. `"0"` disables. Cached in the kernel keyring on Linux, the Keychain on macOS, DPAPI on Windows. |
 
 !!! note "Storage settings are machine-only by design"
 

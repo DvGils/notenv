@@ -2,9 +2,10 @@
 // plus a platform-specific session cache for the unwrapped master key. On
 // Linux the cache is the kernel keyring: the key lives in kernel memory,
 // expires on TTL, and never touches disk, the same trust model as an
-// ssh-agent. Elsewhere the cache is a no-op and every acquisition prompts
-// (macOS Keychain and Windows Credential Manager are planned as their own
-// cache_GOOS.go implementations).
+// ssh-agent. On macOS it is the Keychain and on Windows DPAPI, each holding the
+// key as ciphertext under the user's login credentials with a lazy TTL (see the
+// cache_GOOS.go implementations). On any other platform the cache is a no-op and
+// every acquisition prompts.
 package keyring
 
 import (
@@ -37,7 +38,7 @@ type Cache interface {
 }
 
 // DefaultCache returns this platform's cache: kernel keyring on Linux,
-// no-op elsewhere.
+// Keychain on macOS, DPAPI on Windows, no-op elsewhere.
 func DefaultCache() Cache { return newCache() }
 
 // ReadSecret prompts on the controlling terminal with echo disabled.

@@ -45,7 +45,10 @@ jobs:
       - uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
         id: goreleaser
         with:
-          version: "~> v2"
+          # Pinned to an exact GoReleaser release (its tags are immutable), so a
+          # rebuild uses byte-identical tooling. Bump manually: dependabot updates
+          # the action SHA above, not this version input.
+          version: "v2.16.0"
           args: release --clean --release-notes=RELEASE_NOTES.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

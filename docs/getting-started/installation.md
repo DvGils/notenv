@@ -2,8 +2,9 @@
 
 ## Requirements
 
-- **Linux, macOS, or Windows.** On Linux, notenv also caches your key and secrets in RAM for a
-  faster, prompt-free workflow.
+- **Linux, macOS, or Windows.** notenv caches your key for a prompt-free session on all three (the
+  kernel keyring on Linux, the Keychain on macOS, DPAPI on Windows); on Linux it also caches the
+  encrypted secrets in RAM so a warm run needs no network.
 - **For cloud remotes only:** [rclone](https://rclone.org/install/) on your `PATH` and a storage
   remote you control (Backblaze B2, S3, and so on; notenv can create the remote for you during
   setup). A local vault needs neither.

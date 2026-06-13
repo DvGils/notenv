@@ -1,5 +1,5 @@
 site_name: notenv
-site_description: Your .env, encrypted and off your disk, with no infrastructure to run.
+site_description: Encrypted secrets, no infrastructure, no plaintext on disk.
 site_url: https://dvgils.github.io/notenv/
 site_author: DvGils
 
@@ -96,6 +96,7 @@ nav:
       - Installation: getting-started/installation.md
       - Quick start: getting-started/quick-start.md
       - On a new machine: getting-started/new-machine.md
+  - Recipes: recipes.md
   - Guides:
       - Import an existing .env: guides/import.md
       - Teams and key management: guides/teams-and-keys.md

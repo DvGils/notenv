@@ -64,6 +64,12 @@ shell-first (or machines with no checkout at all):
 claude mcp add notenv -- notenv mcp        # or any MCP client, stdio transport
 ```
 
+For a client configured by a JSON file rather than a CLI, the stdio entry is:
+
+```json title="mcp.json"
+--8<-- "examples/agents/mcp.json"
+```
+
 Four tools, none of which accepts or returns a secret value, none of which writes to a vault:
 `list_namespaces` (discovery, no unlock needed), `list_secrets` (names, descriptions, modified
 times), `run_with_secrets` (inject and execute; the agent gets the exit code and masked output),

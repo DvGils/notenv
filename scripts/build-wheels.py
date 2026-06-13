@@ -40,7 +40,7 @@ METADATA_TEMPLATE = """\
 Metadata-Version: 2.1
 Name: notenv
 Version: {version}
-Summary: Your .env, encrypted and off your disk, with no infrastructure to run.
+Summary: Encrypted secrets, no infrastructure, no plaintext on disk.
 Home-page: https://dvgils.github.io/notenv/
 License: Apache-2.0
 Project-URL: Documentation, https://dvgils.github.io/notenv/

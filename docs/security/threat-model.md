@@ -52,9 +52,11 @@ running the command, only for as long as the command runs.**
   replicate it to a remote with `notenv vault copy`. Local vaults are single-machine by design: their
   header writes get a true compare-and-swap (an OS file lock), which is cooperative and same-machine
   only.
-- On Linux, the master key (kernel keyring) and ciphertext blobs (tmpfs) may be cached in RAM, both
-  reclaimed by the OS on logout/reboot. macOS and Windows do **not** cache (see
-  [Caching and performance](../guides/caching.md#caching-is-linux-only-by-design)).
+- The master key is cached for the session so a passphrase is asked at most once: in the kernel
+  keyring on Linux (RAM only, reclaimed on logout/reboot), in the Keychain on macOS and DPAPI on
+  Windows (ciphertext at rest under your login credentials, purged lazily on the next read).
+  Ciphertext blobs are additionally cached in RAM (tmpfs) on Linux only. See
+  [Caching and performance](../guides/caching.md#what-each-platform-guarantees).
 
 ## Credentials at rest: passphrases for people, identities for machines
 
@@ -105,10 +107,11 @@ What holds, and against whom.
   does not rely on it. The payload is already ciphertext, so a broken transport still leaks only
   ciphertext. :white_check_mark:
 - **Against a local adversary with your disk but not a live session** (lost/stolen laptop, a forensic
-  image, an old backup): no plaintext and no persistent secret cache exist on disk. On Linux the caches
-  are RAM-only and gone after logout; macOS/Windows cache nothing. A disk image yields ciphertext,
-  which is useless without the key (the key lives in your password manager, not on the disk).
-  :white_check_mark:
+  image, an old backup): no plaintext exists on disk. On Linux the caches are RAM-only and gone after
+  logout; on macOS and Windows the only at-rest cache is the master key held as ciphertext in the
+  platform store, encrypted under your login credentials, so a powered-off image cannot open it.
+  Either way a disk image yields ciphertext, which is useless without the key (the key lives in your
+  password manager, not on the disk). :white_check_mark:
 
 ### Integrity
 
@@ -273,9 +276,6 @@ recoverable states described here and below and names the way out of each:
   real.
 - **Primary-slot governance is advisory.** In shared-master team mode every slot holder has the master
   key, so "who may remove slots" is tooling-enforced, not cryptographic.
-- **Tombstone garbage collection.** Compaction drops delete-tombstones; a stale concurrent write at an
-  equal/lower logical clock can resurrect a deleted key that the tombstone would otherwise have
-  shadowed. (Reachable only once `notenv unset` is in use.)
 - **Eventual-consistency reads.** On a storage backend with weak listing consistency, a fold can briefly
   read a stale value just after a compaction (never a lost write). Strongly-consistent remotes
   (Backblaze B2, S3) are unaffected.
@@ -284,7 +284,10 @@ recoverable states described here and below and names the way out of each:
 
 Releases are built reproducibly with GoReleaser, signed with
 [cosign](https://github.com/sigstore/cosign) (keyless), and carry SLSA build provenance; the
-[installation page](../getting-started/installation.md) shows how to verify a download. The
+[installation page](../getting-started/installation.md) shows how to verify a download. The release
+pipeline is pinned to match: every GitHub Action it runs is fixed to an immutable commit SHA, the
+GoReleaser build is pinned to an exact release, and publishing is gated on a protected environment, so
+a pushed tag cannot ship a release on its own. The
 client-side-crypto core is intentionally small and auditable: the tool never needs to be trusted with
 anything at rest.
 

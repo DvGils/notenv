@@ -6,7 +6,8 @@ To keep the workflow snappy, notenv caches two things:
   once per session (default 1 hour, configurable via `crypto.cache_ttl`): the kernel keyring on
   Linux, the Keychain on macOS, DPAPI on Windows.
 - **The encrypted blob** in `XDG_RUNTIME_DIR` (tmpfs, Linux only), so a warm `notenv run` needs no
-  network at all (default 1 hour, configurable via `storage.cache_ttl`).
+  network at all (default 1 hour, configurable per storage via its own `cache_ttl` key, e.g.
+  `[storage.<name>] cache_ttl = "2h"`).
 
 !!! info "Remote vaults only"
 

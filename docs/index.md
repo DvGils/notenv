@@ -1,6 +1,6 @@
 # notenv
 
-> Your `.env`, encrypted and off your disk, with no infrastructure to run.
+> Encrypted secrets, no infrastructure, no plaintext on disk.
 
 notenv replaces `.env` files. Your secrets are encrypted **on your machine** with
 [age](https://github.com/FiloSottile/age), stored as ciphertext in a **local vault** or on
@@ -56,47 +56,25 @@ matter, `notenv vault copy` moves the same vault to a cloud remote in one comman
 
 ## Why notenv
 
-Your secrets are probably in a `.env` file right now. That means:
+A `.env` file is plaintext: everything on your machine can read it, and sharing it means pasting it
+somewhere it will outlive. notenv removes the file instead of guarding it.
 
-- **Everything on your machine can read them.** Your test runner, some package's postinstall
-  script, and any coding agent working in your checkout are one read away. An agent that opens
-  your `.env` while debugging has just copied your production credentials into a model context and
-  a transcript you don't control.
-- **Sharing them means pasting them.** A teammate needs the project's secrets, so the file goes
-  over chat. Now it lives in message history, in a downloads folder, on a laptop that will
-  eventually be sold. And when someone leaves, nothing expires: there is nothing to revoke.
-- **The official fixes want you to become an operator.** Run a Vault server, or create and manage
-  a cloud account just to have somewhere to put five secrets: a subscription, IAM wiring, an SDK
-  in your app, and a provider sitting between you and your own credentials.
+- **Nothing on disk to leak.** A test runner, a package's postinstall script, or a coding agent in
+  your checkout cannot read a secret that exists only inside the process you ran, only while it runs.
+- **You hold the key, not a provider.** Secrets are age-encrypted locally; storage only ever sees
+  ciphertext, so it can live anywhere: a local vault, the NAS under your desk, B2, S3, Drive, dozens
+  more.
+- **Nothing to operate.** No server, no SaaS, no cloud account to stand up and babysit. `notenv
+  setup` is one passphrase and zero accounts.
+- **Joining and leaving are one command.** Onboard a teammate with a string over chat; their first
+  run swaps it for a credential only they know. Offboarding re-encrypts everything, so leaving
+  actually revokes.
+- **Built for agents and CI.** `notenv run` lets a process *use* a secret without *seeing* it, and
+  your CI secret store holds one credential instead of thirty.
 
-notenv removes the file instead of guarding it. Secrets are encrypted on your machine, live as
-ciphertext in a local vault or on storage you already own, and exist in plaintext only inside the
-environment of the process you run, for as long as it runs. Storage means **anything
-[rclone](https://rclone.org) speaks**: Backblaze B2, S3, Google Drive, Dropbox, SFTP, WebDAV,
-dozens more. Your vault can live on the NAS under your desk, and nobody can stop you from keeping
-it on the SFTP server in your smart fridge. There is nothing to operate and nobody else to trust:
-you hold the key, storage holds ciphertext, and the
-[threat model](security/threat-model.md) says precisely what that
-does and does not protect.
-
-Reach for it when:
-
-- **you're one developer who wants to do this right**, without standing up an account at a cloud
-  provider and managing it forever just to have a key vault: `notenv setup` is one passphrase,
-  zero accounts, and you're done;
-- **a coding agent works in your repository**, and "the agent can run the app without ever seeing
-  the database password" should be a property, not a hope;
-- **a teammate needs in**: onboarding is one command and a string over chat, their first use
-  replaces it with a credential only they know, and offboarding re-encrypts everything, so leaving
-  actually revokes;
-- **CI needs thirty secrets**, and the CI secret store should hold one;
-- **a laptop dies**, and the recovery plan should be "the passphrase in my password manager", not
-  "which machine had the newest .env".
-
-And honestly, when not: notenv is not a platform. There is no web console, no SSO, and access is
-scoped per vault rather than per secret: everyone in a vault can read that vault, and you scope by
-making vaults (one per project or per environment is one `setup` away). If your organization has a
-platform team running Vault, keep Vault.
+**Not this if** you want a platform: there is no web console or SSO, and access is scoped per vault,
+not per secret (everyone in a vault can read that vault). If a platform team already runs Vault, keep
+Vault.
 
 ### How it compares
 

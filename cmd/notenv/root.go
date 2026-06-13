@@ -10,7 +10,7 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "notenv",
-	Short: "Your .env, encrypted and off your disk, without standing up any infrastructure",
+	Short: "Encrypted secrets, no infrastructure, no plaintext on disk",
 	Long: `notenv replaces .env files: secrets are encrypted on your machine with age,
 stored on storage you already own (any rclone remote), and decrypted only
 into the environment of the process you run. Plaintext never touches disk.`,

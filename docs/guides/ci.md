@@ -1,8 +1,49 @@
 # Continuous integration
 
 A CI job is a machine with no human at the keyboard and often no project checkout. notenv runs there
-with two pieces: an **identity** that unlocks the vault without a prompt, and flags that pin the
-vault from outside the repo.
+with three pieces: the **rclone remote credentials** for your storage, a machine **identity** that
+unlocks the vault without a prompt, and the **targeting** that points at the right vault and namespace
+from outside the repo. Here they are together, then each piece on its own.
+
+## A complete workflow
+
+=== "GitHub Actions"
+
+    ```yaml title=".github/workflows/test.yml"
+    --8<-- "examples/ci/github-actions.yml"
+    ```
+
+=== "GitLab CI"
+
+    ```yaml title=".gitlab-ci.yml"
+    --8<-- "examples/ci/gitlab-ci.yml"
+    ```
+
+The rest of this page explains each piece.
+
+## Point notenv at the storage
+
+A fresh runner has no machine config, so two things have to arrive from the job's environment.
+
+The **rclone remote** is defined with rclone's own `RCLONE_CONFIG_<NAME>_*` variables. notenv shells
+out to rclone and inherits the environment, so no `rclone.conf` file is needed; the remote's secret
+(a B2 application key, an S3 secret, an SFTP password) is the one credential your CI secret store
+holds for storage:
+
+```sh
+export RCLONE_CONFIG_NOTENV_TYPE=b2
+export RCLONE_CONFIG_NOTENV_ACCOUNT="$B2_KEY_ID"
+export RCLONE_CONFIG_NOTENV_KEY="$B2_APP_KEY"
+```
+
+The **notenv storage config** (which remote, which path) is written non-interactively with `notenv
+init`. In a checkout, the committed `notenv.toml` then supplies the namespace, so `run` needs no
+further flags:
+
+```sh
+notenv init --remote notenv --base my-bucket/notenv
+notenv run -- npm test
+```
 
 ## Unlock without a prompt
 

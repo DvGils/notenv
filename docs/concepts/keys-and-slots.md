@@ -71,6 +71,6 @@ remove it, and `notenv key set-primary` transfers it. This is governance, not a 
 | Material | Location | Notes |
 |---|---|---|
 | Secret values (plaintext) | RAM only, on the running machine, for the command's lifetime | Never on disk |
-| Master key | The header, wrapped to slots; on Linux cached in the kernel keyring for a session | Never plaintext at rest |
+| Master key | The header, wrapped to slots; cached for a session in the platform key store (kernel keyring on Linux, Keychain on macOS, DPAPI on Windows) | Never plaintext at rest |
 | Passphrase (a person) | Their head and their password manager | Never stored on the backend or on disk |
 | age identity (a machine) | The platform's secret store, presented via `NOTENV_IDENTITY` | notenv stores no identity on disk, anywhere |

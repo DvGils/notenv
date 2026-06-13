@@ -31,9 +31,10 @@ and what is deliberately out of scope.
 
 ## Non-goals
 
-- **Secret caching on macOS and Windows.** Those platforms have no daemon-free way to guarantee a cache
-  is cleaned up, so notenv prompts and fetches on each run rather than shipping a weaker cache under the
-  same name. See [Caching is Linux-only, by design](../guides/caching.md#caching-is-linux-only-by-design).
+- **Blob caching on macOS and Windows.** The master key is cached on all three platforms, but the
+  ciphertext blob cache stays Linux-only: there is no RAM-backed location to promise elsewhere that a
+  logout or reboot reliably reclaims, and a cold fetch is latency, not a prompt. See
+  [What each platform guarantees](../guides/caching.md#what-each-platform-guarantees).
 
 See the [threat model](../security/threat-model.md) for the security properties and the explicit list
 of what notenv does not defend.
