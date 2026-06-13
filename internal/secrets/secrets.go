@@ -144,6 +144,11 @@ type State struct {
 	// between writing its snapshot and recording it); `notenv compact` removes
 	// them.
 	Strays []string
+	// Corrupt lists recorded objects a salvage fold could not trust and dropped
+	// (missing, undecryptable, or MAC-mismatched). It is empty unless the fold ran
+	// in salvage mode (FoldSalvage); a strict fold fails on the first such object
+	// instead of listing it.
+	Corrupt []CorruptObject
 
 	lamport  int
 	segments int
@@ -157,6 +162,35 @@ type Conflict struct {
 	Key      string
 	Winner   string
 	Shadowed []string
+}
+
+// CorruptObject is a recorded object a salvage fold could not trust and dropped:
+// missing from storage, undecryptable, or MAC-mismatched. Reason is the read
+// error that disqualified it. A strict fold fails on the first such object; a
+// salvage fold lists them here and resolves every key it still can.
+type CorruptObject struct {
+	Key    string
+	Reason string
+}
+
+// errCorruptObject tags a recorded object a fold cannot trust: missing,
+// undecryptable, or MAC-mismatched. It is exactly the set a salvage read may
+// skip. A transient backend error and a format-version skew are deliberately
+// excluded: a read blip is not corruption, and a newer format means "upgrade
+// notenv", not "drop this object".
+var errCorruptObject = errors.New("recorded object cannot be trusted")
+
+// corruptObjectError carries a human-readable message and matches
+// errCorruptObject under errors.Is, so the salvage loop can tell an untrustable
+// object from an error that must still stop the fold.
+type corruptObjectError struct{ msg string }
+
+func (e *corruptObjectError) Error() string        { return e.msg }
+func (e *corruptObjectError) Is(target error) bool { return target == errCorruptObject }
+
+// corruptObjectf builds an errCorruptObject-tagged error.
+func corruptObjectf(format string, a ...any) error {
+	return &corruptObjectError{msg: fmt.Sprintf(format, a...)}
 }
 
 func (n *Namespace) prefix() string { return n.name + "/" }
@@ -186,9 +220,27 @@ func Exists(ctx context.Context, store backend.Backend, name string) (bool, erro
 	return len(keys) > 0, nil
 }
 
-// Fold reads every object in the namespace and resolves the current secrets.
+// Fold reads every object in the namespace and resolves the current secrets. A
+// single untrustable recorded object (missing, undecryptable, MAC-mismatched)
+// fails the whole fold closed, naming it: a dropped or altered write must never
+// be silently skipped. FoldSalvage is the opt-in escape from that for a vault
+// stuck on honest media loss.
 func (n *Namespace) Fold(ctx context.Context) (*State, error) {
-	l, err := n.load(ctx)
+	return n.foldMode(ctx, false)
+}
+
+// FoldSalvage resolves what it can from a namespace that a strict Fold refuses,
+// dropping every untrustable recorded object and reporting them on State.Corrupt
+// instead of failing. It is non-destructive (it changes no storage and evicts
+// nothing) and deliberately opt-in: the dropped keys revert to an older snapshot
+// value or disappear, so serving the rest silently would hide an attacker who
+// suppressed one object. The caller surfaces State.Corrupt loudly.
+func (n *Namespace) FoldSalvage(ctx context.Context) (*State, error) {
+	return n.foldMode(ctx, true)
+}
+
+func (n *Namespace) foldMode(ctx context.Context, skipCorrupt bool) (*State, error) {
+	l, err := n.load(ctx, skipCorrupt)
 	if err != nil {
 		return nil, err
 	}
@@ -199,6 +251,7 @@ func (n *Namespace) Fold(ctx context.Context) (*State, error) {
 		Adoptable: l.adoptable,
 		Prunable:  l.prunable,
 		Strays:    l.strays,
+		Corrupt:   l.corrupt,
 		lamport:   maxLamport,
 		segments:  len(l.segKeys),
 		seqs:      observedSeqs(l.snapshots, l.segments),
@@ -282,7 +335,7 @@ func (n *Namespace) Append(ctx context.Context, prev *State, seq int, w Write) (
 // untouched. After the subsumed objects are deleted, commit is called once
 // more, best-effort, to prune their now-pointless entries.
 func (n *Namespace) Compact(ctx context.Context, commit func(crypto.ManifestDelta) error) error {
-	l, err := n.load(ctx)
+	l, err := n.load(ctx, false) // compaction rewrites the manifest; it must trust every object it folds
 	if err != nil {
 		return err
 	}
@@ -384,6 +437,7 @@ type loaded struct {
 	prunable  []string
 	deadwood  []string
 	strays    []string
+	corrupt   []CorruptObject // recorded objects a salvage load skipped; nil in strict mode
 }
 
 // foldedSeq is machine's seq high-water mark across the recorded snapshots:
@@ -422,12 +476,22 @@ func observedSeqs(snapshots []snapshot, segments []segment) map[string]int {
 // whatever else the listing shows. The manifest, not the listing, is the
 // source of truth: a listed-but-unrecorded object is the exception that has to
 // prove itself, never silently equal to a recorded one.
-func (n *Namespace) load(ctx context.Context) (*loaded, error) {
+//
+// skipCorrupt is the salvage path: an untrustable recorded object (missing,
+// undecryptable, MAC-mismatched) is recorded on l.corrupt and skipped instead
+// of failing the whole load, so a read can surface every key that survives. It
+// never relaxes the other failures (a format-version skew, a transient backend
+// error): those still stop the load, because they are not "this object rotted".
+func (n *Namespace) load(ctx context.Context, skipCorrupt bool) (*loaded, error) {
 	l := &loaded{adoptable: map[string]crypto.ManifestEntry{}}
 
 	live, folded := n.manifestKeys()
 	for _, key := range live {
 		if err := n.openRecorded(ctx, l, key); err != nil {
+			if skipCorrupt && errors.Is(err, errCorruptObject) {
+				l.corrupt = append(l.corrupt, CorruptObject{Key: key, Reason: err.Error()})
+				continue
+			}
 			return nil, err
 		}
 	}
@@ -484,17 +548,17 @@ func (n *Namespace) manifestKeys() (live, folded []string) {
 func (n *Namespace) openRecorded(ctx context.Context, l *loaded, key string) error {
 	blob, err := n.store.Get(ctx, key)
 	if errors.Is(err, backend.ErrNotFound) {
-		return fmt.Errorf("object %s is recorded in the vault manifest but missing from storage: a write was deleted or withheld (if another machine is compacting right now, re-run)", key)
+		return corruptObjectf("object %s is recorded in the vault manifest but missing from storage: a write was deleted or withheld (if another machine is compacting right now, re-run)", key)
 	}
 	if err != nil {
 		return err
 	}
 	plain, err := n.master.Decrypt(blob)
 	if err != nil {
-		return fmt.Errorf("object %s: %w", key, err)
+		return corruptObjectf("object %s: %v", key, err)
 	}
 	if err := n.master.CheckObjectMAC(plain, n.manifest[key].MAC); err != nil {
-		return fmt.Errorf("object %s: %w", key, err)
+		return corruptObjectf("object %s: %v", key, err)
 	}
 	return n.fold(l, key, plain)
 }

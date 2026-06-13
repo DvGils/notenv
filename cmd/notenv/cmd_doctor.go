@@ -232,7 +232,7 @@ func checkObjects(cmd *cobra.Command, store *headerTarget, c *checkup, header *c
 		}
 		if !present[k] {
 			missing++
-			c.problem("object %s is recorded in the vault manifest but missing from storage: reads fail closed naming it. Recover it from the remote's version history (versioned remotes); compaction cannot rebuild it, since it reads every recorded object first and fails on this same one", k)
+			c.problem("object %s is recorded in the vault manifest but missing from storage: reads fail closed naming it. Recover it from the remote's version history (versioned remotes), read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it for good (acknowledged data loss). Compaction cannot rebuild it: it reads every recorded object first and fails on this same one", k, k)
 			continue
 		}
 		if mk == nil {
@@ -246,12 +246,12 @@ func checkObjects(cmd *cobra.Command, store *headerTarget, c *checkup, header *c
 		plain, err := mk.Decrypt(blob)
 		if err != nil {
 			corrupt++
-			c.problem("object %s is recorded but does not decrypt under the master (bit-rot or tampering): a fold will fail closed naming it. Recover it from the remote's version history", k)
+			c.problem("object %s is recorded but does not decrypt under the master (bit-rot or tampering): a fold will fail closed naming it. Recover it from the remote's version history, read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it for good (acknowledged data loss)", k, k)
 			continue
 		}
 		if err := mk.CheckObjectMAC(plain, entry.MAC); err != nil {
 			corrupt++
-			c.problem("object %s does not match its manifest MAC (reverted or substituted): a fold will fail closed naming it. Recover the correct bytes from the remote's version history", k)
+			c.problem("object %s does not match its manifest MAC (reverted or substituted): a fold will fail closed naming it. Recover the correct bytes from the remote's version history, read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it (acknowledged data loss)", k, k)
 		}
 	}
 	if unrecorded == 0 && missing == 0 && corrupt == 0 {

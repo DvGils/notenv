@@ -18,6 +18,7 @@ var (
 	runRefresh bool
 	runMask    bool
 	runNoMask  bool
+	runSalvage bool
 )
 
 var runCmd = &cobra.Command{
@@ -63,6 +64,7 @@ func runChild(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	a.salvage = runSalvage
 	if runNoMask {
 		if err := a.requireHumanPassphrase(cmd.Context(), "--no-mask sends raw secret values to a captured stream"); err != nil {
 			return err
@@ -136,4 +138,5 @@ func init() {
 	runCmd.Flags().BoolVar(&runRefresh, "refresh", false, "bypass the local cache and pull the latest secrets (e.g. after a change on another machine)")
 	runCmd.Flags().BoolVar(&runMask, "mask", false, "mask secret values in output even on a live terminal")
 	runCmd.Flags().BoolVar(&runNoMask, "no-mask", false, "never mask output (asks for your passphrase: raw values may reach a captured stream)")
+	runCmd.Flags().BoolVar(&runSalvage, "skip-corrupt", false, "read past recorded objects that are missing or corrupt instead of failing closed (affected keys may be absent or stale; each is reported)")
 }

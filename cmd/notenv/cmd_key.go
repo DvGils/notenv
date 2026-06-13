@@ -784,6 +784,7 @@ func resolveSlot(h *crypto.Header, sel string) (int, error) {
 var (
 	keyTrustYes    bool
 	keyForgetForce bool
+	keyEvictYes    bool
 )
 
 var keyForgetCmd = &cobra.Command{
@@ -919,11 +920,108 @@ authentication tag must still verify.`,
 	},
 }
 
+var keyEvictObjectCmd = &cobra.Command{
+	Use:   "evict-object <object-key>",
+	Short: "Drop a missing or corrupt object from the vault manifest (acknowledged data loss)",
+	Long: `Remove one object from the vault manifest and delete it from storage.
+
+For a vault a normal read refuses because a recorded object is missing or
+corrupt (bit-rot, a truncated upload, an unrecoverable remote) and you have
+accepted that the object's bytes are gone. Take the object key from the failing
+read's error or from 'notenv doctor'. Evicting re-seals the header without the
+entry, so reads stop failing on it; any key whose only copy was that object then
+becomes absent or reverts to an older value.
+
+This is a last resort. Prefer recovering the object from the remote's version
+history, or 'notenv run --skip-corrupt' to read what survives without changing
+anything.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
+		objKey := args[0]
+		store, err := loadHeaderStore()
+		if err != nil {
+			return err
+		}
+		u, err := unlockHeader(ctx, store, false)
+		if err != nil {
+			return err
+		}
+		entry, recorded := u.header.Manifest[objKey]
+		if !recorded {
+			return fmt.Errorf("object %q is not in the vault manifest; nothing to evict. If a read names it as an unrecorded object, remove it directly from storage instead (it is not manifest-bound)", objKey)
+		}
+		ui.Warnf("evicting %s drops it from the manifest and deletes it; any key it held becomes absent or reverts to an older value, and the bytes are unrecoverable unless your remote keeps versions", objKey)
+		if entry.Folded {
+			ui.Notef("this object is already folded (a snapshot subsumed it), so evicting it only tidies the manifest and cannot lose a live value")
+		}
+		if !keyEvictYes {
+			if !ui.Interactive() {
+				return errors.New("refusing to evict non-interactively without --yes")
+			}
+			ok, err := ui.Confirm("Evict this object?", false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errors.New("aborted; the manifest is unchanged")
+			}
+		}
+		err = evictObject(ctx, store, u.mk, objKey)
+		var de *evictDeleteError
+		if errors.As(err, &de) {
+			// The entry is gone, so reads no longer require the object, but the
+			// orphan left on storage can re-trip a fold as an unrecorded object.
+			ui.Warnf("dropped the manifest entry, but could not delete %s from storage: %v. Remove it by hand (e.g. `rclone deletefile`), or a later read may trip over it", objKey, de.err)
+			return &exitCodeError{code: 1}
+		}
+		if errors.Is(err, keymgmt.ErrEpochChanged) {
+			return fmt.Errorf("%w; nothing was changed. Re-unlock under the current key (verify the rotation is legitimate) and re-run", err)
+		}
+		if err != nil {
+			return err
+		}
+		ui.Successf("evicted %s; reads no longer require it", objKey)
+		return nil
+	},
+}
+
+// evictDeleteError reports that an eviction dropped the manifest entry but could
+// not delete the object from storage. The entry is already gone, so reads no
+// longer require the object, but the orphan should still be removed by hand.
+type evictDeleteError struct {
+	key string
+	err error
+}
+
+func (e *evictDeleteError) Error() string {
+	return fmt.Sprintf("delete %s after eviction: %v", e.key, e.err)
+}
+func (e *evictDeleteError) Unwrap() error { return e.err }
+
+// evictObject drops one object from the vault manifest and deletes it from
+// storage. The manifest entry goes first: a delete that landed before a failed
+// prune would leave a recorded-but-missing object, the exact lockout this
+// clears. Once the entry is pruned, a failed delete is reported distinctly
+// (evictDeleteError), since reads already no longer require the object.
+func evictObject(ctx context.Context, store *headerTarget, mk *crypto.MasterKey, objKey string) error {
+	h, err := keymgmt.UpdateManifest(ctx, store, mk, crypto.ManifestDelta{Prune: []string{objKey}})
+	if err != nil {
+		return err
+	}
+	pinCurrent(store.scope, h, mk)
+	if err := store.Delete(ctx, objKey); err != nil && !errors.Is(err, backend.ErrNotFound) {
+		return &evictDeleteError{key: objKey, err: err}
+	}
+	return nil
+}
+
 func init() {
 	keyAddCmd.Flags().BoolVar(&keyAddMachine, "machine", false, "enroll a machine (CI, an agent) instead of onboarding a teammate")
 	keyAddCmd.Flags().StringVar(&keyAddRecipient, "recipient", "", "with --machine: enroll an existing age1... public key instead of generating an identity")
 	keyListCmd.Flags().BoolVar(&keyListJSON, "json", false, "machine-readable output: vault id, revision, slots")
 	keyTrustCmd.Flags().BoolVar(&keyTrustYes, "yes", false, "pin without the interactive confirmation (for scripts; you have verified the change out of band)")
 	keyForgetCmd.Flags().BoolVar(&keyForgetForce, "force", false, "forget without the interactive confirmation")
-	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd)
+	keyEvictObjectCmd.Flags().BoolVar(&keyEvictYes, "yes", false, "evict without the interactive confirmation (you have accepted the data loss)")
+	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd, keyEvictObjectCmd)
 }
