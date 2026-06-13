@@ -10,6 +10,15 @@
 
 ## Install notenv
 
+=== "uv / pipx / pip"
+
+    The PyPI package carries the same prebuilt, statically linked binary the GitHub release
+    ships, for all six platform/architecture pairs; no Python code runs.
+
+    ```sh
+    uv tool install notenv      # or: pipx install notenv, or: pip install notenv
+    ```
+
 === "Go"
 
     ```sh

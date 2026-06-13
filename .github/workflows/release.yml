@@ -50,9 +50,25 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # SLSA build provenance for each released archive.
+      # PyPI wheels carrying the exact binaries GoReleaser just built, so the
+      # `uv tool install notenv` artifact is byte-identical to the released
+      # one. The builder is a stdlib-only script; SOURCE_DATE_EPOCH makes the
+      # wheels reproducible. Publishing authenticates via PyPI Trusted
+      # Publishing (OIDC from this workflow + the `release` environment; no
+      # token secret exists).
+      - name: Build PyPI wheels
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          python3 scripts/build-wheels.py --version "${GITHUB_REF_NAME#v}" --dist dist --out dist/wheels
+
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          packages-dir: dist/wheels
+
+      # SLSA build provenance for each released archive and wheel.
       - uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-path: |
             dist/notenv_*.tar.gz
             dist/notenv_*.zip
+            dist/wheels/*.whl
