@@ -36,7 +36,13 @@ func Parse(r io.Reader) ([]Pair, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var pairs []Pair
 	for line := 1; scanner.Scan(); line++ {
-		text := strings.TrimSpace(scanner.Text())
+		raw := scanner.Text()
+		if line == 1 {
+			// Strip a leading UTF-8 BOM (Windows editors add one); it is not
+			// whitespace, so it would otherwise become part of the first key.
+			raw = strings.TrimPrefix(raw, "\ufeff")
+		}
+		text := strings.TrimSpace(raw)
 		if text == "" || strings.HasPrefix(text, "#") {
 			continue
 		}

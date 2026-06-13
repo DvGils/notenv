@@ -25,7 +25,7 @@ func TestNextSeqConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range perWorker {
-				n, err := config.NextSeq("scope", "ns")
+				n, err := config.NextSeq("scope", "ns", 0)
 				if err != nil {
 					t.Errorf("NextSeq: %v", err)
 					return

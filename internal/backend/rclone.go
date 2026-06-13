@@ -286,11 +286,12 @@ func (s *RcloneStorage) objectPath(key string) string {
 // runRclone runs the binary with stdin (may be nil) and returns stdout.
 // Errors include rclone's stderr for diagnosability. args holds the
 // subcommand and flags (literals chosen by this package); paths holds the
-// positional operands, which may embed user-influenced names, so the sink
-// itself separates the two with an end-of-options marker. Upstream
-// validation already keeps a leading dash out of every name that reaches
-// here; this keeps the property local to the exec boundary instead of
-// depending on a different package.
+// positional operands, which may embed user-influenced names. The `--`
+// end-of-options marker is what makes this sink safe on its own: everything
+// after it is an operand, never a flag, whatever upstream did or did not
+// validate. (The config layer also rejects a remote or base with a leading
+// dash, a stray ':', or a control character, but that is defense in depth, not
+// what this boundary relies on.)
 func runRclone(ctx context.Context, stdin []byte, args []string, paths ...string) ([]byte, error) {
 	if len(paths) > 0 {
 		args = append(append(slices.Clip(args), "--"), paths...)

@@ -57,7 +57,7 @@ var setCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		seq, err := config.NextSeq(a.cacheScope, a.namespace)
+		seq, err := config.NextSeq(a.cacheScope, a.namespace, state.HighWater(a.machine))
 		if err != nil {
 			return err
 		}

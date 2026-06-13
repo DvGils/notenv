@@ -144,9 +144,15 @@ type State struct {
 	// between writing its snapshot and recording it); `notenv compact` removes
 	// them.
 	Strays []string
+	// Corrupt lists recorded objects a salvage fold could not trust and dropped
+	// (missing, undecryptable, or MAC-mismatched). It is empty unless the fold ran
+	// in salvage mode (FoldSalvage); a strict fold fails on the first such object
+	// instead of listing it.
+	Corrupt []CorruptObject
 
 	lamport  int
 	segments int
+	seqs     map[string]int // per-machine seq high-water; the floor for a machine's next write
 }
 
 // Conflict reports a key written concurrently on more than one machine (equal
@@ -156,6 +162,35 @@ type Conflict struct {
 	Key      string
 	Winner   string
 	Shadowed []string
+}
+
+// CorruptObject is a recorded object a salvage fold could not trust and dropped:
+// missing from storage, undecryptable, or MAC-mismatched. Reason is the read
+// error that disqualified it. A strict fold fails on the first such object; a
+// salvage fold lists them here and resolves every key it still can.
+type CorruptObject struct {
+	Key    string
+	Reason string
+}
+
+// errCorruptObject tags a recorded object a fold cannot trust: missing,
+// undecryptable, or MAC-mismatched. It is exactly the set a salvage read may
+// skip. A transient backend error and a format-version skew are deliberately
+// excluded: a read blip is not corruption, and a newer format means "upgrade
+// notenv", not "drop this object".
+var errCorruptObject = errors.New("recorded object cannot be trusted")
+
+// corruptObjectError carries a human-readable message and matches
+// errCorruptObject under errors.Is, so the salvage loop can tell an untrustable
+// object from an error that must still stop the fold.
+type corruptObjectError struct{ msg string }
+
+func (e *corruptObjectError) Error() string        { return e.msg }
+func (e *corruptObjectError) Is(target error) bool { return target == errCorruptObject }
+
+// corruptObjectf builds an errCorruptObject-tagged error.
+func corruptObjectf(format string, a ...any) error {
+	return &corruptObjectError{msg: fmt.Sprintf(format, a...)}
 }
 
 func (n *Namespace) prefix() string { return n.name + "/" }
@@ -168,6 +203,13 @@ func (s *State) HasHistory() bool { return s.lamport > 0 }
 // signal a caller uses to decide whether the next write should compact.
 func (s *State) SegmentCount() int { return s.segments }
 
+// HighWater is the highest seq this fold attributes to machine: the floor its
+// next write must clear. A local seq counter that was lost or reset (it is
+// disposable per-machine state) cannot then reissue a number already on storage,
+// which a later fold would mistake for a replay. Zero for a machine with no
+// folded writes.
+func (s *State) HighWater(machine string) int { return s.seqs[machine] }
+
 // Exists reports whether a namespace has any stored object yet. It only lists,
 // so it needs no master key.
 func Exists(ctx context.Context, store backend.Backend, name string) (bool, error) {
@@ -178,9 +220,27 @@ func Exists(ctx context.Context, store backend.Backend, name string) (bool, erro
 	return len(keys) > 0, nil
 }
 
-// Fold reads every object in the namespace and resolves the current secrets.
+// Fold reads every object in the namespace and resolves the current secrets. A
+// single untrustable recorded object (missing, undecryptable, MAC-mismatched)
+// fails the whole fold closed, naming it: a dropped or altered write must never
+// be silently skipped. FoldSalvage is the opt-in escape from that for a vault
+// stuck on honest media loss.
 func (n *Namespace) Fold(ctx context.Context) (*State, error) {
-	l, err := n.load(ctx)
+	return n.foldMode(ctx, false)
+}
+
+// FoldSalvage resolves what it can from a namespace that a strict Fold refuses,
+// dropping every untrustable recorded object and reporting them on State.Corrupt
+// instead of failing. It is non-destructive (it changes no storage and evicts
+// nothing) and deliberately opt-in: the dropped keys revert to an older snapshot
+// value or disappear, so serving the rest silently would hide an attacker who
+// suppressed one object. The caller surfaces State.Corrupt loudly.
+func (n *Namespace) FoldSalvage(ctx context.Context) (*State, error) {
+	return n.foldMode(ctx, true)
+}
+
+func (n *Namespace) foldMode(ctx context.Context, skipCorrupt bool) (*State, error) {
+	l, err := n.load(ctx, skipCorrupt)
 	if err != nil {
 		return nil, err
 	}
@@ -191,8 +251,10 @@ func (n *Namespace) Fold(ctx context.Context) (*State, error) {
 		Adoptable: l.adoptable,
 		Prunable:  l.prunable,
 		Strays:    l.strays,
+		Corrupt:   l.corrupt,
 		lamport:   maxLamport,
 		segments:  len(l.segKeys),
+		seqs:      observedSeqs(l.snapshots, l.segments),
 	}
 	for key, w := range acc {
 		if !w.deleted {
@@ -273,7 +335,7 @@ func (n *Namespace) Append(ctx context.Context, prev *State, seq int, w Write) (
 // untouched. After the subsumed objects are deleted, commit is called once
 // more, best-effort, to prune their now-pointless entries.
 func (n *Namespace) Compact(ctx context.Context, commit func(crypto.ManifestDelta) error) error {
-	l, err := n.load(ctx)
+	l, err := n.load(ctx, false) // compaction rewrites the manifest; it must trust every object it folds
 	if err != nil {
 		return err
 	}
@@ -375,10 +437,15 @@ type loaded struct {
 	prunable  []string
 	deadwood  []string
 	strays    []string
+	corrupt   []CorruptObject // recorded objects a salvage load skipped; nil in strict mode
 }
 
 // foldedSeq is machine's seq high-water mark across the recorded snapshots:
-// everything that machine wrote up to it has been folded.
+// everything that machine wrote up to it has been folded away by compaction.
+// This is the replay line: an unrecorded segment at or below it can only be an
+// object that was already folded and removed, then put back. A recorded but
+// not-yet-compacted segment is deliberately NOT counted, since a concurrent
+// in-flight write of the same machine can legitimately carry a lower seq.
 func (l *loaded) foldedSeq(machine string) int {
 	mark := 0
 	for _, s := range l.snapshots {
@@ -387,16 +454,44 @@ func (l *loaded) foldedSeq(machine string) int {
 	return mark
 }
 
+// observedSeqs is the per-machine seq high-water across the given snapshots and
+// segments: the highest seq each machine is known to have written, recorded or
+// in flight. It is the floor a fresh write must clear so a lost or reset local
+// counter can never reissue a number that already exists on storage. (It is not
+// the replay line; that is foldedSeq, snapshots only.)
+func observedSeqs(snapshots []snapshot, segments []segment) map[string]int {
+	seqs := map[string]int{}
+	for _, s := range snapshots {
+		for machine, seq := range s.Seqs {
+			seqs[machine] = max(seqs[machine], seq)
+		}
+	}
+	for _, seg := range segments {
+		seqs[seg.Machine] = max(seqs[seg.Machine], seg.Seq)
+	}
+	return seqs
+}
+
 // load assembles the namespace from its manifest entries, then classifies
 // whatever else the listing shows. The manifest, not the listing, is the
 // source of truth: a listed-but-unrecorded object is the exception that has to
 // prove itself, never silently equal to a recorded one.
-func (n *Namespace) load(ctx context.Context) (*loaded, error) {
+//
+// skipCorrupt is the salvage path: an untrustable recorded object (missing,
+// undecryptable, MAC-mismatched) is recorded on l.corrupt and skipped instead
+// of failing the whole load, so a read can surface every key that survives. It
+// never relaxes the other failures (a format-version skew, a transient backend
+// error): those still stop the load, because they are not "this object rotted".
+func (n *Namespace) load(ctx context.Context, skipCorrupt bool) (*loaded, error) {
 	l := &loaded{adoptable: map[string]crypto.ManifestEntry{}}
 
 	live, folded := n.manifestKeys()
 	for _, key := range live {
 		if err := n.openRecorded(ctx, l, key); err != nil {
+			if skipCorrupt && errors.Is(err, errCorruptObject) {
+				l.corrupt = append(l.corrupt, CorruptObject{Key: key, Reason: err.Error()})
+				continue
+			}
 			return nil, err
 		}
 	}
@@ -453,17 +548,17 @@ func (n *Namespace) manifestKeys() (live, folded []string) {
 func (n *Namespace) openRecorded(ctx context.Context, l *loaded, key string) error {
 	blob, err := n.store.Get(ctx, key)
 	if errors.Is(err, backend.ErrNotFound) {
-		return fmt.Errorf("object %s is recorded in the vault manifest but missing from storage: a write was deleted or withheld (if another machine is compacting right now, re-run)", key)
+		return corruptObjectf("object %s is recorded in the vault manifest but missing from storage: a write was deleted or withheld (if another machine is compacting right now, re-run)", key)
 	}
 	if err != nil {
 		return err
 	}
 	plain, err := n.master.Decrypt(blob)
 	if err != nil {
-		return fmt.Errorf("object %s: %w", key, err)
+		return corruptObjectf("object %s: %v", key, err)
 	}
 	if err := n.master.CheckObjectMAC(plain, n.manifest[key].MAC); err != nil {
-		return fmt.Errorf("object %s: %w", key, err)
+		return corruptObjectf("object %s: %v", key, err)
 	}
 	return n.fold(l, key, plain)
 }
@@ -507,7 +602,7 @@ func (n *Namespace) classify(ctx context.Context, l *loaded, key string) error {
 		return err
 	}
 	if seg.Seq <= l.foldedSeq(seg.Machine) {
-		return fmt.Errorf("object %s is not recorded in the vault manifest, and machine %s's writes up to its seq are already folded: it looks like a deleted write that was put back (replayed); remove it to continue, e.g. `rclone deletefile`", key, seg.Machine)
+		return fmt.Errorf("object %s is not recorded in the vault manifest, and machine %s's writes up to its seq are already folded: it looks like a deleted write that was put back (replayed). If you did not just restore older storage onto this remote, treat it as storage tampering. Remove it to continue, e.g. `rclone deletefile`", key, seg.Machine)
 	}
 	mac, err := n.master.ObjectMAC(plain)
 	if err != nil {
@@ -580,7 +675,7 @@ func checkPayload(version int, object, key string) error {
 // objectKey builds a unique key under the namespace from a name prefix and a
 // random suffix, so no two writes ever collide on a name.
 func (n *Namespace) objectKey(prefix string) (string, error) {
-	buf := make([]byte, 6)
+	buf := make([]byte, 8) // 64 bits of randomness: collision-safe well past any realistic object count
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
@@ -684,15 +779,7 @@ func accumulate(l *loaded) (map[string]*winner, int) {
 // snapshots' marks and every segment), so the marks never regress.
 func foldSnapshot(l *loaded) snapshot {
 	acc, maxLamport := accumulate(l)
-	s := snapshot{Version: formatVersion, Lamport: maxLamport, Seqs: map[string]int{}, Entries: map[string]entry{}}
-	for _, prior := range l.snapshots {
-		for machine, seq := range prior.Seqs {
-			s.Seqs[machine] = max(s.Seqs[machine], seq)
-		}
-	}
-	for _, seg := range l.segments {
-		s.Seqs[seg.Machine] = max(s.Seqs[seg.Machine], seg.Seq)
-	}
+	s := snapshot{Version: formatVersion, Lamport: maxLamport, Seqs: observedSeqs(l.snapshots, l.segments), Entries: map[string]entry{}}
 	for key, w := range acc {
 		if w.deleted {
 			s.Entries[key] = entry{Lamport: w.lamport, Machine: w.machine, Seq: w.seq, TS: w.ts, Deleted: true}
@@ -727,9 +814,15 @@ func (w *winner) conflict(key string) Conflict {
 // with returns the state after applying one freshly written segment: the
 // segment is now the sole leader for its key, clearing any prior conflict there.
 // The classification slices are dropped on purpose: the caller's manifest
-// update consumes them alongside the new segment's own entry.
+// update consumes them alongside the new segment's own entry. The seq high-water
+// carries forward (raised for this segment's machine), so a batch's later writes
+// floor against the writes already in it.
 func (s *State) with(seg segment) *State {
-	next := &State{Secrets: make(map[string]string, len(s.Secrets)), Meta: make(map[string]Meta, len(s.Meta)), lamport: seg.Lamport}
+	next := &State{Secrets: make(map[string]string, len(s.Secrets)), Meta: make(map[string]Meta, len(s.Meta)), lamport: seg.Lamport, seqs: maps.Clone(s.seqs)}
+	if next.seqs == nil {
+		next.seqs = map[string]int{}
+	}
+	next.seqs[seg.Machine] = max(next.seqs[seg.Machine], seg.Seq)
 	maps.Copy(next.Secrets, s.Secrets)
 	maps.Copy(next.Meta, s.Meta)
 	if seg.Deleted {

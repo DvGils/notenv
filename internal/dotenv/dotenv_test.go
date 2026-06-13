@@ -50,6 +50,15 @@ func TestParseValues(t *testing.T) {
 	}
 }
 
+// TestParseStripsLeadingBOM: a UTF-8 BOM (Windows editors add one) is not part
+// of the first key.
+func TestParseStripsLeadingBOM(t *testing.T) {
+	p := one(t, "\ufeffAPI_KEY=secret")
+	if p.Key != "API_KEY" {
+		t.Fatalf("first key = %q, want API_KEY (BOM not stripped?)", p.Key)
+	}
+}
+
 func TestParseMultiline(t *testing.T) {
 	in := "CERT=\"-----BEGIN-----\nabc\ndef\n-----END-----\"\nB=2\n"
 	pairs := parse(t, in)

@@ -100,7 +100,7 @@ func TestListSkipsArtifacts(t *testing.T) {
 	if err := s.SwapHeader(ctx, []byte("h1"), []byte("h2")); err != nil { // creates the lock file
 		t.Fatal(err)
 	}
-	for _, key := range []string{"proj/seg-m1-aa.age", ".transitions.json"} {
+	for _, key := range []string{"proj/seg-m1-aa.age", ".extra.json"} {
 		if err := s.Put(ctx, key, []byte("x")); err != nil {
 			t.Fatal(err)
 		}
@@ -114,7 +114,7 @@ func TestListSkipsArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{".transitions.json", "proj/seg-m1-aa.age"}
+	want := []string{".extra.json", "proj/seg-m1-aa.age"}
 	if fmt.Sprint(keys) != fmt.Sprint(want) {
 		t.Fatalf("List = %v, want %v", keys, want)
 	}
@@ -139,13 +139,17 @@ func TestProbeAndPreflight(t *testing.T) {
 	}
 }
 
-// TestObjectPathGuard: keys that could escape the vault directory are refused.
+// TestObjectPathGuard: keys that could escape the vault directory are refused,
+// while a ".." that is part of a path segment (not a component) is allowed.
 func TestObjectPathGuard(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
-	for _, key := range []string{"", "/etc/passwd", "../outside", "ns/../../outside"} {
+	for _, key := range []string{"", "/etc/passwd", "../outside", "ns/../../outside", `ns\..\outside`} {
 		if err := s.Put(ctx, key, []byte("x")); err == nil {
 			t.Errorf("Put(%q) must be refused", key)
 		}
+	}
+	if err := s.Put(ctx, "ns/a..b.age", []byte("x")); err != nil {
+		t.Errorf("Put(ns/a..b.age) must be allowed (the '..' is inside a segment): %v", err)
 	}
 }

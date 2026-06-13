@@ -40,7 +40,7 @@ var unsetCmd = &cobra.Command{
 		if _, present := state.Secrets[storageKey]; !present {
 			return fmt.Errorf("%q is not set in namespace %q", key, a.namespace)
 		}
-		seq, err := config.NextSeq(a.cacheScope, a.namespace)
+		seq, err := config.NextSeq(a.cacheScope, a.namespace, state.HighWater(a.machine))
 		if err != nil {
 			return err
 		}

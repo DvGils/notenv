@@ -88,7 +88,7 @@ func headerTargetFor(storageName string) (*headerTarget, error) {
 // proves the pinned master authorized it; otherwise (and for a rollback or a
 // wholesale vault replacement) it is refused, recoverable with
 // `notenv key trust` after out-of-band verification.
-func trustHeader(ctx context.Context, store keymgmt.Vault, scope string, h *crypto.Header, mk *crypto.MasterKey) error {
+func trustHeader(scope string, h *crypto.Header, mk *crypto.MasterKey) error {
 	if err := h.Verify(mk); err != nil {
 		return fmt.Errorf("%w; refusing to use this vault", err)
 	}
@@ -105,7 +105,7 @@ func trustHeader(ctx context.Context, store keymgmt.Vault, scope string, h *cryp
 	}
 	advance, err := config.CheckPin(stored, have, h.Revision, mk.PublicKey())
 	if errors.Is(err, config.ErrMasterChanged) {
-		if keymgmt.FollowRotations(ctx, store, h, stored.SignPub, stored.Revision, mk) == nil {
+		if keymgmt.FollowRotations(h, stored.SignPub, stored.Revision, mk) == nil {
 			ui.Notef("the master key was rotated on another machine; verified the signed rotation chain and moved this machine's pin forward")
 			advance, err = true, nil
 		}
@@ -321,8 +321,48 @@ recover a prior object version through the remote's version history instead.`,
 			return err
 		}
 		ui.Successf("header restored from backup")
+		repinAfterRestore(cmd.Context(), store)
 		return nil
 	},
+}
+
+// repinAfterRestore advances the local rollback pin to the just-restored header
+// so the operator's next command does not raise a rollback alarm against their
+// own deliberate recovery: the restored header is a revision behind whatever was
+// last committed, so it would otherwise trip the rollback check. The re-pin is
+// prompt-free and gated on the cached master verifying the restored header, so
+// it can only ever move the pin back to a header this machine's master vouches
+// for, never to a planted one. With no usable cached master (a cold session, or
+// a restore across a master rotation) it explains the pin-ahead state instead.
+func repinAfterRestore(ctx context.Context, store *headerTarget) {
+	raw, err := store.GetHeader(ctx)
+	if err != nil {
+		return
+	}
+	header, err := crypto.ParseHeader(raw)
+	if err != nil {
+		return
+	}
+	var mk *crypto.MasterKey
+	if cached, ok := keyring.DefaultCache().Get(store.scope); ok {
+		mk, _ = crypto.ParseMasterKey(cached)
+	}
+	if repinRestored(store.scope, header, mk) {
+		ui.Notef("rollback pin moved to the restored revision %d", header.Revision)
+		return
+	}
+	ui.Warnf("the restored header is at revision %d; if this machine pinned a higher one, the next unlock raises a rollback alarm. After confirming this restore is what you intended, run `notenv key trust` to accept it", header.Revision)
+}
+
+// repinRestored pins header for scope when mk verifies it, the safety gate that
+// keeps the re-pin from trusting anything the master does not vouch for. Returns
+// whether it pinned.
+func repinRestored(scope string, header *crypto.Header, mk *crypto.MasterKey) bool {
+	if mk == nil || header.Verify(mk) != nil {
+		return false
+	}
+	pinCurrent(scope, header, mk)
+	return true
 }
 
 // unlocked carries everything a mutating key operation needs after it has
@@ -375,11 +415,11 @@ func unlockHeader(ctx context.Context, store *headerTarget, gateProvisional bool
 	// The fingerprint check precedes the trust check: it exists to refuse
 	// a substituted vault before anything pins it on first use.
 	if res.fingerprint != "" {
-		if err := verifyOnboardingFingerprint(ctx, store, header, res.mk, res.fingerprint); err != nil {
+		if err := verifyOnboardingFingerprint(header, res.mk, res.fingerprint); err != nil {
 			return nil, err
 		}
 	}
-	if err := trustHeader(ctx, store, store.scope, header, res.mk); err != nil {
+	if err := trustHeader(store.scope, header, res.mk); err != nil {
 		return nil, err
 	}
 	if gateProvisional {
@@ -599,6 +639,17 @@ func addMachineSlot(ctx context.Context, store *headerTarget, u *unlocked, name 
 	return nil
 }
 
+// refuseRecipientPrimary blocks transferring primary to a machine identity.
+// Primary is the human governance anchor: a recipient slot's private key lives
+// only on the machine it was enrolled for, so making it primary would leave
+// nobody able to transfer primary away or remove it once that machine is lost.
+func refuseRecipientPrimary(h *crypto.Header, target int) error {
+	if h.Slots[target].Type == crypto.SlotRecipient {
+		return errors.New("primary must be a human (passphrase) slot, not a machine identity: its key lives only on that machine, so making it primary could strand primary if the machine is lost")
+	}
+	return nil
+}
+
 var keySetPrimaryCmd = &cobra.Command{
 	Use:   "set-primary <name | index>",
 	Short: "Transfer the primary slot to another slot",
@@ -626,6 +677,9 @@ cannot be removed, and only its holder may transfer primary.`,
 		}
 		if target == u.slot {
 			return errors.New("that slot is already primary")
+		}
+		if err := refuseRecipientPrimary(u.header, target); err != nil {
+			return err
 		}
 		if err := u.header.SetPrimary(target); err != nil {
 			return err
@@ -730,6 +784,7 @@ func resolveSlot(h *crypto.Header, sel string) (int, error) {
 var (
 	keyTrustYes    bool
 	keyForgetForce bool
+	keyEvictYes    bool
 )
 
 var keyForgetCmd = &cobra.Command{
@@ -865,11 +920,108 @@ authentication tag must still verify.`,
 	},
 }
 
+var keyEvictObjectCmd = &cobra.Command{
+	Use:   "evict-object <object-key>",
+	Short: "Drop a missing or corrupt object from the vault manifest (acknowledged data loss)",
+	Long: `Remove one object from the vault manifest and delete it from storage.
+
+For a vault a normal read refuses because a recorded object is missing or
+corrupt (bit-rot, a truncated upload, an unrecoverable remote) and you have
+accepted that the object's bytes are gone. Take the object key from the failing
+read's error or from 'notenv doctor'. Evicting re-seals the header without the
+entry, so reads stop failing on it; any key whose only copy was that object then
+becomes absent or reverts to an older value.
+
+This is a last resort. Prefer recovering the object from the remote's version
+history, or 'notenv run --skip-corrupt' to read what survives without changing
+anything.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
+		objKey := args[0]
+		store, err := loadHeaderStore()
+		if err != nil {
+			return err
+		}
+		u, err := unlockHeader(ctx, store, false)
+		if err != nil {
+			return err
+		}
+		entry, recorded := u.header.Manifest[objKey]
+		if !recorded {
+			return fmt.Errorf("object %q is not in the vault manifest; nothing to evict. If a read names it as an unrecorded object, remove it directly from storage instead (it is not manifest-bound)", objKey)
+		}
+		ui.Warnf("evicting %s drops it from the manifest and deletes it; any key it held becomes absent or reverts to an older value, and the bytes are unrecoverable unless your remote keeps versions", objKey)
+		if entry.Folded {
+			ui.Notef("this object is already folded (a snapshot subsumed it), so evicting it only tidies the manifest and cannot lose a live value")
+		}
+		if !keyEvictYes {
+			if !ui.Interactive() {
+				return errors.New("refusing to evict non-interactively without --yes")
+			}
+			ok, err := ui.Confirm("Evict this object?", false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errors.New("aborted; the manifest is unchanged")
+			}
+		}
+		err = evictObject(ctx, store, u.mk, objKey)
+		var de *evictDeleteError
+		if errors.As(err, &de) {
+			// The entry is gone, so reads no longer require the object, but the
+			// orphan left on storage can re-trip a fold as an unrecorded object.
+			ui.Warnf("dropped the manifest entry, but could not delete %s from storage: %v. Remove it by hand (e.g. `rclone deletefile`), or a later read may trip over it", objKey, de.err)
+			return &exitCodeError{code: 1}
+		}
+		if errors.Is(err, keymgmt.ErrEpochChanged) {
+			return fmt.Errorf("%w; nothing was changed. Re-unlock under the current key (verify the rotation is legitimate) and re-run", err)
+		}
+		if err != nil {
+			return err
+		}
+		ui.Successf("evicted %s; reads no longer require it", objKey)
+		return nil
+	},
+}
+
+// evictDeleteError reports that an eviction dropped the manifest entry but could
+// not delete the object from storage. The entry is already gone, so reads no
+// longer require the object, but the orphan should still be removed by hand.
+type evictDeleteError struct {
+	key string
+	err error
+}
+
+func (e *evictDeleteError) Error() string {
+	return fmt.Sprintf("delete %s after eviction: %v", e.key, e.err)
+}
+func (e *evictDeleteError) Unwrap() error { return e.err }
+
+// evictObject drops one object from the vault manifest and deletes it from
+// storage. The manifest entry goes first: a delete that landed before a failed
+// prune would leave a recorded-but-missing object, the exact lockout this
+// clears. Once the entry is pruned, a failed delete is reported distinctly
+// (evictDeleteError), since reads already no longer require the object.
+func evictObject(ctx context.Context, store *headerTarget, mk *crypto.MasterKey, objKey string) error {
+	h, err := keymgmt.UpdateManifest(ctx, store, mk, crypto.ManifestDelta{Prune: []string{objKey}})
+	if err != nil {
+		return err
+	}
+	pinCurrent(store.scope, h, mk)
+	if err := store.Delete(ctx, objKey); err != nil && !errors.Is(err, backend.ErrNotFound) {
+		return &evictDeleteError{key: objKey, err: err}
+	}
+	return nil
+}
+
 func init() {
 	keyAddCmd.Flags().BoolVar(&keyAddMachine, "machine", false, "enroll a machine (CI, an agent) instead of onboarding a teammate")
 	keyAddCmd.Flags().StringVar(&keyAddRecipient, "recipient", "", "with --machine: enroll an existing age1... public key instead of generating an identity")
 	keyListCmd.Flags().BoolVar(&keyListJSON, "json", false, "machine-readable output: vault id, revision, slots")
 	keyTrustCmd.Flags().BoolVar(&keyTrustYes, "yes", false, "pin without the interactive confirmation (for scripts; you have verified the change out of band)")
 	keyForgetCmd.Flags().BoolVar(&keyForgetForce, "force", false, "forget without the interactive confirmation")
-	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd)
+	keyEvictObjectCmd.Flags().BoolVar(&keyEvictYes, "yes", false, "evict without the interactive confirmation (you have accepted the data loss)")
+	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd, keyEvictObjectCmd)
 }

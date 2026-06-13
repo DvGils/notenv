@@ -47,13 +47,22 @@ type pattern struct {
 // (named after the first env var alphabetically). With no usable patterns the
 // masker degrades to a plain passthrough.
 func NewMasker(dst io.Writer, secrets []Secret) *Masker {
+	return NewMaskerFloor(dst, secrets, MinMaskLen)
+}
+
+// NewMaskerFloor is NewMasker with an explicit minimum value length. The MCP
+// surface passes a floor of 1 (mask every non-empty value): its output goes
+// into a model's context, where keeping secrets out of the plaintext outweighs
+// the cost of occasionally shredding a short common string. An empty value is
+// always skipped, whatever the floor, since it would match at every position.
+func NewMaskerFloor(dst io.Writer, secrets []Secret, minLen int) *Masker {
 	sorted := append([]Secret(nil), secrets...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
 	seen := map[string]bool{}
 	var patterns []pattern
 	for _, s := range sorted {
-		if len(s.Value) < MinMaskLen || seen[s.Value] {
+		if s.Value == "" || len(s.Value) < minLen || seen[s.Value] {
 			continue
 		}
 		seen[s.Value] = true

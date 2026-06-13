@@ -2,7 +2,6 @@ package keymgmt_test
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/DvGils/notenv/internal/backend/memstore"
@@ -10,25 +9,35 @@ import (
 	"github.com/DvGils/notenv/internal/keymgmt"
 )
 
-// appendForTest splices an extra transition into the stored history.
-func appendForTest(ctx context.Context, store *memstore.Store, tr *crypto.Transition) error {
-	var ts []crypto.Transition
-	if raw, err := store.Get(ctx, ".transitions.json"); err == nil {
-		if err := json.Unmarshal(raw, &ts); err != nil {
-			return err
-		}
-	}
-	ts = append(ts, *tr)
-	raw, err := json.Marshal(ts)
+// spliceTransition adds an extra transition to the stored header's chain. It
+// does not re-seal: the walk verifies each transition's own signature, not the
+// header tag.
+func spliceTransition(t *testing.T, store *memstore.Store, tr *crypto.Transition) {
+	t.Helper()
+	header := mustParse(t, store)
+	header.Transitions = append(header.Transitions, *tr)
+	raw, err := header.Marshal()
 	if err != nil {
-		return err
+		t.Fatal(err)
 	}
-	return store.Put(ctx, ".transitions.json", raw)
+	store.SetHeader(raw)
+}
+
+// clearTransitions drops the stored header's rotation history.
+func clearTransitions(t *testing.T, store *memstore.Store) {
+	t.Helper()
+	header := mustParse(t, store)
+	header.Transitions = nil
+	raw, err := header.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetHeader(raw)
 }
 
 // rotatedVault seeds a vault and rotates it n times, returning the store, the
-// original master (what a stale machine would have pinned), the original
-// header (for its pin fields), and the final master.
+// original master (what a stale machine would have pinned), the original header
+// (for its pin fields), and the final master.
 func rotatedVault(t *testing.T, n int) (*memstore.Store, *crypto.MasterKey, *crypto.Header, *crypto.MasterKey) {
 	t.Helper()
 	ctx := context.Background()
@@ -60,7 +69,7 @@ func follow(t *testing.T, store *memstore.Store, pinnedMK *crypto.MasterKey, pin
 	if err != nil {
 		t.Fatal(err)
 	}
-	return keymgmt.FollowRotations(context.Background(), store, header, pinnedSignPub, pinnedRevision, currentMK)
+	return keymgmt.FollowRotations(header, pinnedSignPub, pinnedRevision, currentMK)
 }
 
 func TestFollowRotationsSingleHop(t *testing.T) {
@@ -105,24 +114,21 @@ func TestFollowRotationsRejectsUnrelatedMaster(t *testing.T) {
 }
 
 func TestFollowRotationsRejectsMissingChain(t *testing.T) {
-	ctx := context.Background()
 	store, firstMK, firstHeader, currentMK := rotatedVault(t, 1)
-	// The transition history vanished (deleted or never synced): fail safe.
-	if err := store.Delete(ctx, ".transitions.json"); err != nil {
-		t.Fatal(err)
-	}
+	// The rotation history vanished (a v4-era reader resealed without it, or it
+	// was tampered out): fail safe.
+	clearTransitions(t, store)
 	if err := follow(t, store, firstMK, firstHeader.Revision, currentMK); err == nil {
 		t.Fatal("a missing chain must not walk")
 	}
 }
 
 func TestFollowRotationsToleratesOrphanSiblings(t *testing.T) {
-	ctx := context.Background()
 	store, firstMK, firstHeader, currentMK := rotatedVault(t, 1)
 
-	// A rotation that died before its flip leaves a transition from the same
-	// old master to a master that never took over. The walk must route around
-	// it to the hop that actually happened.
+	// A rotation that died before its flip leaves a transition from the same old
+	// master to a master that never took over. The walk must route around it to
+	// the hop that actually happened.
 	orphanMK, err := crypto.GenerateMasterKey()
 	if err != nil {
 		t.Fatal(err)
@@ -131,9 +137,7 @@ func TestFollowRotationsToleratesOrphanSiblings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := appendForTest(ctx, store, orphan); err != nil {
-		t.Fatal(err)
-	}
+	spliceTransition(t, store, orphan)
 
 	if err := follow(t, store, firstMK, firstHeader.Revision, currentMK); err != nil {
 		t.Fatalf("an orphan sibling must not block the real hop: %v", err)
@@ -151,8 +155,36 @@ func TestFollowRotationsHonorsRevisionCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 	header.Revision = firstHeader.Revision // pretend the observed header predates the hop
-	if err := keymgmt.FollowRotations(context.Background(), store, header, pinnedSignPub, firstHeader.Revision, currentMK); err == nil {
+	if err := keymgmt.FollowRotations(header, pinnedSignPub, firstHeader.Revision, currentMK); err == nil {
 		t.Fatal("a hop beyond the observed revision must not walk")
+	}
+}
+
+// TestConcurrentRotationKeepsWinnersTransition: two rotations build on the same
+// base; the header compare-and-swap lets exactly one win, and because the
+// transition now rides in the header, the loser cannot clobber the winner's
+// record (the old bug was a separate transition object the loser's write could
+// overwrite). A machine pinned at the original master still walks to the winner.
+func TestConcurrentRotationKeepsWinnersTransition(t *testing.T) {
+	ctx := context.Background()
+	store := memstore.New()
+	firstMK, _ := seedVault(t, store, map[string]string{})
+	firstHeader := mustParse(t, store)
+	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
+
+	base := store.Header()
+	headerA, _ := crypto.ParseHeader(base)
+	headerB, _ := crypto.ParseHeader(base)
+
+	winnerMK, err := keymgmt.RotateMaster(ctx, store, headerA, base, firstMK, verify, nil)
+	if err != nil {
+		t.Fatalf("first rotation must win: %v", err)
+	}
+	if _, err := keymgmt.RotateMaster(ctx, store, headerB, base, firstMK, verify, nil); err == nil {
+		t.Fatal("a rotation built on a stale base must lose the header swap")
+	}
+	if err := follow(t, store, firstMK, firstHeader.Revision, winnerMK); err != nil {
+		t.Fatalf("the winner's transition must survive the losing rotation: %v", err)
 	}
 }
 
@@ -160,7 +192,6 @@ func TestFollowRotationsHonorsRevisionCeiling(t *testing.T) {
 // ancestor signing key connected to the unlocked master by valid transitions,
 // and nothing else.
 func TestDescends(t *testing.T) {
-	ctx := context.Background()
 	store, firstMK, _, currentMK := rotatedVault(t, 2)
 	header := mustParse(t, store)
 	firstSignPub, err := firstMK.SignPub()
@@ -168,15 +199,15 @@ func TestDescends(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := keymgmt.Descends(ctx, store, header, currentMK, func(signPub string) bool {
+	if err := keymgmt.Descends(header, currentMK, func(signPub string) bool {
 		return signPub == firstSignPub
 	}); err != nil {
 		t.Fatalf("the original signing key is an ancestor of the current master: %v", err)
 	}
-	if err := keymgmt.Descends(ctx, store, header, currentMK, func(string) bool { return false }); err == nil {
+	if err := keymgmt.Descends(header, currentMK, func(string) bool { return false }); err == nil {
 		t.Fatal("recognizing no key must not walk")
 	}
-	if err := keymgmt.Descends(ctx, store, header, currentMK, func(signPub string) bool {
+	if err := keymgmt.Descends(header, currentMK, func(signPub string) bool {
 		return signPub == "unrelated"
 	}); err == nil {
 		t.Fatal("an unrelated key must not walk")

@@ -99,18 +99,16 @@ func TestSplitOnboardingString(t *testing.T) {
 // TestVerifyOnboardingFingerprint: a matching code passes, a mismatched code
 // is refused naming the substitution risk (no transitions exist to walk).
 func TestVerifyOnboardingFingerprint(t *testing.T) {
-	ctx := context.Background()
 	header, mk, err := crypto.NewHeader("owner pass", "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := memstore.New()
 
 	good := crypto.Fingerprint(header.VaultID, header.SignPub)
-	if err := verifyOnboardingFingerprint(ctx, store, header, mk, good); err != nil {
+	if err := verifyOnboardingFingerprint(header, mk, good); err != nil {
 		t.Fatalf("matching code: %v", err)
 	}
-	err = verifyOnboardingFingerprint(ctx, store, header, mk, "aaaaaaaaaaaa")
+	err = verifyOnboardingFingerprint(header, mk, "aaaaaaaaaaaa")
 	if err == nil || !strings.Contains(err.Error(), "substituted") {
 		t.Fatalf("mismatched code: err = %v, want a substitution refusal", err)
 	}

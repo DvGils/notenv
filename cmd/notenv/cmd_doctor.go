@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -111,32 +112,33 @@ func runDoctor(cmd *cobra.Command, store *headerTarget, c *checkup) {
 	}
 	c.ok("header present and well-formed (vault %s, revision %d)", header.VaultID, header.Revision)
 
-	verified := verifyWithSessionKey(c, store.scope, header)
+	mk, _ := verifyWithSessionKey(c, store.scope, header)
 	checkPin(c, store.scope, header)
 	checkSlots(c, header)
-	checkObjects(cmd, store, c, header, verified)
+	checkObjects(cmd, store, c, header, mk)
 }
 
-// verifyWithSessionKey authenticates the header when (and only when) a
-// session key is already cached: doctor never prompts, so a cold cache just
-// reports the limitation.
-func verifyWithSessionKey(c *checkup, scope string, header *crypto.Header) bool {
+// verifyWithSessionKey authenticates the header when (and only when) a session
+// key is already cached: doctor never prompts, so a cold cache just reports the
+// limitation. It returns the master only when the header authenticates under it,
+// so callers can use it to verify object content too.
+func verifyWithSessionKey(c *checkup, scope string, header *crypto.Header) (*crypto.MasterKey, bool) {
 	cached, hit := keyring.DefaultCache().Get(scope)
 	if !hit {
-		c.note("header not verified: no session key cached (any unlock verifies it); the object checks below trust the unverified manifest")
-		return false
+		c.note("header not verified: no session key cached (any unlock verifies it); the object checks below check presence against the unverified manifest, not content")
+		return nil, false
 	}
 	mk, err := crypto.ParseMasterKey(cached)
 	if err != nil {
-		c.note("header not verified: the cached session key is unreadable; the object checks below trust the unverified manifest")
-		return false
+		c.note("header not verified: the cached session key is unreadable; the object checks below check presence against the unverified manifest, not content")
+		return nil, false
 	}
 	if err := header.Verify(mk); err != nil {
 		c.problem("header FAILED authentication under the session key: %v. If the vault was re-keyed elsewhere this is a stale cache (`notenv cache clear`, then unlock again); otherwise treat the storage as tampered", err)
-		return false
+		return nil, false
 	}
 	c.ok("header authenticates under the cached session key")
-	return true
+	return mk, true
 }
 
 // checkPin compares the local trust state against the served header: a bound
@@ -198,11 +200,17 @@ func checkSlots(c *checkup, header *crypto.Header) {
 	c.ok("%d slot(s): %d human, %d machine", len(header.Slots), humans, machines)
 }
 
-// checkObjects diffs the storage listing against the header manifest in both
-// directions: an unrecorded object is a crashed write (or something put
-// back); a recorded-but-missing object will fail the next fold closed.
-func checkObjects(cmd *cobra.Command, store *headerTarget, c *checkup, header *crypto.Header, verified bool) {
-	keys, err := store.List(cmd.Context(), "")
+// checkObjects diffs the storage listing against the header manifest and, when
+// a session master is available, verifies the content of every live recorded
+// object the way a fold would: an unrecorded object is a crashed write (or
+// something put back); a live recorded object that is missing, that does not
+// decrypt, or that fails its manifest MAC is exactly what fails a fold closed.
+// Folded entries are skipped: a fold never reads them, so their state cannot
+// fail a read. With a master this reads and decrypts every live object, the
+// same cost as a fold; without one it can only check presence.
+func checkObjects(cmd *cobra.Command, store *headerTarget, c *checkup, header *crypto.Header, mk *crypto.MasterKey) {
+	ctx := cmd.Context()
+	keys, err := store.List(ctx, "")
 	if err != nil {
 		c.problem("list storage objects: %v", err)
 		return
@@ -211,26 +219,60 @@ func checkObjects(cmd *cobra.Command, store *headerTarget, c *checkup, header *c
 	for _, k := range keys {
 		present[k] = true
 	}
-	unrecorded, missing := 0, 0
+	unrecorded := 0
 	for _, k := range keys {
 		if _, ok := header.Manifest[k]; !ok {
 			unrecorded++
 			c.problem("object %s is not recorded in the vault manifest: a write that crashed mid-protocol, or something put back after deletion. Folds include it with a warning and the next compaction records it; if a master rotation happened since it was written, the fold fails closed naming it, and the fix is to delete it and re-set that key", k)
 		}
 	}
-	for k := range header.Manifest {
+	missing, corrupt := 0, 0
+	for k, entry := range header.Manifest {
+		if entry.Folded {
+			continue // a fold skips folded objects, so their absence or corruption never fails a read
+		}
 		if !present[k] {
 			missing++
-			c.problem("object %s is recorded in the vault manifest but missing from storage: reads will fail closed naming it. Recover it from the remote's version history, or compact to rebuild from what survives", k)
+			c.problem("object %s is recorded in the vault manifest but missing from storage: reads fail closed naming it. Recover it from the remote's version history (versioned remotes), read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it for good (acknowledged data loss). Compaction cannot rebuild it: it reads every recorded object first and fails on this same one", k, k)
+			continue
+		}
+		if mk == nil {
+			continue // no session master: cannot check content; the header note already says so
+		}
+		if verifyRecordedObject(ctx, store, c, k, entry, mk) {
+			corrupt++
 		}
 	}
-	if unrecorded == 0 && missing == 0 {
-		suffix := ""
-		if !verified {
-			suffix = " (manifest unverified; see above)"
+	if unrecorded == 0 && missing == 0 && corrupt == 0 {
+		if mk != nil {
+			c.ok("%d object(s), all recorded, present, and matching their manifest MAC", len(keys))
+		} else {
+			c.ok("%d object(s), all recorded and present (content unverified: no session key)", len(keys))
 		}
-		c.ok("%d object(s), every one recorded in the manifest, none missing%s", len(keys), suffix)
 	}
+}
+
+// verifyRecordedObject checks one present, non-folded recorded object's content
+// the way a fold would: it must decrypt under the master and match its manifest
+// MAC. It reports true only when the object is genuinely corrupt (a fold will
+// fail closed on it); a transient read error is surfaced but not counted as
+// corruption. Called only with a session master available.
+func verifyRecordedObject(ctx context.Context, store *headerTarget, c *checkup, key string, entry crypto.ManifestEntry, mk *crypto.MasterKey) bool {
+	blob, err := store.Get(ctx, key)
+	if err != nil {
+		c.problem("object %s could not be read for verification: %v", key, err)
+		return false
+	}
+	plain, err := mk.Decrypt(blob)
+	if err != nil {
+		c.problem("object %s is recorded but does not decrypt under the master (bit-rot or tampering): a fold will fail closed naming it. Recover it from the remote's version history, read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it for good (acknowledged data loss)", key, key)
+		return true
+	}
+	if err := mk.CheckObjectMAC(plain, entry.MAC); err != nil {
+		c.problem("object %s does not match its manifest MAC (reverted or substituted): a fold will fail closed naming it. Recover the correct bytes from the remote's version history, read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it (acknowledged data loss)", key, key)
+		return true
+	}
+	return false
 }
 
 func init() {

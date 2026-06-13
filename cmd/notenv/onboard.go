@@ -35,12 +35,12 @@ func splitOnboardingString(s string) (pass, fingerprint string) {
 // master by valid signed transitions (a rotation between `key add` and first
 // contact is legitimate and proves itself). Runs before the first pin is
 // written, so a substituted vault is refused instead of trusted on first use.
-func verifyOnboardingFingerprint(ctx context.Context, store keymgmt.Vault, h *crypto.Header, mk *crypto.MasterKey, code string) error {
+func verifyOnboardingFingerprint(h *crypto.Header, mk *crypto.MasterKey, code string) error {
 	if crypto.Fingerprint(h.VaultID, h.SignPub) == code {
 		ui.Successf("onboarding code verified: this is the vault you were invited to")
 		return nil
 	}
-	if err := keymgmt.Descends(ctx, store, h, mk, func(signPub string) bool {
+	if err := keymgmt.Descends(h, mk, func(signPub string) bool {
 		return crypto.Fingerprint(h.VaultID, signPub) == code
 	}); err != nil {
 		return fmt.Errorf("the onboarding code does not match this vault, and no signed rotation connects this vault to one it matches. The storage may be presenting a substituted vault; verify with whoever onboarded you before trusting anything here")

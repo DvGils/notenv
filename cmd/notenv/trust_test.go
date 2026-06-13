@@ -19,7 +19,6 @@ import (
 func trustVault(t *testing.T) (*memstore.Store, *crypto.MasterKey, *age.X25519Identity, string) {
 	t.Helper()
 	isolateConfig(t)
-	ctx := context.Background()
 	store := memstore.New()
 	scope := "trust-scope"
 
@@ -43,7 +42,7 @@ func trustVault(t *testing.T) (*memstore.Store, *crypto.MasterKey, *age.X25519Id
 	}
 	store.SetHeader(raw)
 
-	if err := trustHeader(ctx, store, scope, header, mk); err != nil {
+	if err := trustHeader(scope, header, mk); err != nil {
 		t.Fatalf("first contact must pin: %v", err)
 	}
 	return store, mk, id, scope
@@ -74,7 +73,6 @@ func rotateElsewhere(t *testing.T, store *memstore.Store, id *age.X25519Identity
 // machine must be accepted silently — the signed transition chain proves it —
 // and the local pin must move to the new master.
 func TestTrustHeaderFollowsSignedRotation(t *testing.T) {
-	ctx := context.Background()
 	store, _, id, scope := trustVault(t)
 
 	newMK := rotateElsewhere(t, store, id)
@@ -82,7 +80,7 @@ func TestTrustHeaderFollowsSignedRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := trustHeader(ctx, store, scope, header, newMK); err != nil {
+	if err := trustHeader(scope, header, newMK); err != nil {
 		t.Fatalf("a signed rotation must not alarm: %v", err)
 	}
 	pin, have, err := config.ReadPin(header.VaultID)
@@ -101,7 +99,7 @@ func TestTrustHeaderFollowsSignedRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := trustHeader(ctx, store, scope, header, finalMK); err != nil {
+	if err := trustHeader(scope, header, finalMK); err != nil {
 		t.Fatalf("a multi-hop signed chain must not alarm: %v", err)
 	}
 }
@@ -109,7 +107,6 @@ func TestTrustHeaderFollowsSignedRotation(t *testing.T) {
 // TestTrustHeaderStillAlarmsOnSubstitution: a header wrapping a master with no
 // signed path from the pin must alarm exactly as before transitions existed.
 func TestTrustHeaderStillAlarmsOnSubstitution(t *testing.T) {
-	ctx := context.Background()
 	store, _, _, scope := trustVault(t)
 
 	header, err := crypto.ParseHeader(store.Header())
@@ -133,7 +130,7 @@ func TestTrustHeaderStillAlarmsOnSubstitution(t *testing.T) {
 	}
 	store.SetHeader(raw)
 
-	err = trustHeader(ctx, store, scope, header, intruder)
+	err = trustHeader(scope, header, intruder)
 	if err == nil {
 		t.Fatal("an unsigned master change must alarm")
 	}
@@ -143,7 +140,6 @@ func TestTrustHeaderStillAlarmsOnSubstitution(t *testing.T) {
 // bound storage location is wholesale replacement, alarmed regardless of how
 // internally consistent the new vault is.
 func TestTrustHeaderAlarmsOnVaultReplacement(t *testing.T) {
-	ctx := context.Background()
 	store, _, _, scope := trustVault(t)
 
 	replacement, mk, err := crypto.NewHeader("other-pass", "intruder")
@@ -156,7 +152,7 @@ func TestTrustHeaderAlarmsOnVaultReplacement(t *testing.T) {
 	}
 	store.SetHeader(raw)
 
-	err = trustHeader(ctx, store, scope, replacement, mk)
+	err = trustHeader(scope, replacement, mk)
 	if err == nil || !strings.Contains(err.Error(), "replaced") {
 		t.Fatalf("a swapped vault identity must alarm as replacement, got %v", err)
 	}

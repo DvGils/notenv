@@ -64,7 +64,7 @@ func newSimVault(t *testing.T, seed int64, putFailRate float64) *simVault {
 	if err != nil {
 		t.Fatal(err)
 	}
-	header := &crypto.Header{Version: 4, VaultID: vaultID, Revision: 1}
+	header := &crypto.Header{Version: 5, Suite: crypto.SuiteX25519, VaultID: vaultID, Revision: 1}
 	if err := header.AddRecipientSlot(id.Recipient(), "sim", mk); err != nil {
 		t.Fatal(err)
 	}

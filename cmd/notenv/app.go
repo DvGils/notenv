@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/DvGils/notenv/internal/backend"
@@ -37,6 +38,7 @@ type app struct {
 	cacheScope   string // length-prefixed remote+base (config.CacheScope): one key per storage base
 	cacheTTL     time.Duration
 	readOnly     string // non-empty: why mutating commands are refused (requireWritable)
+	salvage      bool   // read past untrustable recorded objects (--skip-corrupt); set only by read-only surfaces
 }
 
 // readOnlyReason returns why writes to a storage are refused, or "" when
@@ -164,8 +166,11 @@ func (a *app) storageKey(key string) string {
 // buildEnv resolves the env the child runs with: the contract's declared vars
 // when a project is loaded, otherwise every secret in the namespace under its
 // storage key. A projectless run has no contract to narrow, rename, or
-// require anything.
+// require anything. The base is first stripped of notenv's own credential
+// (stripCredentialEnv): the master-equivalent identity must never ride into a
+// child notenv spawns.
 func (a *app) buildEnv(base []string, secretMap map[string]string) ([]string, error) {
+	base = stripCredentialEnv(base)
 	if a.contract != nil {
 		return a.contract.BuildEnv(base, secretMap)
 	}
@@ -178,6 +183,25 @@ func (a *app) buildEnv(base []string, secretMap map[string]string) ([]string, er
 		env = append(env, key+"="+secretMap[key])
 	}
 	return env, nil
+}
+
+// stripCredentialEnv removes notenv's own credential (NOTENV_IDENTITY) from an
+// environment handed to a child process. The identity decrypts the whole vault,
+// so it must never propagate into a process notenv spawns, where an `env` dump
+// or a crash reporter would leak it. Only NOTENV_IDENTITY is stripped: the other
+// NOTENV_* vars are non-secret policy a nested notenv should keep inheriting.
+// This stops the accidental leak, not a determined reader: a same-uid child can
+// still read the value out of notenv's own /proc. The caller's slice is not
+// mutated.
+func stripCredentialEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if name, _, found := strings.Cut(kv, "="); found && name == identityEnv {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // injectedSecrets pairs each env var notenv injects with its value, the exact
@@ -233,7 +257,7 @@ func (a *app) view(ctx context.Context, mk *crypto.MasterKey) (*vaultView, error
 	if h.Recipient != mk.PublicKey() {
 		return nil, fmt.Errorf("%w; re-run the command to unlock the current key", keymgmt.ErrEpochChanged)
 	}
-	if err := trustHeader(ctx, v, a.cacheScope, h, mk); err != nil {
+	if err := trustHeader(a.cacheScope, h, mk); err != nil {
 		return nil, err
 	}
 	return &vaultView{header: h, raw: raw, mk: mk}, nil
@@ -309,7 +333,7 @@ func (a *app) appendGuardedBatch(ctx context.Context, view *vaultView, prev *sec
 	delta := crypto.ManifestDelta{Add: map[string]crypto.ManifestEntry{}, Prune: prev.Prunable}
 	now := time.Now().Unix()
 	for _, w := range writes {
-		seq, err := config.NextSeq(a.cacheScope, a.namespace)
+		seq, err := config.NextSeq(a.cacheScope, a.namespace, state.HighWater(a.machine))
 		if err != nil {
 			rollback()
 			return nil, err
@@ -368,7 +392,12 @@ func (a *app) foldState(ctx context.Context) (*secrets.State, *vaultView, error)
 			if view, ferr = a.view(ctx, mk); ferr != nil {
 				return ferr
 			}
-			state, ferr = a.namespaceFor(view).Fold(ctx)
+			ns := a.namespaceFor(view)
+			if a.salvage {
+				state, ferr = ns.FoldSalvage(ctx)
+			} else {
+				state, ferr = ns.Fold(ctx)
+			}
 			return ferr
 		})
 	})
@@ -376,7 +405,19 @@ func (a *app) foldState(ctx context.Context) (*secrets.State, *vaultView, error)
 		return nil, nil, err
 	}
 	reportStrays(state)
+	reportCorrupt(state)
 	return state, view, nil
+}
+
+// reportCorrupt warns, loudly and per object, about recorded objects a salvage
+// fold dropped. The list is only ever populated under --skip-corrupt, so this
+// is silent on a strict read. The framing is deliberate: each dropped object may
+// have reverted or erased a key, and on a non-versioned remote the bytes may be
+// unrecoverable, so the user has to see exactly what was lost.
+func reportCorrupt(state *secrets.State) {
+	for _, c := range state.Corrupt {
+		ui.Warnf("salvage: dropped untrustable object %s (%s); any key it held is missing or reverted to an older value. Recover it from the remote's version history, or `notenv key evict-object %s` to drop it for good", c.Key, c.Reason, c.Key)
+	}
 }
 
 // reportStrays surfaces what a fold found around the manifest: in-flight
@@ -404,7 +445,10 @@ type resolved struct {
 // are cached; otherwise it folds from storage and repopulates the cache.
 // refresh skips the cache to pull another machine's changes.
 func (a *app) fetchSecrets(ctx context.Context, refresh bool) (*resolved, error) {
-	if !refresh {
+	// Salvage never touches the warm cache: serving a cached complete fold would
+	// defeat the request, and caching a degraded one would silently hand later
+	// reads a fold missing its dropped keys.
+	if !refresh && !a.salvage {
 		if cached, ok := a.cachedSecrets(); ok {
 			return cached, nil
 		}
@@ -416,7 +460,9 @@ func (a *app) fetchSecrets(ctx context.Context, refresh bool) (*resolved, error)
 	if !state.HasHistory() {
 		return nil, fmt.Errorf("no secrets stored yet for namespace %q; use `notenv set KEY` first", a.namespace)
 	}
-	a.cacheFolded(view.mk, state)
+	if !a.salvage {
+		a.cacheFolded(view.mk, state)
+	}
 	reportConflicts(state.Conflicts)
 	return &resolved{secrets: state.Secrets, meta: state.Meta}, nil
 }
