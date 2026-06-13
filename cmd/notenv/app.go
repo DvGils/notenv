@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/DvGils/notenv/internal/backend"
@@ -164,8 +165,11 @@ func (a *app) storageKey(key string) string {
 // buildEnv resolves the env the child runs with: the contract's declared vars
 // when a project is loaded, otherwise every secret in the namespace under its
 // storage key. A projectless run has no contract to narrow, rename, or
-// require anything.
+// require anything. The base is first stripped of notenv's own credential
+// (stripCredentialEnv): the master-equivalent identity must never ride into a
+// child notenv spawns.
 func (a *app) buildEnv(base []string, secretMap map[string]string) ([]string, error) {
+	base = stripCredentialEnv(base)
 	if a.contract != nil {
 		return a.contract.BuildEnv(base, secretMap)
 	}
@@ -178,6 +182,25 @@ func (a *app) buildEnv(base []string, secretMap map[string]string) ([]string, er
 		env = append(env, key+"="+secretMap[key])
 	}
 	return env, nil
+}
+
+// stripCredentialEnv removes notenv's own credential (NOTENV_IDENTITY) from an
+// environment handed to a child process. The identity decrypts the whole vault,
+// so it must never propagate into a process notenv spawns, where an `env` dump
+// or a crash reporter would leak it. Only NOTENV_IDENTITY is stripped: the other
+// NOTENV_* vars are non-secret policy a nested notenv should keep inheriting.
+// This stops the accidental leak, not a determined reader: a same-uid child can
+// still read the value out of notenv's own /proc. The caller's slice is not
+// mutated.
+func stripCredentialEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if name, _, found := strings.Cut(kv, "="); found && name == identityEnv {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // injectedSecrets pairs each env var notenv injects with its value, the exact

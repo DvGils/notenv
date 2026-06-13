@@ -200,7 +200,9 @@ func runEditor(path string) error {
 	parts := strings.Fields(editor)
 	cmd := exec.Command(parts[0], append(parts[1:], path)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	cmd.Env = append(os.Environ(), "TMPDIR="+filepath.Dir(path))
+	// The editor is a child like any other: notenv's own credential must not
+	// ride into it.
+	cmd.Env = append(stripCredentialEnv(os.Environ()), "TMPDIR="+filepath.Dir(path))
 	return cmd.Run()
 }
 
