@@ -321,8 +321,48 @@ recover a prior object version through the remote's version history instead.`,
 			return err
 		}
 		ui.Successf("header restored from backup")
+		repinAfterRestore(cmd.Context(), store)
 		return nil
 	},
+}
+
+// repinAfterRestore advances the local rollback pin to the just-restored header
+// so the operator's next command does not raise a rollback alarm against their
+// own deliberate recovery: the restored header is a revision behind whatever was
+// last committed, so it would otherwise trip the rollback check. The re-pin is
+// prompt-free and gated on the cached master verifying the restored header, so
+// it can only ever move the pin back to a header this machine's master vouches
+// for, never to a planted one. With no usable cached master (a cold session, or
+// a restore across a master rotation) it explains the pin-ahead state instead.
+func repinAfterRestore(ctx context.Context, store *headerTarget) {
+	raw, err := store.GetHeader(ctx)
+	if err != nil {
+		return
+	}
+	header, err := crypto.ParseHeader(raw)
+	if err != nil {
+		return
+	}
+	var mk *crypto.MasterKey
+	if cached, ok := keyring.DefaultCache().Get(store.scope); ok {
+		mk, _ = crypto.ParseMasterKey(cached)
+	}
+	if repinRestored(store.scope, header, mk) {
+		ui.Notef("rollback pin moved to the restored revision %d", header.Revision)
+		return
+	}
+	ui.Warnf("the restored header is at revision %d; if this machine pinned a higher one, the next unlock raises a rollback alarm. After confirming this restore is what you intended, run `notenv key trust` to accept it", header.Revision)
+}
+
+// repinRestored pins header for scope when mk verifies it, the safety gate that
+// keeps the re-pin from trusting anything the master does not vouch for. Returns
+// whether it pinned.
+func repinRestored(scope string, header *crypto.Header, mk *crypto.MasterKey) bool {
+	if mk == nil || header.Verify(mk) != nil {
+		return false
+	}
+	pinCurrent(scope, header, mk)
+	return true
 }
 
 // unlocked carries everything a mutating key operation needs after it has

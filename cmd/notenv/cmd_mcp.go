@@ -277,12 +277,14 @@ func mcpRunWithSecrets(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 
 	// Tool output is headed for a model's context: always mask, and clip so a
-	// chatty child can't flood it. The child's stdin is empty; ours carries
-	// the protocol.
+	// chatty child can't flood it. Mask down to a single byte (unlike the CLI's
+	// length floor): a short secret echoed into a model's context is worse than
+	// the occasional shredded common string. The child's stdin is empty; ours
+	// carries the protocol.
 	injected := a.injectedSecrets(res.secrets)
 	var stdout, stderr bytes.Buffer
-	outMask := runner.NewMasker(&stdout, injected)
-	errMask := runner.NewMasker(&stderr, injected)
+	outMask := runner.NewMaskerFloor(&stdout, injected, 1)
+	errMask := runner.NewMaskerFloor(&stderr, injected, 1)
 	start := time.Now()
 	code, err := runner.Run(args.Command, env, nil, outMask, errMask)
 	flushMasker(outMask)
