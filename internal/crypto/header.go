@@ -41,10 +41,17 @@ import (
 // (see manifest.go); version 4 added per-slot Provisional and TS; version 5
 // moved the rotation history into the header (the Transitions field), so a
 // master change and its signed record land in one compare-and-swap rather than
-// two writes that can race. The exact-match rule matters here too: a v4 reader
-// would drop Transitions and reseal the header without the chain, stranding any
-// machine pinned at an older master. This build reads only version 5; there is
-// no in-place upgrade path for older vaults.
+// two writes that can race, and made the format self-describing about its
+// algorithms (the Suite identifier and per-slot KDF tag, see suite.go) so a
+// future KDF or hybrid recipient is an additive registry change rather than a
+// version bump. The exact-match rule matters here too: a v4 reader would drop
+// Transitions and reseal the header without the chain, stranding any machine
+// pinned at an older master. This build reads only version 5; there is no
+// in-place upgrade path for older vaults.
+//
+// Note the two axes are distinct: this Version governs the header's structural
+// schema (exact-match, break-on-mismatch), while Suite/KDF govern the algorithm
+// selection within a schema (a registry, additive, fail-closed on the unknown).
 const headerVersion = 5
 
 // Header is the parsed header object. Optional-shaped fields carry omitempty
@@ -54,6 +61,7 @@ const headerVersion = 5
 // verification of every header already sealed under the old rules.
 type Header struct {
 	Version   int    `json:"version"`
+	Suite     string `json:"suite"`              // cipher-suite identifier (see suite.go): the algorithm bundle this vault uses. notenv owns the choice; users never select one
 	VaultID   string `json:"vault_id,omitempty"` // random, minted once at creation; the stable identity pins and transitions are scoped to, surviving relocation of the vault to another remote/base
 	Recipient string `json:"recipient"`          // master public key (decorative)
 	SignPub   string `json:"sign_pub,omitempty"` // the master's Ed25519 public key (derived from the master secret); pins store it, rotation transitions are verified against it
@@ -85,6 +93,7 @@ type Slot struct {
 	Type      string `json:"type"`              // "passphrase" | "recipient"
 	PublicKey string `json:"public_key"`        // recipient of Master
 	Wrapped   []byte `json:"wrapped,omitempty"` // passphrase slots: slot private key, scrypt-encrypted
+	KDF       string `json:"kdf,omitempty"`     // passphrase slots: the KDF its Wrapped blob uses (see suite.go); empty on recipient slots
 	// Provisional marks a passphrase slot still wrapped under the temporary
 	// onboarding passphrase its issuer generated (and therefore knows). Tooling
 	// refuses to operate under a provisional slot until its holder rotates it
@@ -121,7 +130,7 @@ func NewHeader(passphrase, slotName string) (*Header, *MasterKey, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	header := &Header{Version: headerVersion, VaultID: vaultID, Revision: 1}
+	header := &Header{Version: headerVersion, Suite: currentSuite, VaultID: vaultID, Revision: 1}
 	if err := header.AddPassphraseSlot(passphrase, slotName, mk); err != nil {
 		return nil, nil, err
 	}
@@ -144,7 +153,7 @@ func NewRecipientHeader(recipient *age.X25519Recipient, slotName string) (*Heade
 	if err != nil {
 		return nil, nil, err
 	}
-	header := &Header{Version: headerVersion, VaultID: vaultID, Revision: 1}
+	header := &Header{Version: headerVersion, Suite: currentSuite, VaultID: vaultID, Revision: 1}
 	if err := header.AddRecipientSlot(recipient, slotName, mk); err != nil {
 		return nil, nil, err
 	}
@@ -164,8 +173,14 @@ func NewVaultID() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-// GenerateMasterKey mints a fresh master key with no header (used by rotation).
+// GenerateMasterKey mints a fresh master key under the current suite (used by
+// rotation, which always lands on current-best; see design/crypto-agility.md).
 func GenerateMasterKey() (*MasterKey, error) {
+	return generateMaster(currentSuite)
+}
+
+// newX25519Master mints the SuiteX25519 master: a random age X25519 identity.
+func newX25519Master() (*MasterKey, error) {
 	identity, err := age.GenerateX25519Identity()
 	if err != nil {
 		return nil, fmt.Errorf("generate master key: %w", err)
@@ -180,7 +195,11 @@ func (h *Header) AddPassphraseSlot(passphrase, name string, mk *MasterKey) error
 	if err != nil {
 		return fmt.Errorf("generate slot key: %w", err)
 	}
-	wrapped, err := NewPassphraseCipher(passphrase).Encrypt([]byte(slotKey.String()))
+	cipher, err := slotCipherFor(currentKDF, passphrase)
+	if err != nil {
+		return err
+	}
+	wrapped, err := cipher.Encrypt([]byte(slotKey.String()))
 	if err != nil {
 		return fmt.Errorf("wrap slot key: %w", err)
 	}
@@ -189,6 +208,7 @@ func (h *Header) AddPassphraseSlot(passphrase, name string, mk *MasterKey) error
 		Type:      SlotPassphrase,
 		PublicKey: slotKey.Recipient().String(),
 		Wrapped:   wrapped,
+		KDF:       currentKDF,
 	})
 	return h.rewrapMaster(mk)
 }
@@ -216,11 +236,16 @@ func (h *Header) RotateSlot(i int, newPassphrase string, slotKey *age.X25519Iden
 	if h.Slots[i].Type != SlotPassphrase {
 		return errors.New("only a passphrase slot has a passphrase to rotate")
 	}
-	wrapped, err := NewPassphraseCipher(newPassphrase).Encrypt([]byte(slotKey.String()))
+	cipher, err := slotCipherFor(currentKDF, newPassphrase)
+	if err != nil {
+		return err
+	}
+	wrapped, err := cipher.Encrypt([]byte(slotKey.String()))
 	if err != nil {
 		return fmt.Errorf("wrap slot key: %w", err)
 	}
 	h.Slots[i].Wrapped = wrapped
+	h.Slots[i].KDF = currentKDF // re-wrapping a slot modernizes its KDF to current-best
 	h.Slots[i].Provisional = false
 	return nil
 }
@@ -307,11 +332,14 @@ func (h *Header) rewrapMaster(mk *MasterKey) error {
 // of passphrase slots tried before a match (a wrong passphrase pays for all of
 // them). Fine at the intended 2–3 slots; a vault with many will feel it.
 func (h *Header) Unlock(passphrase string) (*MasterKey, int, *age.X25519Identity, error) {
-	cipher := NewPassphraseCipher(passphrase)
 	matched := false // some slot's wrapped key decrypted under this passphrase
 	for i, slot := range h.Slots {
 		if slot.Type == SlotRecipient || len(slot.Wrapped) == 0 {
 			continue
+		}
+		cipher, err := slotCipherFor(slot.KDF, passphrase)
+		if err != nil {
+			continue // unknown KDF (ParseHeader rejects these; defensive here)
 		}
 		plain, err := cipher.Decrypt(slot.Wrapped)
 		if err != nil {
@@ -394,6 +422,28 @@ func ParseHeader(data []byte) (*Header, error) {
 	}
 	if len(h.Auth) == 0 {
 		return nil, errors.New("corrupt header: missing authentication tag")
+	}
+	// Cryptographic agility, fail-closed (see suite.go): a vault names the
+	// algorithm bundle it uses, and a build refuses any suite or passphrase KDF it
+	// does not implement, rather than guessing. This is what enforces the
+	// compatibility contract, an older binary will not silently mishandle a vault
+	// written under a newer suite.
+	if h.Suite == "" {
+		return nil, errors.New("corrupt header: no cipher suite")
+	}
+	if !SuiteKnown(h.Suite) {
+		return nil, fmt.Errorf("this vault uses cipher suite %q, which this notenv does not know; upgrade notenv", h.Suite)
+	}
+	for i, slot := range h.Slots {
+		if slot.Type != SlotPassphrase {
+			continue
+		}
+		if slot.KDF == "" {
+			return nil, fmt.Errorf("corrupt header: passphrase slot %d has no KDF", i)
+		}
+		if !KDFKnown(slot.KDF) {
+			return nil, fmt.Errorf("slot %d uses passphrase KDF %q, which this notenv does not know; upgrade notenv", i, slot.KDF)
+		}
 	}
 	return &h, nil
 }
