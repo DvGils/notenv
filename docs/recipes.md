@@ -1,0 +1,181 @@
+# Recipes
+
+Task-first snippets for the situations notenv shows up in. Each one is the short version; the link
+takes you to the guide with the full artifact and the reasoning.
+
+## Solo developer
+
+### Start with a local vault
+
+No accounts, no rclone, one passphrase.
+
+```sh
+notenv setup                   # local vault (the default)
+cd my-project && notenv init   # writes notenv.toml (commit it)
+notenv import .env && rm .env  # or: notenv set KEY one at a time
+notenv run -- npm run dev      # secrets injected for this process only
+```
+
+→ [Quick start](getting-started/quick-start.md)
+
+### Use a cloud remote instead
+
+Run `notenv setup` and choose the cloud option; notenv walks you through selecting or creating an
+rclone remote (Backblaze B2, S3, SFTP, WebDAV, anything rclone speaks).
+
+→ [Cloud remotes](guides/cloud-remotes.md)
+
+### Move a local vault to a remote
+
+Same vault afterward, nothing re-encrypted, every credential still works.
+
+```sh
+notenv vault copy
+```
+
+→ [Cloud remotes](guides/cloud-remotes.md#move-a-local-vault-to-a-remote)
+
+### Set up on another of your machines
+
+```sh
+git clone <your-project> && cd <your-project>
+notenv setup                   # enter your escrowed passphrase
+notenv run -- ...              # ready
+```
+
+→ [On a new machine](getting-started/new-machine.md)
+
+## Teams
+
+### Onboard a teammate
+
+```sh
+notenv key add alice           # prints a one-time onboarding string; send it over a private channel
+```
+
+Alice points her machine at the same storage, runs `notenv setup`, and enters the string; her first
+command replaces it with a passphrase only she knows.
+
+→ [Teams and keys](guides/teams-and-keys.md#onboard-a-teammate)
+
+### Offboard a teammate or machine
+
+`key rm` removes the slot **and** re-keys the vault (fresh master, every secret re-encrypted), so the
+removed credential decrypts nothing new. Then rotate the storage credential at your provider, which
+notenv cannot do for you.
+
+```sh
+notenv key rm alice            # re-keys automatically; surviving slots keep working
+# then: rotate the bucket/SFTP credential at your provider
+```
+
+→ [Teams and keys](guides/teams-and-keys.md#offboard-a-teammate-or-machine)
+
+### Change a passphrase, or re-key as a precaution
+
+```sh
+notenv key rotate              # rewraps your slot (header only; secrets untouched)
+notenv key rotate-master       # fresh master, every secret re-encrypted, all slots kept
+```
+
+→ [Teams and keys](guides/teams-and-keys.md#other-key-operations)
+
+## CI/CD
+
+### Run a job with secrets
+
+One-time, on your machine, mint a CI identity:
+
+```sh
+notenv key add --machine ci    # paste the printed AGE-SECRET-KEY... into your CI secret store
+```
+
+In the job, define the rclone remote from the environment, point notenv at the vault, and run:
+
+```sh
+export RCLONE_CONFIG_NOTENV_TYPE=b2
+export RCLONE_CONFIG_NOTENV_ACCOUNT="$B2_KEY_ID"
+export RCLONE_CONFIG_NOTENV_KEY="$B2_APP_KEY"
+export NOTENV_IDENTITY="$CI_NOTENV_IDENTITY"
+notenv init --remote notenv --base my-bucket/notenv
+notenv run -- npm test
+```
+
+→ [Continuous integration](guides/ci.md) has complete GitHub Actions and GitLab files.
+
+### Deploy from a job with no checkout
+
+Address the namespace directly, and name it so the headless first-use is consented:
+
+```sh
+notenv init --remote notenv --base my-bucket/notenv
+export NOTENV_ACCEPT_NAMESPACE=my-service
+notenv run --namespace my-service -- ./deploy.sh
+```
+
+→ [Pin the vault from outside the repo](guides/ci.md#pin-the-vault-from-outside-the-repo)
+
+### Make a job read-only
+
+```sh
+export NOTENV_READONLY=1        # refuses every mutating command (policy; pair with a read-only storage credential)
+```
+
+→ [Refuse writes](guides/ci.md#refuse-writes)
+
+## AI agents
+
+### A shell agent (skill or AGENTS.md)
+
+Install the [agent skill](https://github.com/DvGils/notenv/tree/main/skills/notenv) into your agent's
+skill location, or drop the short block from the guide into `AGENTS.md` / `CLAUDE.md`. The agent runs
+work with `notenv run -- <cmd>` and discovers secrets with `notenv list`, never seeing a value.
+
+→ [AI agents](guides/ai-agents.md#the-skill)
+
+### An agent over MCP
+
+```sh
+claude mcp add notenv -- notenv mcp        # or any MCP client, stdio transport
+```
+
+For a JSON-configured client, see the [`mcp.json`](guides/ai-agents.md#the-mcp-server) entry. Four
+read/exec tools, none of which returns a secret value.
+
+→ [AI agents](guides/ai-agents.md#the-mcp-server)
+
+## Operations
+
+### Check a vault's health
+
+Read-only; names any recoverable problem state and the way out.
+
+```sh
+notenv doctor
+```
+
+→ [Commands](reference/commands.md)
+
+### Pull a change made on another machine
+
+```sh
+notenv run --refresh -- ...    # bypass the local cache for this run
+```
+
+→ [Caching and performance](guides/caching.md#pulling-another-machines-changes)
+
+### Recover after a lost or dead machine
+
+Nothing to restore but your passphrase: it lives in your password manager, not on the storage. On a
+new machine, `git clone`, `notenv setup`, and you are back.
+
+→ [On a new machine](getting-started/new-machine.md)
+
+### Rotate after a suspected compromise
+
+```sh
+notenv key rotate-master       # fresh master; anything captured stops decrypting new writes
+# then: rotate the storage credential at your provider
+```
+
+→ [Teams and keys](guides/teams-and-keys.md)

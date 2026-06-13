@@ -284,7 +284,9 @@ recoverable states described here and below and names the way out of each:
 
 Releases are built reproducibly with GoReleaser, signed with
 [cosign](https://github.com/sigstore/cosign) (keyless), and carry SLSA build provenance; the
-[installation page](../getting-started/installation.md) shows how to verify a download. The
+[installation page](../getting-started/installation.md) shows how to verify a download. The release
+pipeline is pinned to match: every GitHub Action it runs is fixed to an immutable commit SHA, and
+publishing is gated on a protected environment, so a pushed tag cannot ship a release on its own. The
 client-side-crypto core is intentionally small and auditable: the tool never needs to be trusted with
 anything at rest.
 

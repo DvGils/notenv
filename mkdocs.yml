@@ -96,6 +96,7 @@ nav:
       - Installation: getting-started/installation.md
       - Quick start: getting-started/quick-start.md
       - On a new machine: getting-started/new-machine.md
+  - Recipes: recipes.md
   - Guides:
       - Import an existing .env: guides/import.md
       - Teams and key management: guides/teams-and-keys.md
