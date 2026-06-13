@@ -599,6 +599,17 @@ func addMachineSlot(ctx context.Context, store *headerTarget, u *unlocked, name 
 	return nil
 }
 
+// refuseRecipientPrimary blocks transferring primary to a machine identity.
+// Primary is the human governance anchor: a recipient slot's private key lives
+// only on the machine it was enrolled for, so making it primary would leave
+// nobody able to transfer primary away or remove it once that machine is lost.
+func refuseRecipientPrimary(h *crypto.Header, target int) error {
+	if h.Slots[target].Type == crypto.SlotRecipient {
+		return errors.New("primary must be a human (passphrase) slot, not a machine identity: its key lives only on that machine, so making it primary could strand primary if the machine is lost")
+	}
+	return nil
+}
+
 var keySetPrimaryCmd = &cobra.Command{
 	Use:   "set-primary <name | index>",
 	Short: "Transfer the primary slot to another slot",
@@ -626,6 +637,9 @@ cannot be removed, and only its holder may transfer primary.`,
 		}
 		if target == u.slot {
 			return errors.New("that slot is already primary")
+		}
+		if err := refuseRecipientPrimary(u.header, target); err != nil {
+			return err
 		}
 		if err := u.header.SetPrimary(target); err != nil {
 			return err

@@ -285,33 +285,46 @@ func (h *Header) rewrapMaster(mk *MasterKey) error {
 	return nil
 }
 
-// Unlock opens the master via a passphrase. It finds the passphrase slot whose
-// wrapped private key the passphrase decrypts, then decrypts the master with
-// that slot key. Returns the master, the matched slot index, and the slot
-// private key (needed to rotate that passphrase). ErrWrongPassphrase if none
-// opens. Cost note: each trial is a full scrypt derivation, so unlock latency
-// scales with the number of passphrase slots tried before a match (and a wrong
-// passphrase always pays for all of them). Fine at the intended 2–3 slots;
-// a vault with many passphrase slots will feel it.
+// Unlock opens the master via a passphrase. It tries each passphrase slot in
+// turn and returns the first whose wrapped private key the passphrase decrypts
+// AND which opens the master: the master, the matched slot index, and the slot
+// private key (needed to rotate that passphrase). A slot whose blob does not
+// decrypt, does not parse as a key, or whose key is not a recipient of the
+// master is skipped, not fatal, so one corrupt, stale, or planted slot cannot
+// shadow a valid later slot under the same passphrase. ErrWrongPassphrase if
+// none opens, with a distinct hint when a slot's passphrase matched but its key
+// could not open the master (a tampered or half-rotated header). Cost note: each
+// trial is a full scrypt derivation, so unlock latency scales with the number
+// of passphrase slots tried before a match (a wrong passphrase pays for all of
+// them). Fine at the intended 2–3 slots; a vault with many will feel it.
 func (h *Header) Unlock(passphrase string) (*MasterKey, int, *age.X25519Identity, error) {
 	cipher := NewPassphraseCipher(passphrase)
+	matched := false // some slot's wrapped key decrypted under this passphrase
 	for i, slot := range h.Slots {
 		if slot.Type == SlotRecipient || len(slot.Wrapped) == 0 {
 			continue
 		}
 		plain, err := cipher.Decrypt(slot.Wrapped)
-		if errors.Is(err, ErrWrongPassphrase) {
-			continue
-		}
 		if err != nil {
-			return nil, -1, nil, fmt.Errorf("slot %q: %w", slot.Name, err)
+			continue // wrong passphrase for this slot, or a blob that will not open
 		}
 		slotKey, err := age.ParseX25519Identity(string(plain))
 		if err != nil {
-			return nil, -1, nil, fmt.Errorf("slot %q: invalid slot key: %w", slot.Name, err)
+			continue // decrypted to something that is not a slot key: corrupt or planted
 		}
+		matched = true
 		mk, err := h.unlockMaster(slotKey)
-		return mk, i, slotKey, err
+		if err != nil {
+			var noMatch *age.NoIdentityMatchError
+			if errors.As(err, &noMatch) {
+				continue // a valid slot key that is not a recipient of the master
+			}
+			return nil, -1, nil, fmt.Errorf("slot %q: %w", slot.Name, err)
+		}
+		return mk, i, slotKey, nil
+	}
+	if matched {
+		return nil, -1, nil, fmt.Errorf("%w: a slot's passphrase matched but its key does not open the vault master (a tampered or half-rotated header)", ErrWrongPassphrase)
 	}
 	return nil, -1, nil, ErrWrongPassphrase
 }

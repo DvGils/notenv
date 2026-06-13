@@ -360,3 +360,63 @@ func TestProvisionalRotationClears(t *testing.T) {
 		t.Fatal("rotation must preserve the master key")
 	}
 }
+
+// TestUnlockSkipsSlotThatDoesNotOpenMaster: a passphrase slot whose wrapped key
+// decrypts under the passphrase but is not a recipient of the master (a stale or
+// planted slot) must not shadow a valid later slot that shares the passphrase.
+func TestUnlockSkipsSlotThatDoesNotOpenMaster(t *testing.T) {
+	const pass = "shared passphrase"
+	header, mk, err := NewHeader(pass, "owner@laptop")
+	if err != nil {
+		t.Fatalf("NewHeader: %v", err)
+	}
+	if err := header.AddPassphraseSlot(pass, "backup@laptop", mk); err != nil {
+		t.Fatalf("AddPassphraseSlot: %v", err)
+	}
+	// Poison slot 0: its blob still decrypts under the passphrase, but to an
+	// identity that is not a recipient of the master, so it cannot open it.
+	foreign, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	poisoned, err := NewPassphraseCipher(pass).Encrypt([]byte(foreign.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	header.Slots[0].Wrapped = poisoned
+
+	got, idx, _, err := header.Unlock(pass)
+	if err != nil {
+		t.Fatalf("Unlock must skip the poisoned slot and use the valid one: %v", err)
+	}
+	if idx != 1 {
+		t.Fatalf("opened slot %d, want the valid slot 1", idx)
+	}
+	if got.PublicKey() != mk.PublicKey() {
+		t.Fatal("Unlock returned a master other than the vault's")
+	}
+}
+
+// TestUnlockMatchedButNoneOpens: when the passphrase matches a slot whose key
+// cannot open the master and no other slot opens, Unlock reports
+// ErrWrongPassphrase (so callers re-prompt) rather than a raw age error.
+func TestUnlockMatchedButNoneOpens(t *testing.T) {
+	const pass = "the passphrase"
+	header, _, err := NewHeader(pass, "owner@laptop")
+	if err != nil {
+		t.Fatalf("NewHeader: %v", err)
+	}
+	foreign, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	poisoned, err := NewPassphraseCipher(pass).Encrypt([]byte(foreign.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	header.Slots[0].Wrapped = poisoned
+
+	if _, _, _, err := header.Unlock(pass); !errors.Is(err, ErrWrongPassphrase) {
+		t.Fatalf("Unlock = %v, want ErrWrongPassphrase", err)
+	}
+}
