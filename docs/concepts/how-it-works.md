@@ -20,7 +20,8 @@ notenv run -- cmd
 1. **Fetch.** notenv reads the namespace's ciphertext from your storage (a local vault directory or a
    remote reached through rclone). On Linux a warm cache can serve this with no network at all.
 2. **Unlock.** The master key is recovered by unwrapping a key slot with your passphrase or age
-   identity. On Linux it is cached in the kernel keyring for the session.
+   identity. It is cached in the platform key store for the session (the kernel keyring on Linux, the
+   Keychain on macOS, DPAPI on Windows).
 3. **Decrypt.** Secrets are decrypted into memory. Plaintext never touches disk.
 4. **Build the environment.** notenv assembles the child's environment from the declarations in
    `notenv.toml` (or, in projectless mode, every secret in the namespace).

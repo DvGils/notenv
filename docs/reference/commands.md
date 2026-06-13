@@ -12,14 +12,14 @@
 | `notenv set KEY --stdin` | Read the value from stdin (for multiline or piped values). |
 | `notenv set KEY --description "..."` | Also record what the secret is for. Omitted, the existing note is kept; `""` clears it. |
 | `notenv unset KEY` | Remove a stored secret value. |
-| `notenv list` | List stored secret names with descriptions and modified times (never values). `--json` for machines; piped output is bare names. |
+| `notenv list` | List stored secret names with descriptions and modified times (never values). `--json` for machines; piped output is bare names; `--refresh` bypasses the local cache. |
 | `notenv run -- cmd` | Run a command with secrets injected as environment variables. |
 | `notenv run --refresh -- cmd` | Same, but bypass the local cache and pull the latest secrets first. |
 | `notenv doctor` | Check a storage read-only for known problem states; exit 1 when there are findings. |
 | `notenv compact` | Force-fold a namespace's change segments into a single snapshot (also happens automatically). |
 | `notenv cache clear` | Remove all locally cached ciphertext on this machine. |
 | `notenv vault copy` | Replicate this vault to new storage (for example local to cloud) and register it. The source is untouched. |
-| `notenv mcp` | Serve the vault to MCP clients over stdio: discovery, masked execution, doctor; never a value. |
+| `notenv mcp` | Serve this machine's vaults to MCP clients over stdio: discovery, masked execution, doctor; never a value. |
 | `notenv --version` | Print the version, commit, and build date. |
 
 ## Targeting a vault
