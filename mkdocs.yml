@@ -1,5 +1,5 @@
 site_name: notenv
-site_description: Your .env, encrypted and off your disk, with no infrastructure to run.
+site_description: Encrypted secrets, no infrastructure, no plaintext on disk.
 site_url: https://dvgils.github.io/notenv/
 site_author: DvGils
 
