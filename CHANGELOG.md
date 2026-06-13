@@ -4,6 +4,101 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.16.0
+
+The pre-v1 hardening release. A five-way bug hunt across the storage, crypto, key-management,
+backend, and CLI layers, run before the v1 freeze with every finding fixed; the first slice of
+the credential broker; a way out of a corrupt object; and a crypto format that now describes its
+own algorithms, so a future KDF or post-quantum recipient is an additive change instead of a
+format break.
+
+### Security
+
+- **The vault credential no longer leaks into child environments.** A recipient identity supplied
+  via `NOTENV_IDENTITY` decrypts the whole vault, and `run`, `mcp run_with_secrets`, and the
+  `edit` editor all built the child's environment from the parent's unfiltered, so the
+  master-equivalent key was inherited by every child and could land in a log, a crash report, or
+  an `env` dump. `NOTENV_IDENTITY` is now stripped from the child. This is the broker's first
+  slice: accident-proofing for the credential, the analog of the output masker, not a containment
+  wall. A same-uid child can still read the value deliberately (that is the OS boundary's job, and
+  the threat model says so), but the accidental leak is closed. A nested `notenv run -- notenv …`
+  still works, because the inner notenv unlocks from the session cache rather than the variable.
+- **`Remote` and `Base` are validated before they reach rclone.** They were taken raw and kept
+  safe only by the end-of-options marker at the exec boundary. They are now rejected on write for
+  a leading dash, control characters, and (for the base) `..` path segments, so a later refactor
+  that trusts the marker less cannot reopen flag injection.
+
+### Added
+
+- **A way out of a corrupt or missing object.** A single recorded object that was missing,
+  undecryptable, or failed its manifest MAC used to fail every read and every compaction for the
+  whole namespace, with no tool-supported recovery. Now `notenv key evict-object <key>` drops the
+  object from the manifest and storage (acknowledged data loss, gated behind `--yes`), and
+  `notenv run|list --skip-corrupt` reads past untrustable objects non-destructively, resolving
+  every key it still can and naming each one it dropped. The default fold stays fail-closed:
+  salvage is opt-in, so a dropped or tampered object is never silently skipped. `doctor` now
+  decrypts and MAC-checks every recorded object when a session key is cached, so a
+  present-but-corrupt object is caught before a read trips over it, and its advice no longer points
+  at a compaction that cannot run.
+- **The crypto format is now self-describing.** The header records the cipher suite it uses and
+  each passphrase slot records its KDF, and a build refuses, fail-closed, any suite or KDF it does
+  not implement. notenv ships exactly one of each, so nothing changes today, but a future stronger
+  KDF or a hybrid post-quantum recipient becomes an additive registry entry rather than a format
+  break. notenv owns the choice entirely; there is no user-facing suite concept.
+
+### Fixed
+
+- **A reset or migrated sequence counter no longer causes a false replay lockout.** Replay
+  detection assumed a machine's sequence counter only moves forward, but that counter is local,
+  per-scope state classified as silently migratable, while the high-water it is checked against
+  lives on the remote keyed by the durable machine id. Losing or migrating the counter (a restore
+  that omits it, or renaming a remote, which restarts it at zero) while the machine id survived
+  could make an honest write look like a replayed deletion and fail the namespace closed for every
+  machine. A write's sequence number is now floored at the fold's observed high-water for that
+  machine, so a lost counter can never reissue a number already on storage.
+- **Concurrent `rotate-master` no longer strands teammates with a false rollback alarm.** The
+  rotation history lived in a separate object with no compare-and-swap, so two machines rotating
+  from the same master could have the loser's write erase the winner's transition record, leaving a
+  third machine pinned at the old master unable to find a signed path forward. The history now rides
+  inside the header, so a master change and its signed record land in one compare-and-swap.
+- **`Unlock` no longer aborts on a slot that decrypts but does not open the master.** A stale slot
+  from an interrupted `key rm`, or one planted under a known passphrase, could shadow a valid later
+  slot sharing that passphrase. The loop now skips a slot whose key is not a recipient of the
+  master and continues, failing only once every slot is exhausted, with a distinct message when a
+  passphrase matched a slot that could not open the vault (a tampered or half-rotated header).
+- **`restore-backup` re-pins after restoring.** Every other header writer advances the local pin;
+  this one did not, so restoring a one-revision-old backup after the pin had moved ahead raised a
+  rollback alarm on the operator's own recovery and pointed them at a security override. It now
+  re-pins to the restored header (gated on the cached master verifying it), so an honest restore no
+  longer reads as an attack.
+- **`set-primary` onto a machine slot is refused.** Assigning primary to a recipient
+  (machine/teammate) slot froze governance: transferring or removing primary then required that one
+  identity, and losing it made primary unrecoverable. Primary is a human governance anchor; a
+  machine identity can no longer hold it.
+- **A Ctrl-C during a hidden prompt no longer leaves the terminal with echo off.** Hidden prompts
+  now restore terminal state before exiting on a signal, so a subsequently typed secret is not
+  invisible.
+- **The MCP output masker no longer skips short values.** The CLI masker skips values under six
+  bytes to avoid shredding tokens like `8080`; on the MCP surface the masked stream feeds a model's
+  context, where a short PIN should not pass through, so the MCP masker has no floor.
+- Tidies: a leading byte-order mark on an imported `.env` is stripped instead of becoming part of
+  the first key; the local backend's path guard rejects a `..` path component rather than any `..`
+  substring; object names now carry 64 bits of randomness.
+
+### Breaking changes
+
+- **Header format version 5.** The rotation history moved into the header, and the header gained
+  the cipher-suite and per-slot KDF identifiers. v4 vaults (0.13 through 0.15) are not readable by
+  this build (pre-1.0, no migration path, consistent with earlier header bumps). The
+  segment/snapshot payload format is unchanged at version 3.
+
+### Documentation
+
+- The threat model and the agents/CI guidance frame the broker's first slice: what the credential
+  strip contains (accidental leakage into child environments) and what it does not (a same-uid
+  process that is actively looking, or the orchestrator that holds the credential by necessity),
+  with the OS trust boundary that real containment requires.
+
 ## 0.15.0
 
 Deletions become durable, the passphrase prompt stops being a tax on macOS and Windows,
