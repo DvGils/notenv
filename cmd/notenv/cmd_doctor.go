@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -238,20 +239,8 @@ func checkObjects(cmd *cobra.Command, store *headerTarget, c *checkup, header *c
 		if mk == nil {
 			continue // no session master: cannot check content; the header note already says so
 		}
-		blob, err := store.Get(ctx, k)
-		if err != nil {
-			c.problem("object %s could not be read for verification: %v", k, err)
-			continue
-		}
-		plain, err := mk.Decrypt(blob)
-		if err != nil {
+		if verifyRecordedObject(ctx, store, c, k, entry, mk) {
 			corrupt++
-			c.problem("object %s is recorded but does not decrypt under the master (bit-rot or tampering): a fold will fail closed naming it. Recover it from the remote's version history, read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it for good (acknowledged data loss)", k, k)
-			continue
-		}
-		if err := mk.CheckObjectMAC(plain, entry.MAC); err != nil {
-			corrupt++
-			c.problem("object %s does not match its manifest MAC (reverted or substituted): a fold will fail closed naming it. Recover the correct bytes from the remote's version history, read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it (acknowledged data loss)", k, k)
 		}
 	}
 	if unrecorded == 0 && missing == 0 && corrupt == 0 {
@@ -261,6 +250,29 @@ func checkObjects(cmd *cobra.Command, store *headerTarget, c *checkup, header *c
 			c.ok("%d object(s), all recorded and present (content unverified: no session key)", len(keys))
 		}
 	}
+}
+
+// verifyRecordedObject checks one present, non-folded recorded object's content
+// the way a fold would: it must decrypt under the master and match its manifest
+// MAC. It reports true only when the object is genuinely corrupt (a fold will
+// fail closed on it); a transient read error is surfaced but not counted as
+// corruption. Called only with a session master available.
+func verifyRecordedObject(ctx context.Context, store *headerTarget, c *checkup, key string, entry crypto.ManifestEntry, mk *crypto.MasterKey) bool {
+	blob, err := store.Get(ctx, key)
+	if err != nil {
+		c.problem("object %s could not be read for verification: %v", key, err)
+		return false
+	}
+	plain, err := mk.Decrypt(blob)
+	if err != nil {
+		c.problem("object %s is recorded but does not decrypt under the master (bit-rot or tampering): a fold will fail closed naming it. Recover it from the remote's version history, read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it for good (acknowledged data loss)", key, key)
+		return true
+	}
+	if err := mk.CheckObjectMAC(plain, entry.MAC); err != nil {
+		c.problem("object %s does not match its manifest MAC (reverted or substituted): a fold will fail closed naming it. Recover the correct bytes from the remote's version history, read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it (acknowledged data loss)", key, key)
+		return true
+	}
+	return false
 }
 
 func init() {
