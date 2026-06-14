@@ -90,8 +90,9 @@ The server is headless, so its environment is the configuration:
 
 !!! danger "This is accident-proofing, not a security boundary"
 
-    An agent running as your user can still extract a value deliberately (any encoding defeats
-    exact-byte masking: `notenv run -- sh -c 'printenv KEY | base64'`) or read the session key cache,
+    An agent running as your user can still extract a value deliberately (masking covers the value and
+    its common encodings, but a transform it does not anticipate walks around it:
+    `notenv run -- sh -c 'printenv KEY | rev'`) or read the session key cache,
     and a child process that legitimately holds a secret can always send it somewhere. Masking
     catches accidents, not intent.
 

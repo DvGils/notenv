@@ -159,8 +159,10 @@ What holds, and against whom.
   injected from the child's stdout/stderr whenever the stream is captured (not a terminal), replacing
   them with named placeholders, so a server that echoes its connection string on boot does not hand it
   to the CI log, the shell pipeline, or the LLM reading the tool output. Best-effort by construction:
-  exact byte matching (an encoded or transformed value passes through), values shorter than 6 bytes are
-  skipped, and a live terminal is wired through untouched unless `--mask` is given. This is
+  the value and its common encodings (base64, hex, percent) are matched, but a value transformed in a
+  way notenv does not anticipate (compressed, reversed, encrypted, double-encoded) or embedded in a
+  larger blob before encoding passes through, values shorter than 6 bytes are skipped, and a live
+  terminal is wired through untouched unless `--mask` is given. This is
   **accident-proofing for the dominant real-world leak, not a boundary**. Turning masking off for a
   captured stream (`--no-mask`) requires a freshly typed passphrase even when the session key is
   cached, so it is a human's act, never an agent's; the same gate will guard any future command that
@@ -205,8 +207,9 @@ notenv does **not** defend these, by design. Treating them as in-scope would be 
   secrets; that is the product. Namespace pinning stops a malicious repository from *silently* reaching
   another project's secrets, not from misusing the secrets you knowingly hand it.
 - **Deliberate extraction by anything running as your user.** An agent (or any code) with your UID can
-  run `notenv run -- sh -c 'printenv KEY | base64'` (masking is exact-byte matching, so any encoding
-  walks around it) or read the session key cache; output masking catches accidents, not intent. The
+  run `notenv run -- sh -c 'printenv KEY | rev'` (masking covers the value and its common encodings,
+  but a transform it does not anticipate walks around it) or read the session key cache; output masking
+  catches accidents, not intent. The
   same trust model as ssh-agent. A broker that holds the unlocked key in a separate trust domain
   (agents *use*, provably cannot *extract*) is planned, and until it exists notenv makes no
   agent-containment claim.
