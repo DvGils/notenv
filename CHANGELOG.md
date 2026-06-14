@@ -4,6 +4,51 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.17.0
+
+The ergonomics-and-offboarding release. The first run loses its rough edges, output masking gets
+meaningfully stronger (it now scrubs a secret's common encodings, not just its literal bytes), and a
+clean way out arrives: export your plaintext and delete a vault, without notenv ever writing a secret
+to a file.
+
+### Added
+
+- **`notenv export`: take your secrets and leave.** Prints a namespace (or, with `--all`, the whole
+  vault) as `.env` to standard output, the inverse of `import`, so `notenv export | notenv import`
+  round-trips a namespace. notenv never opens a plaintext file itself; it writes only to stdout, and
+  redirecting it (`notenv export > .env`) is your deliberate act, so the no-plaintext-on-disk promise
+  holds. There is deliberately no `--output` flag. Bulk plaintext egress is gated like `run
+  --no-mask`: it asks for the vault's primary passphrase even when the session key is cached, refuses
+  without a terminal, and a machine identity cannot perform it. `--json` emits a structured form.
+- **`notenv vault delete`: remove a vault for good.** Deletes a configured vault's objects, this
+  machine's trust state for it (the rollback pin and cached key), and its entry in the machine
+  config, behind the primary passphrase and a type-the-name confirmation. notenv removes the live
+  vault; a versioned remote's history and your own backups are the provider's to purge, and the
+  message says so. There is no `--force`: notenv only ever destroys a vault you can prove you own. If
+  you have lost the passphrase, delete the storage yourself and run `notenv key forget`.
+
+### Changed
+
+- **Output masking now catches a secret's common encodings, not just its literal bytes.** Because
+  notenv knows the exact values it injected, it scrubs each one along with its base64 (standard and
+  URL, padded and not), hex (upper and lower), and percent-encoded forms from captured output, with
+  none of the false-positive risk a guessing scanner carries. So a token base64'd into an auth header
+  or a password percent-encoded into a logged URL is caught now. It stays accident-proofing, not a
+  boundary: a value transformed in a way notenv does not anticipate, or embedded in a larger blob
+  before encoding, still passes, as do values shorter than 6 bytes. A first-byte index keeps matching
+  fast as the pattern set grows, so injecting many secrets stays snappy.
+- **A smoother first run.** `notenv init` no longer prompts for a namespace: it defaults to the
+  directory name and shows it in the result (`--namespace` still overrides). A first-time `notenv
+  setup` no longer asks "add another storage?" right after creating your first vault (re-running
+  setup still offers it). And `notenv init` confirms before scaffolding a project in your home
+  directory or a filesystem root, so a mistyped `cd` does not quietly make `$HOME` a notenv project.
+
+### Documentation
+
+- The masking limits are restated now that common encodings are caught: the example of what defeats
+  masking is a transform notenv does not anticipate (piping a value through `rev`), not `base64`,
+  which is now masked. The threat model, the AI-agents guide, and the `run` help text reflect this.
+
 ## 0.16.0
 
 The pre-v1 hardening release. A five-way bug hunt across the storage, crypto, key-management,
