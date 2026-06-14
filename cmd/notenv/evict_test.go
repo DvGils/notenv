@@ -2,20 +2,18 @@ package main
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/backend/memstore"
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keymgmt"
 	"github.com/DvGils/notenv/internal/secrets"
 )
 
-// brickedVault seeds a vault with two recorded segments and corrupts one, so a
-// strict fold fails closed. Returns the store, master, and the corrupt object's
-// key.
-func brickedVault(t *testing.T) (*memstore.Store, *crypto.MasterKey, string) {
+// brickedVault seeds the "proj" namespace with a current blob and a
+// one-generation backup, then corrupts the current blob so a strict read fails
+// closed. Returns the store, master, and the namespace's manifest entry.
+func brickedVault(t *testing.T, alsoCorruptBackup bool) (*memstore.Store, *crypto.MasterKey, crypto.ManifestEntry) {
 	t.Helper()
 	ctx := context.Background()
 	store := memstore.New()
@@ -25,100 +23,106 @@ func brickedVault(t *testing.T) (*memstore.Store, *crypto.MasterKey, string) {
 	}
 	header.Revision = 0
 
-	manifest := map[string]crypto.ManifestEntry{}
-	ns := secrets.For(store, "proj", mk, "m1", manifest)
-	view := &secrets.State{Secrets: map[string]string{}}
-	var corrupt string
-	for i, w := range []secrets.Write{{Key: "A", Value: "alpha"}, {Key: "B", Value: "beta"}} {
-		updated, objKey, entry, err := ns.Append(ctx, view, i+1, w)
-		if err != nil {
-			t.Fatal(err)
-		}
-		manifest[objKey] = entry
-		view = updated
-		if w.Key == "B" {
-			corrupt = objKey
-		}
+	nsw := secrets.For(store, "proj", mk)
+	empty, err := nsw.Read(ctx, crypto.ManifestEntry{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	header.Manifest = manifest
+	_, prevEntry, err := nsw.WriteBlob(ctx, empty.Apply([]secrets.Write{{Key: "A", Value: "alpha"}}), crypto.ManifestEntry{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	curState := empty.Apply([]secrets.Write{{Key: "A", Value: "alpha2"}, {Key: "B", Value: "beta"}})
+	_, curEntry, err := nsw.WriteBlob(ctx, curState, prevEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header.SetNamespace("proj", curEntry)
 	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner pass"); return m, e }
 	if err := keymgmt.SafePut(ctx, store, header, nil, mk, verify); err != nil {
 		t.Fatal(err)
 	}
-	// Any byte flip becomes a decrypt failure under authenticated encryption.
-	if err := store.Put(ctx, corrupt, []byte("junk")); err != nil {
+	// A byte flip becomes a decrypt failure under authenticated encryption.
+	if err := store.Put(ctx, curEntry.Blob, []byte("junk")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := secrets.For(store, "proj", mk, "m1", manifest).Fold(ctx); err == nil {
-		t.Fatal("setup: the vault must be bricked before eviction")
+	if alsoCorruptBackup {
+		if err := store.Put(ctx, curEntry.Prev, []byte("junk")); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return store, mk, corrupt
+	if _, err := secrets.For(store, "proj", mk).Read(ctx, curEntry); err == nil {
+		t.Fatal("setup: the current blob must be unreadable before eviction")
+	}
+	return store, mk, curEntry
 }
 
-// TestEvictObjectUnbricksFold: evicting the corrupt object drops it from both
-// the manifest and storage, and a strict fold then succeeds, resolving every
-// surviving key while the evicted one is simply gone.
-func TestEvictObjectUnbricksFold(t *testing.T) {
+// TestEvictRecoversFromBackup: with the current blob corrupt but the backup
+// intact, eviction rewrites the namespace from the backup, so a strict read
+// then succeeds at the last good state (losing only the most recent write).
+func TestEvictRecoversFromBackup(t *testing.T) {
 	isolateConfig(t)
 	ctx := context.Background()
-	store, mk, corrupt := brickedVault(t)
-
+	store, mk, entry := brickedVault(t, false)
 	target := &headerTarget{vaultStorage: doctorStore{store}, scope: "scope"}
-	if err := evictObject(ctx, target, mk, corrupt); err != nil {
+
+	state, err := secrets.For(store, "proj", mk).ReadSalvage(ctx, entry)
+	if err != nil {
+		t.Fatalf("salvage: %v", err)
+	}
+	if len(state.Corrupt) == 0 {
+		t.Fatal("setup: salvage should report the corrupt current blob")
+	}
+	if err := evictNamespace(ctx, target, mk, "proj", state, entry); err != nil {
 		t.Fatalf("evict: %v", err)
 	}
 
-	if _, err := store.Get(ctx, corrupt); !errors.Is(err, backend.ErrNotFound) {
-		t.Fatalf("the evicted object must be deleted from storage, got %v", err)
-	}
-	raw, err := store.GetHeader(ctx)
+	h, err := crypto.ParseHeader(store.Header())
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := crypto.ParseHeader(raw)
+	e, ok := h.NamespaceEntry("proj")
+	if !ok {
+		t.Fatal("the recovered namespace must still have an entry")
+	}
+	if e.Prev != "" {
+		t.Fatal("a recovered namespace starts fresh, with no backup yet")
+	}
+	recovered, err := secrets.For(store, "proj", mk).Read(ctx, e)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("a strict read must succeed after eviction: %v", err)
 	}
-	if _, ok := h.Manifest[corrupt]; ok {
-		t.Fatal("the evicted object must be dropped from the manifest")
+	if recovered.Secrets["A"] != "alpha" {
+		t.Fatalf("recovered A = %q, want alpha (the backup)", recovered.Secrets["A"])
 	}
-	state, err := secrets.For(store, "proj", mk, "m1", h.Manifest).Fold(ctx)
-	if err != nil {
-		t.Fatalf("a strict fold must succeed after eviction: %v", err)
-	}
-	if state.Secrets["A"] != "alpha" {
-		t.Fatalf("the surviving key must resolve: A=%q", state.Secrets["A"])
-	}
-	if _, ok := state.Secrets["B"]; ok {
-		t.Fatal("the evicted key must be gone")
+	if _, ok := recovered.Secrets["B"]; ok {
+		t.Fatal("B was only in the corrupt current blob; it must be gone")
 	}
 }
 
-// TestEvictObjectReportsDeleteFailure: when the manifest prune succeeds but the
-// object delete fails, eviction surfaces evictDeleteError, and the entry is gone
-// regardless so reads no longer require the object.
-func TestEvictObjectReportsDeleteFailure(t *testing.T) {
+// TestEvictClearsWhenNothingSurvives: with both generations corrupt, eviction
+// drops the namespace's entry entirely (acknowledged total loss).
+func TestEvictClearsWhenNothingSurvives(t *testing.T) {
 	isolateConfig(t)
 	ctx := context.Background()
-	store, mk, corrupt := brickedVault(t)
-
-	store.FailDeleteAfter(0, errors.New("storage offline"))
+	store, mk, entry := brickedVault(t, true)
 	target := &headerTarget{vaultStorage: doctorStore{store}, scope: "scope"}
 
-	err := evictObject(ctx, target, mk, corrupt)
-	var de *evictDeleteError
-	if !errors.As(err, &de) {
-		t.Fatalf("a failed delete after a successful prune must surface as evictDeleteError, got %v", err)
+	state, err := secrets.For(store, "proj", mk).ReadSalvage(ctx, entry)
+	if err != nil {
+		t.Fatalf("salvage: %v", err)
 	}
-	raw, err := store.GetHeader(ctx)
+	if len(state.Secrets) != 0 {
+		t.Fatalf("nothing should survive, got %v", state.Secrets)
+	}
+	if err := evictNamespace(ctx, target, mk, "proj", state, entry); err != nil {
+		t.Fatalf("evict: %v", err)
+	}
+	h, err := crypto.ParseHeader(store.Header())
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := crypto.ParseHeader(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := h.Manifest[corrupt]; ok {
-		t.Fatal("the entry must be pruned even when the object delete fails")
+	if _, ok := h.NamespaceEntry("proj"); ok {
+		t.Fatal("a totally unrecoverable namespace must be dropped from the manifest")
 	}
 }

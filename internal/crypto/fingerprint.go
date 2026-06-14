@@ -10,11 +10,14 @@ import (
 // other hash of header fields.
 const fingerprintContext = "notenv-onboarding-fingerprint-v1"
 
-// fingerprintLen is the printed length in base32 characters: 12 characters
-// carry 60 bits, putting a brute-force search for a colliding signing key
-// (the attack is grinding keypairs offline until the digest matches) beyond
-// casual reach while staying short enough to ride along a chat message.
-const fingerprintLen = 12
+// fingerprintLen is the printed length in base32 characters: 16 characters
+// carry 80 bits. This is the only cryptographic barrier against an active
+// substitution attacker on a compromised onboarding channel (the temp passphrase
+// already defeats substitution otherwise), and the attack is an offline grind of
+// attacker-chosen vault identities until the digest matches, so the bar must be a
+// resourced-adversary bar, not a casual one. 80 bits is past a GPU-cluster grind
+// while still short enough to ride along a chat message.
+const fingerprintLen = 16
 
 // fingerprintEncoding is lowercase base32 without padding: case-insensitive
 // to retype, no characters that need escaping or break on word boundaries.

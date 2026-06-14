@@ -75,21 +75,15 @@ func TestRequirePrimarySlot(t *testing.T) {
 	}
 }
 
-// TestVaultNamespaces lists namespaces from object names alone.
+// TestVaultNamespaces lists namespaces from the authenticated header manifest.
 func TestVaultNamespaces(t *testing.T) {
-	ctx := context.Background()
-	store := memstore.New()
-	for _, k := range []string{"ns1/seg-a.age", "ns1/snap-b.age", "ns2/seg-c.age"} {
-		if err := store.Put(ctx, k, []byte("x")); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := vaultNamespaces(ctx, store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	header := &crypto.Header{Manifest: map[string]crypto.ManifestEntry{
+		"ns2": {Blob: "ns2/data.age", MAC: "c"},
+		"ns1": {Blob: "ns1/data.age", MAC: "a"},
+	}}
+	got := vaultNamespaces(header)
 	if len(got) != 2 || got[0] != "ns1" || got[1] != "ns2" {
-		t.Fatalf("vaultNamespaces = %v, want [ns1 ns2]", got)
+		t.Fatalf("vaultNamespaces = %v, want [ns1 ns2] (sorted)", got)
 	}
 }
 
@@ -97,7 +91,7 @@ func TestVaultNamespaces(t *testing.T) {
 // terminal, so bulk plaintext egress and deletion need a human.
 func TestHumanUnlockNonInteractive(t *testing.T) {
 	forceNonInteractive(t)
-	_, _, _, err := humanUnlock(context.Background(), memstore.New(), "exporting plaintext")
+	_, _, _, err := humanUnlock(context.Background(), memstore.New(), "scope", "exporting plaintext")
 	if err == nil || !strings.Contains(err.Error(), "no terminal") {
 		t.Fatalf("humanUnlock must refuse non-interactively, got %v", err)
 	}

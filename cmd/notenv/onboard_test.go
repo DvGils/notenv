@@ -77,18 +77,18 @@ func TestEnforceProvisionalRefusesReadOnly(t *testing.T) {
 }
 
 func TestSplitOnboardingString(t *testing.T) {
-	pass, fp := splitOnboardingString("edge-bats-prize-dab-pagan-probe/3f6k2c7m4x2p")
-	if pass != "edge-bats-prize-dab-pagan-probe" || fp != "3f6k2c7m4x2p" {
+	pass, fp := splitOnboardingString("edge-bats-prize-dab-pagan-probe/3f6k2c7m4x2pqr5s")
+	if pass != "edge-bats-prize-dab-pagan-probe" || fp != "3f6k2c7m4x2pqr5s" {
 		t.Fatalf("split = %q, %q", pass, fp)
 	}
 	for _, plain := range []string{
 		"my own passphrase",
 		"with/slash",
-		"edge-bats-prize-dab-pagan-probe",              // no code
-		"edge-bats-prize-dab-pagan-probe/3f6k2c",       // code too short
-		"edge-bats-prize-dab/3f6k2c7m4x2p",             // too few words
-		"Edge-bats-prize-dab-pagan-probe/3f6k2c7m4x2p", // uppercase
-		"edge-bats-prize-dab-pagan-probe/3f6k2c7m4x21", // 1 is not base32
+		"edge-bats-prize-dab-pagan-probe",                  // no code
+		"edge-bats-prize-dab-pagan-probe/3f6k2c",           // code too short
+		"edge-bats-prize-dab/3f6k2c7m4x2pqr5s",             // too few words
+		"Edge-bats-prize-dab-pagan-probe/3f6k2c7m4x2pqr5s", // uppercase
+		"edge-bats-prize-dab-pagan-probe/3f6k2c7m4x2pqr51", // 1 is not base32
 	} {
 		if pass, fp := splitOnboardingString(plain); pass != plain || fp != "" {
 			t.Fatalf("%q must not split, got %q, %q", plain, pass, fp)

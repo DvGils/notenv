@@ -4,6 +4,113 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.18.0
+
+The storage-simplification release, and the last big break before the v1 format freeze. The
+append-only change log (per-write segments folded over snapshots by a Lamport clock, with
+compaction, per-machine sequence counters, and replay detection) is gone, replaced by a single
+encrypted blob per namespace under last-write-wins. Every write decrypts the current blob, applies
+its change, writes a fresh blob, and points the header at it under the same compare-and-swap that
+already guards the manifest. The hardened machinery being removed is exactly where the gnarliest
+concurrency bugs lived, so this deletes whole bug classes, not just code. See
+[design/v1-scope.md](https://github.com/DvGils/notenv/blob/main/design/v1-scope.md).
+
+**Breaking, on purpose: this does not read a vault written by an earlier notenv.** The header format
+is now version 6 and an older vault fails closed with a clear message. There is no in-place upgrade
+(pre-1.0, no stable release): to move secrets across, `notenv export` from the old binary and
+`notenv import` into a fresh 0.18.0 vault.
+
+### Changed
+
+- **One encrypted blob per namespace, last-write-wins.** Two people writing the same namespace
+  serialize on the header swap; the loser re-reads the now-current blob and re-applies its change, so
+  writes to different keys both survive and only same-key writes resolve last-writer-wins. The
+  property the log gave up is lock-free parallel writing, which the rare-interactive-write premise
+  never needed. Same-key concurrent edits no longer surface as a "conflict": there is one current
+  value, the last write.
+- **A corrupt namespace blob falls back to a one-generation backup.** Each write keeps the blob it
+  superseded (recorded by a `prev` pointer the header still vouches for), so a bit-rotted or truncated
+  current blob loses at most the most recent write instead of the whole namespace. Kept on every
+  backend; a remote's own version history is a bonus, not something notenv relies on.
+- **`notenv key evict-object <object>` is now `notenv key evict <namespace>`.** It rewrites a
+  namespace whose current blob is unreadable from what survives (its backup, or empty if that is gone
+  too) and drops the corrupt blobs, the per-namespace shape of the salvage story.
+- **`notenv doctor` reports per namespace.** It verifies each namespace's current blob (and notes a
+  missing or corrupt backup), and reports a stored object no manifest entry references as an orphan
+  from a crashed write; the next write to that namespace reclaims it.
+- **Orphan blobs are reclaimed automatically, with no garbage-collect step.** A blob a crashed write
+  left behind (written but never recorded in the manifest) is deleted by the next successful write to
+  its namespace, scoped to what existed before that write so a concurrent writer's in-flight blob is
+  never touched. Cleanup rides every write instead of being a chore you run.
+
+### Removed
+
+- **`notenv compact`.** There is no log to collapse; a namespace is always exactly one blob (plus its
+  one-generation backup). Auto-compaction and the per-machine sequence-counter state it needed are
+  gone with it.
+- **The `versioned` machine-config field, and every behavior keyed on it.** notenv no longer guesses
+  whether a remote keeps object versions (it never verified the guess, and the fallback it pointed at
+  was a manual `rclone` step it could not perform). It now always keeps its own `.prev` header backup,
+  so `notenv key restore-backup` works on every backend, including B2. A `versioned = ...` line in an
+  existing machine config is ignored.
+
+### Hardened
+
+- **A header write that commits but cannot be confirmed no longer destroys the write.** On an
+  eventually-consistent remote a post-swap read-back can fail after the swap has already landed; the
+  write path now treats that as committed-but-unverified and keeps the blob the live header
+  references, instead of deleting it and stranding the namespace. It reports "may have landed; run
+  `notenv doctor` / `notenv key restore-backup`" rather than a false "nothing was stored".
+- **`export` and `vault delete` run the rollback/substitution check** that every `run`/`list` read
+  does, so plaintext egress and deletion refuse a rolled-back or wholesale-replaced vault instead of
+  acting on stale or foreign state.
+- **Namespace existence is judged by the authenticated manifest, not the raw object listing,** so an
+  orphan blob from a crashed write no longer makes an empty namespace look populated (which could
+  trigger a spurious "expose these secrets?" prompt).
+- **Removing the last secret drops the namespace entirely.** An `unset` that empties a namespace no
+  longer leaves an empty blob behind, so the namespace stops reporting as holding secrets (no spurious
+  first-use prompt, no false "found existing secrets" on init).
+- **MCP namespace discovery reads the authenticated manifest,** not the raw object listing, so an
+  orphan blob from a crashed write can no longer surface as a phantom namespace over MCP.
+- **macOS: the cached master key no longer passes through `security`'s argv.** It is fed to the
+  Keychain over stdin (the tool's interactive mode) instead of as a `-w` argument, so it can no longer
+  be read from the process listing or captured by an EDR/MDM agent. This matches Linux (the kernel
+  keyring) and Windows (DPAPI), which already keep the key out of argv. No cgo; the build stays static.
+- **The onboarding fingerprint widened from 60 to 80 bits** (12 to 16 base32 characters), raising the
+  bar against an attacker who grinds a colliding vault identity on a compromised onboarding channel,
+  while still fitting in a chat message. The code is recomputed, not stored, so this only affects an
+  onboarding string generated by one version and verified by another.
+- **An interrupted `key rm` says plainly when revocation is incomplete.** If re-encryption fails
+  *after* the re-key commits, the removed credential can still read the namespaces not yet re-keyed;
+  `key rm` now tells you to treat that credential as not revoked and re-run, instead of a generic
+  error that reads like nothing changed.
+- **`edit` no longer silently clears a description** when a blank line falls between a key's
+  description comment and the key (an editor reflow, say). An absent comment now keeps the stored
+  description; clear one with `notenv set KEY --description ""`.
+- **The warm local cache now verifies a master-keyed MAC before serving.** Cached ciphertext is
+  bound to the master with a MAC a cache-writing attacker can't forge (age encryption is to the
+  master's public recipient, which the header exposes, so ciphertext alone wasn't proof of origin); a
+  forged or tampered cache entry is rejected and the authenticated read runs instead.
+- **`NOTENV_ACCEPT_NAMESPACE` is now a per-invocation override, not a permanent grant.** Accepting a
+  namespace via the env var no longer persists it, so a later run without the env re-confirms. An
+  interactive accept still persists, as before.
+- **`edit` warns on Linux when `XDG_RUNTIME_DIR` is unset,** because the buffer then falls to `/tmp`
+  on persistent disk where a typed value could linger if the editor or notenv is killed. Point
+  `XDG_RUNTIME_DIR` at a RAM-backed dir to avoid it; existing values never reach the buffer.
+- **`export` warns that its output is for `notenv import`, not `source`.** Values are emitted
+  literally, so a value containing `$(...)` or backticks is data here but a shell would execute it on
+  `source`; the warning is in the command help and at the top of the output (the dotenv parser ignores
+  it, so the import round-trip is unaffected).
+- **`notenv key evict` refuses if the namespace changed since it read,** so a concurrent repair that
+  landed mid-evict is not clobbered by the older salvaged state.
+- **Re-stating a value with `set` or `import` no longer reverts a description** another machine
+  changed concurrently: the existing description is carried forward from the live blob at write time,
+  not a stale earlier read.
+- **Object listings exclude storage plumbing consistently across backends.** The header and its
+  backup are filtered out of every backend's object listing through one shared definition, locked by a
+  conformance test, so whole-vault and orphan-cleanup operations can never mistake the header for a
+  stray object (the local and remote backends previously disagreed on what a listing returned).
+
 ## 0.17.1
 
 A patch release: the session-key cache on macOS and Windows could store an entry that read back

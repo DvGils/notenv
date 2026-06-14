@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/contract"
 	"github.com/DvGils/notenv/internal/keyring"
 	"github.com/DvGils/notenv/internal/secrets"
@@ -44,11 +43,10 @@ var setCmd = &cobra.Command{
 
 		ctx := cmd.Context()
 
-		// Fold fresh from storage (the master ceremony runs here on virgin
-		// storage). A new write appends a segment, so it never overwrites
-		// another machine's object; recording it in the manifest goes through
-		// the header swap, which retries cleanly against other writers.
-		state, view, err := a.foldState(ctx)
+		// Unlock and verify the header (the master ceremony runs here on virgin
+		// storage). The write re-reads the current blob under the header swap, so
+		// no separate read of the namespace is needed.
+		view, err := a.unlockView(ctx)
 		if err != nil {
 			return err
 		}
@@ -57,36 +55,30 @@ var setCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		seq, err := config.NextSeq(a.cacheScope, a.namespace, state.HighWater(a.machine))
-		if err != nil {
-			return err
-		}
 
 		storageKey := a.storageKey(key)
-		// A set without --description re-states the value, not what the key
-		// means: the existing description rides along. --description "" clears.
-		desc := state.Meta[storageKey].Description
+		// A set without --description re-states the value, not what the key means:
+		// the existing description rides along (KeepDescription carries the live
+		// one). --description (including "") sets it explicitly.
+		w := secrets.Write{Key: storageKey, Value: value, TS: time.Now().Unix()}
 		if cmd.Flags().Changed("description") {
-			desc = setDescription
+			w.Description = setDescription
+		} else {
+			w.KeepDescription = true
 		}
-		w := secrets.Write{Key: storageKey, Value: value, Description: desc, TS: time.Now().Unix()}
 
 		var updated *secrets.State
-		if err := ui.Spin("Uploading encrypted segment", func() error {
+		if err := ui.Spin("Uploading encrypted blob", func() error {
 			var aerr error
-			updated, aerr = a.appendGuarded(ctx, view, state, seq, w)
+			updated, aerr = a.writeNamespace(ctx, view, []secrets.Write{w})
 			return aerr
 		}); err != nil {
 			return err
 		}
-		// Refresh the local cache with the new folded state, so the next `run`
-		// on this machine is instant and coherent.
-		a.cacheFolded(view.mk, updated)
+		// Refresh the local cache with the new state, so the next `run` on this
+		// machine is instant and coherent.
+		a.cacheState(view.mk, updated)
 		ui.Successf("%s set in namespace %q", key, a.namespace)
-		// Report from the post-write state: this write settles its own key's
-		// conflict, so only genuinely unresolved ones surface.
-		reportConflicts(updated.Conflicts)
-		a.maybeCompact(ctx, view.mk, state.SegmentCount())
 
 		// Convenience: keep the committed contract in sync with reality.
 		// Projectless writes have no contract to sync.

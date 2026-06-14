@@ -1,109 +1,67 @@
-# Teams and key management
+# Share a vault with your team
 
-Several people and machines can share one vault with no server, using **key slots**. The rule that
-keeps the model honest: **passphrases are for people, identities are for machines.** A person's
-credential lives in their head and their password manager; a machine's credential lives in the
-platform's secret store. Neither ever sits in a plaintext file that notenv owns.
+Several people can share one vault with no server: each gets their own passphrase,
+and you add or remove them without re-sharing anything. This page covers
+onboarding, offboarding, and the everyday key tasks.
 
-## How sharing works
+## Add a teammate
 
-Your secrets are encrypted with a random **master key**. The master key never exists in plaintext at
-rest: a header object holds it wrapped under one or more slots. A slot is either a **passphrase**
-(a person's, escrowed in their password manager) or an **age public key** (a machine's; see
-[CI](ci.md) and [AI agents](ai-agents.md)). Unlocking any slot yields the master key for the
-session. Adding or removing a slot rewraps only the header, never the secrets.
-
-## Onboard a teammate
-
-1. **You** add them by name:
+1. Add them by name:
 
     ```sh
     notenv key add alice
     ```
 
-    notenv prints a **one-time onboarding string**: a generated high-entropy passphrase plus a
-    short code that fingerprints your vault, like `pupil-spend-fresh-flap-skit-shun/5pa7xxh6xspq`.
+    notenv prints a **one-time onboarding string**: a generated passphrase plus a
+    short code that identifies your vault, like
+    `pupil-spend-fresh-flap-skit-shun/5pa7xxh6xspq4m2n`.
 
-2. Send that string to Alice over a private channel (a chat message is fine; see the note below on
-   what an interceptor would need).
+2. Send the whole string to Alice over a private channel (a chat message is fine).
 
-3. **Alice** points her machine at the same storage and runs:
+3. Alice points her machine at the same storage and runs `notenv setup`, entering
+   the string at the passphrase prompt. notenv has her immediately set a passphrase
+   only she knows; the one-time string stops working then.
 
-    ```sh
-    notenv setup
-    ```
+Until Alice sets her own passphrase her slot shows as **provisional** in
+`notenv key list` and no command runs for her, so you can see when onboarding is
+done. After that you know none of her credentials, and nothing key-equivalent sits
+on her disk.
 
-    She enters the whole string at the passphrase prompt. notenv verifies the code against the
-    vault the storage actually served, so a substituted vault is refused before her machine trusts
-    anything (a legitimate re-key between your invite and her first contact proves itself through
-    the signed rotation chain and passes). Then it immediately makes her replace the passphrase
-    with one only she knows; the one-time passphrase stops working at that moment. Until she does
-    this, no notenv command will proceed for her, and `notenv key list` shows her slot as
-    **provisional** so you can see the onboarding is not finished.
+!!! note "Onboarding writes to the vault"
 
-That is the whole flow. After step 3 you no longer know any credential of Alice's, and nothing
-key-equivalent exists on her disk: her passphrase is in her head and her password manager, like
-yours.
+    Replacing the one-time passphrase is a write. If some members use read-only
+    storage credentials, onboard with a write-capable credential first, then switch
+    them to read-only.
 
-!!! note "What an interceptor would need"
-
-    The one-time passphrase alone decrypts nothing: the vault lives on your storage, not in the
-    chat. An adversary would need the passphrase **and** read access to your storage **during the
-    minutes before Alice replaces it**, and to defeat the fingerprint they would additionally need
-    your vault's master key. If you ever suspect that window was compromised, or a slot stays
-    provisional suspiciously long (`notenv doctor` flags it), run `notenv key rotate-master` (and
-    `notenv key rm` the slot): a fresh master key makes anything an interceptor captured useless.
-
-!!! note "Onboarding needs write access"
-
-    Replacing the one-time passphrase is a header write. If your team uses read-only storage
-    credentials for some members, onboard with the write-capable credential first, then switch the
-    member to the read-only one.
-
-## Enroll a machine
-
-CI jobs and agents are not teammates; they get **identities**, provisioned through the platform's
-secret store:
-
-```sh
-notenv key add --machine ci
-```
-
-This prints a new age identity exactly once, for pasting into the secret store; notenv saves it
-nowhere. The machine presents it via `NOTENV_IDENTITY`. If the machine generated its own identity,
-enroll its public key instead: `notenv key add --machine ci --recipient age1...`. See the
-[CI guide](ci.md) for the full recipe, including enforced read-only.
-
-## Offboard a teammate or machine
+## Remove a teammate
 
 ```sh
 notenv key rm alice
 ```
 
-This removes the slot **and re-keys the vault**: it mints a fresh master key and re-encrypts every
-secret, so the removed credential can no longer decrypt. All surviving slots keep working, and the
-re-key propagates to other machines automatically (see [below](#re-keys-propagate-silently)).
+This removes Alice's slot and re-keys the vault (a fresh master key, every secret
+re-encrypted), so her old credential can no longer decrypt. Surviving members keep
+working and pick up the change automatically.
 
-!!! warning "notenv does not own your storage"
+!!! warning "Also rotate the storage credential"
 
-    notenv cannot revoke a former holder's storage **write** access. For complete offboarding, also
-    rotate that storage's credential at your provider. Otherwise a holder who kept both the old
-    master key and write access could fork the vault's history. notenv **detects** such a fork but
-    cannot prevent it; `key rm` reminds you to rotate the credential. See the
-    [threat model](../security/threat-model.md).
+    notenv cannot revoke someone's access to the storage itself. For a complete
+    offboard, also rotate that storage's credential at your provider, or a former
+    member who kept write access could still tamper with the vault. `notenv key rm`
+    reminds you.
 
-## Other key operations
+## Everyday key tasks
 
-| Operation | Command | Effect |
-|---|---|---|
-| Change your passphrase | `notenv key rotate` | Rewraps your slot. Header only; secrets untouched. |
-| Re-key as a precaution | `notenv key rotate-master` | Fresh master key, every secret re-encrypted, all slots kept. |
-| Transfer governance | `notenv key set-primary <name>` | Moves the advisory primary slot (the one `key rm` refuses to remove). |
-| Inspect slots | `notenv key list` | Name, principal, primary, added date, fingerprint. `--json` for machines. |
+| Task | Command |
+|---|---|
+| Change your own passphrase | `notenv key rotate` |
+| Re-key the vault as a precaution | `notenv key rotate-master` |
+| Move the primary (governance) slot | `notenv key set-primary <name>` |
+| List who has access | `notenv key list` |
 
-## Re-keys propagate silently
+---
 
-Re-keys, including offboarding, reach the other machines automatically. Each rotation is signed by
-the key it replaces, so every other machine verifies the chain and follows without prompts or
-alarms. `notenv key trust` (which shows what changed and asks) is needed only for a master change
-that carries no such signed proof.
+**Under the hood:** how slots wrap the master key, how the onboarding code refuses
+a substituted vault, and how a re-key proves itself to other machines without
+prompts are in [Keys and slots](../concepts/keys-and-slots.md). What sharing
+defends and what it does not is in the [threat model](../security/threat-model.md).

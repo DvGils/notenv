@@ -9,20 +9,20 @@ import (
 	"github.com/DvGils/notenv/internal/backend/memstore"
 )
 
-func TestConformanceNonVersioned(t *testing.T) {
+func TestConformance(t *testing.T) {
 	backendtest.HeaderStoreContract(t, func(t *testing.T) backend.HeaderStore {
 		return memstore.New()
-	}, false)
-}
-
-func TestConformanceVersioned(t *testing.T) {
-	backendtest.HeaderStoreContract(t, func(t *testing.T) backend.HeaderStore {
-		return memstore.New(memstore.Versioned())
-	}, true)
+	})
 }
 
 func TestBackendConformance(t *testing.T) {
 	backendtest.BackendContract(t, func(t *testing.T) backend.Backend {
+		return memstore.New()
+	})
+}
+
+func TestVaultConformance(t *testing.T) {
+	backendtest.VaultContract(t, func(t *testing.T) backendtest.Vault {
 		return memstore.New()
 	})
 }

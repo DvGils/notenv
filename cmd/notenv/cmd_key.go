@@ -18,6 +18,7 @@ import (
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keymgmt"
 	"github.com/DvGils/notenv/internal/keyring"
+	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
@@ -304,8 +305,10 @@ var keyRestoreBackupCmd = &cobra.Command{
 	Long: `Restore the header from the backup taken before the last write.
 
 If a key operation reported that the header could not be verified after writing,
-this recovers the prior header. On a versioned remote there is no local backup;
-recover a prior object version through the remote's version history instead.`,
+this recovers the prior header. notenv keeps this backup on every backend, so it
+works the same whether your storage is local or a cloud remote. It reports an
+error only when no backup exists yet (a vault gets its first on its second header
+write).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := loadHeaderStore()
@@ -747,6 +750,14 @@ credential. The primary slot and the last remaining slot cannot be removed.`,
 			_, rErr := keymgmt.RotateMaster(cmd.Context(), store, u.header, u.raw, u.mk, u.reverify, onFlip)
 			return rErr
 		}); err != nil {
+			if errors.Is(err, keymgmt.ErrNarrowIncomplete) {
+				// The slot is removed and the master rotated, but re-encryption did
+				// not finish, so the removed credential can still read the
+				// not-yet-re-keyed namespaces. This is incomplete revocation: say so
+				// plainly rather than let the operator read "error" as "nothing
+				// happened, the slot is still there".
+				return fmt.Errorf("slot %q is removed and the vault re-keyed, but re-encryption did not finish: that credential can STILL read the namespaces not yet re-keyed. Treat it as NOT revoked and re-run `notenv key rotate-master` until it succeeds: %w", name, err)
+			}
 			return err
 		}
 		ui.Successf("removed slot %q and re-keyed the vault; that credential can no longer decrypt", name)
@@ -920,25 +931,22 @@ authentication tag must still verify.`,
 	},
 }
 
-var keyEvictObjectCmd = &cobra.Command{
-	Use:   "evict-object <object-key>",
-	Short: "Drop a missing or corrupt object from the vault manifest (acknowledged data loss)",
-	Long: `Remove one object from the vault manifest and delete it from storage.
+var keyEvictCmd = &cobra.Command{
+	Use:   "evict <namespace>",
+	Short: "Rewrite a namespace whose current blob is unreadable from what survives (acknowledged data loss)",
+	Long: `Repair a namespace a normal read refuses because its current blob is missing or
+corrupt (bit-rot, a truncated upload, an unrecoverable remote). notenv rewrites
+the namespace from what survives: its one-generation backup if that is intact
+(losing only the most recent write), or, if the backup is gone too, an empty
+namespace. The corrupt blobs are then dropped.
 
-For a vault a normal read refuses because a recorded object is missing or
-corrupt (bit-rot, a truncated upload, an unrecoverable remote) and you have
-accepted that the object's bytes are gone. Take the object key from the failing
-read's error or from 'notenv doctor'. Evicting re-seals the header without the
-entry, so reads stop failing on it; any key whose only copy was that object then
-becomes absent or reverts to an older value.
-
-This is a last resort. Prefer recovering the object from the remote's version
-history, or 'notenv run --skip-corrupt' to read what survives without changing
-anything.`,
+This is a last resort for honest media loss. Prefer recovering the blob from your
+remote's version history if it keeps one, or 'notenv run --skip-corrupt' to read
+what survives without changing anything.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		objKey := args[0]
+		ns := args[0]
 		store, err := loadHeaderStore()
 		if err != nil {
 			return err
@@ -947,73 +955,63 @@ anything.`,
 		if err != nil {
 			return err
 		}
-		entry, recorded := u.header.Manifest[objKey]
+		entry, recorded := u.header.Manifest[ns]
 		if !recorded {
-			return fmt.Errorf("object %q is not in the vault manifest; nothing to evict. If a read names it as an unrecorded object, remove it directly from storage instead (it is not manifest-bound)", objKey)
+			return fmt.Errorf("namespace %q is not in the vault manifest; nothing to evict", ns)
 		}
-		ui.Warnf("evicting %s drops it from the manifest and deletes it; any key it held becomes absent or reverts to an older value, and the bytes are unrecoverable unless your remote keeps versions", objKey)
-		if entry.Folded {
-			ui.Notef("this object is already folded (a snapshot subsumed it), so evicting it only tidies the manifest and cannot lose a live value")
+		state, err := secrets.For(store, ns, u.mk).ReadSalvage(ctx, entry)
+		if err != nil {
+			return err
+		}
+		if len(state.Corrupt) == 0 {
+			return fmt.Errorf("namespace %q reads cleanly; nothing to evict", ns)
+		}
+		for _, c := range state.Corrupt {
+			ui.Warnf("untrustable blob %s: %s", c.Blob, c.Reason)
+		}
+		survivors := len(state.Secrets)
+		if survivors > 0 {
+			ui.Warnf("evicting rewrites namespace %q from its last good backup (%d secret(s)); the most recent write(s) are lost", ns, survivors)
+		} else {
+			ui.Warnf("nothing survives for namespace %q; evicting clears it (it will hold no secrets)", ns)
 		}
 		if !keyEvictYes {
 			if !ui.Interactive() {
 				return errors.New("refusing to evict non-interactively without --yes")
 			}
-			ok, err := ui.Confirm("Evict this object?", false)
+			ok, err := ui.Confirm("Evict and rewrite this namespace?", false)
 			if err != nil {
 				return err
 			}
 			if !ok {
-				return errors.New("aborted; the manifest is unchanged")
+				return errors.New("aborted; nothing was changed")
 			}
 		}
-		err = evictObject(ctx, store, u.mk, objKey)
-		var de *evictDeleteError
-		if errors.As(err, &de) {
-			// The entry is gone, so reads no longer require the object, but the
-			// orphan left on storage can re-trip a fold as an unrecorded object.
-			ui.Warnf("dropped the manifest entry, but could not delete %s from storage: %v. Remove it by hand (e.g. `rclone deletefile`), or a later read may trip over it", objKey, de.err)
-			return &exitCodeError{code: 1}
-		}
-		if errors.Is(err, keymgmt.ErrEpochChanged) {
-			return fmt.Errorf("%w; nothing was changed. Re-unlock under the current key (verify the rotation is legitimate) and re-run", err)
-		}
-		if err != nil {
+		if err := evictNamespace(ctx, store, u.mk, ns, state, entry); err != nil {
+			if errors.Is(err, keymgmt.ErrEpochChanged) {
+				return fmt.Errorf("%w; nothing was changed. Re-unlock under the current key (verify the rotation is legitimate) and re-run", err)
+			}
 			return err
 		}
-		ui.Successf("evicted %s; reads no longer require it", objKey)
+		if survivors > 0 {
+			ui.Successf("recovered namespace %q to its last good state (%d secret(s))", ns, survivors)
+		} else {
+			ui.Successf("cleared namespace %q; it now holds no secrets", ns)
+		}
 		return nil
 	},
 }
 
-// evictDeleteError reports that an eviction dropped the manifest entry but could
-// not delete the object from storage. The entry is already gone, so reads no
-// longer require the object, but the orphan should still be removed by hand.
-type evictDeleteError struct {
-	key string
-	err error
-}
-
-func (e *evictDeleteError) Error() string {
-	return fmt.Sprintf("delete %s after eviction: %v", e.key, e.err)
-}
-func (e *evictDeleteError) Unwrap() error { return e.err }
-
-// evictObject drops one object from the vault manifest and deletes it from
-// storage. The manifest entry goes first: a delete that landed before a failed
-// prune would leave a recorded-but-missing object, the exact lockout this
-// clears. Once the entry is pruned, a failed delete is reported distinctly
-// (evictDeleteError), since reads already no longer require the object.
-func evictObject(ctx context.Context, store *headerTarget, mk *crypto.MasterKey, objKey string) error {
-	h, err := keymgmt.UpdateManifest(ctx, store, mk, crypto.ManifestDelta{Prune: []string{objKey}})
-	if err != nil {
-		return err
-	}
-	pinCurrent(store.scope, h, mk)
-	if err := store.Delete(ctx, objKey); err != nil && !errors.Is(err, backend.ErrNotFound) {
-		return &evictDeleteError{key: objKey, err: err}
-	}
-	return nil
+// evictNamespace rewrites a namespace from the salvaged state: a fresh blob (no
+// backup yet) when anything survives, or the namespace entry dropped when
+// nothing does. The corrupt blobs it replaces are dropped as part of the same
+// commit (secrets.Rewrite handles the header swap and blob cleanup). expected is
+// the manifest entry the state was salvaged under, so a concurrent repair that
+// landed since aborts the evict rather than being clobbered.
+func evictNamespace(ctx context.Context, store *headerTarget, mk *crypto.MasterKey, ns string, state *secrets.State, expected crypto.ManifestEntry) error {
+	_, err := secrets.For(store, ns, mk).Rewrite(ctx, state, expected,
+		func(h *crypto.Header) { pinCurrent(store.scope, h, mk) })
+	return err
 }
 
 func init() {
@@ -1022,6 +1020,6 @@ func init() {
 	keyListCmd.Flags().BoolVar(&keyListJSON, "json", false, "machine-readable output: vault id, revision, slots")
 	keyTrustCmd.Flags().BoolVar(&keyTrustYes, "yes", false, "pin without the interactive confirmation (for scripts; you have verified the change out of band)")
 	keyForgetCmd.Flags().BoolVar(&keyForgetForce, "force", false, "forget without the interactive confirmation")
-	keyEvictObjectCmd.Flags().BoolVar(&keyEvictYes, "yes", false, "evict without the interactive confirmation (you have accepted the data loss)")
-	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd, keyEvictObjectCmd)
+	keyEvictCmd.Flags().BoolVar(&keyEvictYes, "yes", false, "evict without the interactive confirmation (you have accepted the data loss)")
+	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd, keyEvictCmd)
 }

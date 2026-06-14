@@ -20,37 +20,20 @@ import (
 // construct one with New. A Store is not safe for concurrent use; tests drive
 // it from a single goroutine.
 type Store struct {
-	versioned bool
-
-	header      []byte // nil means no header object exists
-	prev        []byte // nil means no ".prev" backup exists
-	blobs       map[string][]byte
-	corrupt     func([]byte) []byte // applied to PutHeader bytes when set, then cleared
-	corruptBlob func([]byte) []byte // applied to the next Put's bytes, then cleared
-	putCount    int
+	header   []byte // nil means no header object exists
+	prev     []byte // nil means no ".prev" backup exists
+	blobs    map[string][]byte
+	corrupt  func([]byte) []byte // applied to PutHeader bytes when set, then cleared
+	putCount int
 
 	// blob-Put fault injection: allow putOK successful Puts, then fail one with
 	// putErr (one-shot). Used to simulate a crash mid-rotation.
 	putOK  int
 	putErr error
-	// blob-Delete fault injection, same shape: allow delOK deletes then fail one.
-	delOK  int
-	delErr error
-
-	// one-shot concurrency hooks for interleaving tests: afterList fires after
-	// List captures its keys (to inject a write a compaction won't see);
-	// beforePut fires just before Put stores (to inject a racing compaction).
-	afterList func()
-	beforePut func()
 }
 
 // Option configures a Store.
 type Option func(*Store)
-
-// Versioned marks the fake as keeping native object versions, mirroring a
-// remote like B2. As on the real backend, BackupHeader and RestoreHeaderBackup
-// then treat the ".prev" copy as redundant.
-func Versioned() Option { return func(s *Store) { s.versioned = true } }
 
 // New returns an empty Store (no header, no blobs).
 func New(opts ...Option) *Store {
@@ -101,10 +84,10 @@ func (s *Store) SwapHeader(ctx context.Context, base, updated []byte) error {
 	return s.PutHeader(ctx, updated)
 }
 
-// BackupHeader copies the header to ".prev", a no-op when versioned or when no
-// header exists, matching RcloneStorage.
+// BackupHeader copies the header to ".prev", a no-op only when no header exists
+// yet, matching RcloneStorage.
 func (s *Store) BackupHeader(_ context.Context) error {
-	if s.versioned || s.header == nil {
+	if s.header == nil {
 		return nil
 	}
 	s.prev = clone(s.header)
@@ -112,9 +95,9 @@ func (s *Store) BackupHeader(_ context.Context) error {
 }
 
 // RestoreHeaderBackup copies ".prev" back over the header, or returns
-// ErrNotFound when there is no backup (including when versioned).
+// ErrNotFound when there is no backup.
 func (s *Store) RestoreHeaderBackup(_ context.Context) error {
-	if s.versioned || s.prev == nil {
+	if s.prev == nil {
 		return backend.ErrNotFound
 	}
 	s.header = clone(s.prev)
@@ -130,11 +113,6 @@ func (s *Store) Get(_ context.Context, key string) ([]byte, error) {
 }
 
 func (s *Store) Put(_ context.Context, key string, data []byte) error {
-	if s.beforePut != nil {
-		fn := s.beforePut
-		s.beforePut = nil // one-shot
-		fn()
-	}
 	if s.putErr != nil {
 		if s.putOK > 0 {
 			s.putOK--
@@ -144,25 +122,11 @@ func (s *Store) Put(_ context.Context, key string, data []byte) error {
 			return err
 		}
 	}
-	stored := clone(data)
-	if s.corruptBlob != nil {
-		stored = s.corruptBlob(stored)
-		s.corruptBlob = nil // one-shot
-	}
-	s.blobs[key] = stored
+	s.blobs[key] = clone(data)
 	return nil
 }
 
 func (s *Store) Delete(_ context.Context, key string) error {
-	if s.delErr != nil {
-		if s.delOK > 0 {
-			s.delOK--
-		} else {
-			err := s.delErr
-			s.delErr = nil // one-shot
-			return err
-		}
-	}
 	delete(s.blobs, key)
 	return nil
 }
@@ -171,33 +135,31 @@ func (s *Store) Delete(_ context.Context, key string) error {
 // mid-rotation); earlier and later Puts succeed.
 func (s *Store) FailPutAfter(n int, err error) { s.putOK, s.putErr = n, err }
 
-// FailDeleteAfter makes the (n+1)th Delete return err once (simulating a crash
-// after a compaction's snapshot is written but before it finishes deleting).
-func (s *Store) FailDeleteAfter(n int, err error) { s.delOK, s.delErr = n, err }
-
-// CorruptNextBlobPut mangles the bytes the next Put stores, so a test can assert
-// a compaction detects a botched snapshot write on read-back.
-func (s *Store) CorruptNextBlobPut(fn func([]byte) []byte) { s.corruptBlob = fn }
-
-// AfterNextList runs fn once, right after the next List captures its keys, so a
-// test can inject an object the in-flight operation will not see.
-func (s *Store) AfterNextList(fn func()) { s.afterList = fn }
-
-// BeforeNextPut runs fn once, right before the next Put stores, so a test can
-// interleave a racing operation just ahead of a write.
-func (s *Store) BeforeNextPut(fn func()) { s.beforePut = fn }
-
 func (s *Store) List(_ context.Context, prefix string) ([]string, error) {
-	keys := make([]string, 0, len(s.blobs))
+	// Model the real backends: the header and its backup share the flat key space
+	// with blobs (on rclone they list as ordinary files), and a correct List
+	// filters them out via backend.IsReserved. The fake surfaces them to that
+	// filter so the conformance suite actually exercises it; keeping them in
+	// separate fields used to make this List silently model the local backend's
+	// pre-filtered listing and hide the rclone-only gap.
+	keys := make([]string, 0, len(s.blobs)+2)
+	candidates := make([]string, 0, len(s.blobs)+2)
 	for key := range s.blobs {
+		candidates = append(candidates, key)
+	}
+	if s.header != nil {
+		candidates = append(candidates, backend.HeaderName)
+	}
+	if s.prev != nil {
+		candidates = append(candidates, backend.HeaderBackupName)
+	}
+	for _, key := range candidates {
+		if backend.IsReserved(key) {
+			continue
+		}
 		if strings.HasPrefix(key, prefix) {
 			keys = append(keys, key)
 		}
-	}
-	if s.afterList != nil {
-		fn := s.afterList
-		s.afterList = nil // one-shot
-		fn()
 	}
 	return keys, nil
 }

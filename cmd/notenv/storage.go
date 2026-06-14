@@ -23,5 +23,5 @@ func openStorage(eff config.Effective) vaultStorage {
 	if eff.Local() {
 		return &local.Storage{Path: eff.Path}
 	}
-	return &backend.RcloneStorage{Remote: eff.Remote, Base: eff.Base, Versioned: eff.Versioned}
+	return &backend.RcloneStorage{Remote: eff.Remote, Base: eff.Base}
 }

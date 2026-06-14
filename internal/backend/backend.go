@@ -1,12 +1,14 @@
 // Package backend defines where ciphertext lives. The Backend interface is a
 // flat object store keyed by base-relative path: it only moves opaque bytes.
-// The append-only segment/snapshot layout a namespace is assembled from lives a
-// layer up, in internal/secrets. RcloneStorage is the only implementation.
+// The per-namespace blob layout a namespace's secrets live in is a layer up, in
+// internal/secrets. RcloneStorage and local.Storage are the implementations.
 package backend
 
 import (
 	"context"
 	"errors"
+	"path"
+	"strings"
 )
 
 // ErrNotFound is returned by Get and Delete when no object exists at the key.
@@ -17,16 +19,60 @@ var ErrNotFound = errors.New("object not found")
 // first. The caller re-reads, re-applies its change, and retries.
 var ErrHeaderChanged = errors.New("the header changed since this operation started")
 
+// ErrCommitUncertain reports that a header write may have taken effect but could
+// not be confirmed (the store wrote the bytes but a read-back to verify them
+// failed, e.g. a transient error or read-after-write lag on an eventually
+// consistent remote). It is distinct from ErrHeaderChanged, which means the
+// write definitely did NOT land. A caller that wrote a data object for this
+// header must NOT roll that object back on ErrCommitUncertain: the header may
+// already reference it, so deleting it would strand the committed header. The
+// write is durable; the right response is to surface "written but unverified,
+// recover with `notenv key restore-backup` if a later read fails".
+var ErrCommitUncertain = errors.New("the header write may have taken effect but could not be verified")
+
+// Reserved object names are storage plumbing, not user blobs: the key-slot
+// header, its backup, the write lock, the connectivity probe, and any temp file
+// a write is staging. They share the flat key space with namespace blobs, so
+// every List MUST exclude them (via IsReserved) and no caller may ever delete
+// one as if it were data. The single source of truth lives here because the two
+// backends once diverged on it: the local store filtered the header out of List
+// and the rclone store did not, which let orphan cleanup mistake the header for
+// a stray and delete it.
+const (
+	HeaderName       = ".header.json"
+	HeaderBackupName = HeaderName + ".prev"
+	HeaderLockName   = ".header.lock"
+	ProbeName        = ".notenv-probe"
+	TempPrefix       = ".tmp-"
+)
+
+// IsReserved reports whether key names storage plumbing rather than a user
+// object. List implementations exclude these so no caller can mistake one for a
+// data blob; the copy and delete paths exclude them too.
+func IsReserved(key string) bool {
+	switch key {
+	case HeaderName, HeaderBackupName, HeaderLockName, ProbeName:
+		return true
+	}
+	return strings.HasPrefix(path.Base(key), TempPrefix)
+}
+
 // Backend is a flat object store. Keys are base-relative paths (for example
-// "myapp/snapshot.age"); the store prepends its own base and moves bytes,
+// "myapp/data-9f3a.age"); the store prepends its own base and moves bytes,
 // nothing more.
 type Backend interface {
-	// Get returns the object stored at key (or ErrNotFound).
+	// Get returns the object stored at key (or ErrNotFound). It must return the
+	// exact bytes Put stored: the write path reads a blob back after writing and
+	// treats a byte difference as corruption.
 	Get(ctx context.Context, key string) ([]byte, error)
-	// Put stores data at key, overwriting any existing object.
+	// Put stores data at key. The live write path writes uniquely-named blobs and
+	// never overwrites one; overwrite semantics are still required for whole-vault
+	// mirroring (vault copy/fork) and idempotent retries.
 	Put(ctx context.Context, key string, data []byte) error
 	// List returns the keys of every object under prefix, base-relative and
-	// recursive. An absent prefix yields no keys, not an error.
+	// recursive. An absent prefix yields no keys, not an error. The read/write
+	// path keys off the authenticated header manifest, not List; List is for
+	// whole-vault operations (copy, delete) and orphan detection (doctor, gc).
 	List(ctx context.Context, prefix string) ([]string, error)
 	// Delete removes the object at key. Removing an absent key is not an error.
 	Delete(ctx context.Context, key string) error
@@ -51,15 +97,14 @@ type HeaderStore interface {
 	SwapHeader(ctx context.Context, base, updated []byte) error
 	// BackupHeader preserves the current header before an overwrite, so a
 	// clobbered header doesn't lock the user out of every blob. It is a no-op
-	// when the remote keeps native object versions (the versions ARE the
-	// backup) or when no header exists yet; otherwise it copies the header to
-	// a sibling backup object. The safe-write protocol calls it before
-	// PutHeader and refuses to proceed if it errors.
+	// only when no header exists yet; otherwise it copies the header to a
+	// sibling backup object, on every backend (notenv keeps its own backup
+	// rather than relying on a remote's version history). The safe-write
+	// protocol calls it before PutHeader and refuses to proceed if it errors.
 	BackupHeader(ctx context.Context) error
 	// RestoreHeaderBackup copies the sibling backup object back over the
-	// header, the recovery counterpart to BackupHeader. It returns
-	// ErrNotFound when no backup exists. On versioned remotes there is no
-	// ".prev" backup (restore a prior object version with rclone instead), so
-	// implementations there return ErrNotFound.
+	// header, the recovery counterpart to BackupHeader. It returns ErrNotFound
+	// when no backup exists yet (a vault's first backup is written on its second
+	// header write).
 	RestoreHeaderBackup(ctx context.Context) error
 }

@@ -5,8 +5,6 @@
 package config
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,16 +54,13 @@ var storageNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 func ValidStorageName(name string) bool { return storageNameRe.MatchString(name) }
 
 // StorageEntry is one named storage target: either a local vault directory
-// (Path) or an rclone remote (Remote/Base/Versioned): the populated field is
-// the storage's type, and exactly one of the two must be set.
+// (Path) or an rclone remote (Remote/Base): the populated field is the
+// storage's type, and exactly one of the two must be set.
 type StorageEntry struct {
 	// Path is a local vault directory (pure-Go backend, no rclone).
 	Path   string `toml:"path"`
 	Remote string `toml:"remote"`
 	Base   string `toml:"base"`
-	// Versioned: the remote retains old object versions on overwrite
-	// (B2 does natively), so skip the ~3s server-side .prev backup copy.
-	Versioned bool `toml:"versioned"`
 	// ReadOnly refuses every mutating command against this storage. It is
 	// policy, not crypto: it constrains cooperating clients (an honest agent
 	// doing something destructive by accident), it does not contain
@@ -225,7 +220,6 @@ func writeUserConfig(u *User) (string, error) {
 		} else {
 			fmt.Fprintf(&b, "remote    = %q\n", st.Remote)
 			fmt.Fprintf(&b, "base      = %q\n", st.Base)
-			fmt.Fprintf(&b, "versioned = %t   # remote keeps old versions on overwrite (B2: yes), so skip backup copies\n", st.Versioned)
 		}
 		if st.ReadOnly {
 			b.WriteString("read_only = true   # refuse mutating commands here (policy for cooperating clients, not enforcement)\n")
@@ -393,7 +387,6 @@ type Effective struct {
 	Path         string // local vault directory (absolute); empty for remote storages
 	Remote       string // rclone remote name; empty for local storages
 	Base         string // path within the remote
-	Versioned    bool   // remote retains versions on overwrite
 	ReadOnly     bool   // policy: refuse mutating commands against this storage
 	Namespace    string
 	Mode         string        // crypto mode
@@ -404,10 +397,10 @@ type Effective struct {
 // Local reports whether the storage is a local vault directory.
 func (e Effective) Local() bool { return e.Path != "" }
 
-// Scope returns the storage's local-state scope (key cache, pins, seq
-// counters). Local storages scope on ":local" plus the absolute path: a
-// ":" cannot appear in an rclone remote name, so a local scope can never
-// collide with a remote's, however the remote is named.
+// Scope returns the storage's local-state scope (key cache, pins). Local
+// storages scope on ":local" plus the absolute path: a ":" cannot appear in an
+// rclone remote name, so a local scope can never collide with a remote's,
+// however the remote is named.
 func (e Effective) Scope() string {
 	if e.Local() {
 		return CacheScope(":local", e.Path)
@@ -472,7 +465,7 @@ func hasControlChar(s string) bool {
 // validating that the entry is exactly one kind and normalizing it (base
 // default, path expansion).
 func storageEffective(name string, st StorageEntry) (Effective, error) {
-	eff := Effective{StorageName: name, Versioned: st.Versioned, ReadOnly: st.ReadOnly}
+	eff := Effective{StorageName: name, ReadOnly: st.ReadOnly}
 	if err := st.check(name); err != nil {
 		return eff, err
 	}
@@ -551,7 +544,7 @@ func cryptoEffective(u *User, eff Effective, st StorageEntry, name string) (Effe
 	}
 	eff.CacheTTL = ttl
 	// Local vaults never blob-cache. The cache exists to skip a network
-	// round-trip plus a fold, and its warm path skips header and manifest
+	// round-trip plus a decrypt, and its warm path skips header and manifest
 	// verification entirely: a trade justified against a network, not
 	// against the same disk. A local vault verifies the manifest on every
 	// read and keeps no second ciphertext copy; cache_ttl is remote-only.
@@ -828,126 +821,4 @@ func firstOf(vals ...string) string {
 		}
 	}
 	return ""
-}
-
-// MachineID returns this machine's stable identifier, creating it on first use.
-// It names and orders the segments this machine writes, so two machines never
-// produce the same segment. It is random, not secret, and lives in local state.
-func MachineID() (string, error) {
-	dir, err := Dir()
-	if err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, "machine")
-	switch data, err := os.ReadFile(path); {
-	case err == nil:
-		if id := strings.TrimSpace(string(data)); id != "" {
-			return id, nil
-		}
-	case !errors.Is(err, fs.ErrNotExist):
-		return "", err
-	}
-	buf := make([]byte, 8)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	id := hex.EncodeToString(buf)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
-		return "", err
-	}
-	return id, nil
-}
-
-// NextSeq returns the next strictly-increasing sequence number for (scope,
-// namespace) on this machine, persisting the counter. It orders this machine's
-// segments even when a freshly listed remote is briefly stale, so two of its
-// writes never share a sequence number. The read-modify-write is locked, so two
-// concurrent processes on the machine can't read the same counter and collide.
-//
-// floor is the high-water this machine has already written to the namespace, as
-// observed in the latest fold. seq.json is disposable per-machine state (a
-// restore that drops it, a storage rename that re-scopes it), and a counter that
-// reset below floor would reissue numbers storage has already folded, which a
-// later fold flags as a replay. Catching up to floor before incrementing keeps
-// every write above what is already recorded, so a lost counter is a non-event.
-func NextSeq(scope, namespace string, floor int) (int, error) {
-	dir, err := Dir()
-	if err != nil {
-		return 0, err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return 0, err
-	}
-	path := filepath.Join(dir, "seq.json")
-
-	unlock, err := lockFile(path + ".lock")
-	if err != nil {
-		return 0, err
-	}
-	defer unlock()
-
-	seqs := map[string]int{}
-	switch data, err := os.ReadFile(path); {
-	case err == nil:
-		if err := json.Unmarshal(data, &seqs); err != nil {
-			return 0, fmt.Errorf("%s: %w", path, err)
-		}
-	case !errors.Is(err, fs.ErrNotExist):
-		return 0, err
-	}
-	key := scope + "\x00" + namespace
-	if seqs[key] < floor {
-		seqs[key] = floor
-	}
-	seqs[key]++
-	next := seqs[key]
-	data, err := json.MarshalIndent(seqs, "", "  ")
-	if err != nil {
-		return 0, err
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return 0, err
-	}
-	return next, nil
-}
-
-// lockFile takes an exclusive lock by atomically creating lock, spinning while
-// another process holds it and reclaiming a lock left by a crash (one older than
-// the stale window). It guards a local, low-contention counter, so a short spin
-// is fine. The returned function releases the lock.
-func lockFile(lock string) (func(), error) {
-	const (
-		spin  = 5 * time.Millisecond
-		stale = 15 * time.Second
-		wait  = 30 * time.Second
-	)
-	start := time.Now()
-	for {
-		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_ = f.Close()
-			return func() { _ = os.Remove(lock) }, nil
-		}
-		// Windows reports a lock file the releasing process is still deleting
-		// as access-denied rather than already-exists (the delete-pending
-		// window); that is contention clearing in microseconds, not a
-		// permission problem, so it spins like ErrExist. A genuine permission
-		// problem there surfaces as the acquisition timeout instead.
-		contended := errors.Is(err, fs.ErrExist) ||
-			(runtime.GOOS == "windows" && errors.Is(err, fs.ErrPermission))
-		if !contended {
-			return nil, err
-		}
-		if info, statErr := os.Stat(lock); statErr == nil && time.Since(info.ModTime()) > stale {
-			_ = os.Remove(lock) // reclaim a lock left by a crashed process
-			continue
-		}
-		if time.Since(start) > wait {
-			return nil, fmt.Errorf("timed out acquiring %s; remove it if no notenv is running", lock)
-		}
-		time.Sleep(spin)
-	}
 }

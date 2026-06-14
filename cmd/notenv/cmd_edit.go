@@ -9,10 +9,12 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -55,7 +57,7 @@ with the key named. An unchanged buffer writes nothing.`,
 
 func runEdit(cmd *cobra.Command, a *app) error {
 	ctx := cmd.Context()
-	before, _, err := a.foldState(ctx)
+	before, _, err := a.readState(ctx)
 	if err != nil {
 		return err
 	}
@@ -88,10 +90,11 @@ func runEdit(cmd *cobra.Command, a *app) error {
 		return nil
 	}
 
-	// Re-fold before writing: the buffer may have been open for a while, and
+	// Re-read before writing: the buffer may have been open for a while, and
 	// a key this edit touches that also changed remotely must stop the save
-	// rather than be clobbered. Untouched keys merge as usual.
-	fresh, view, err := a.foldState(ctx)
+	// rather than be clobbered. Untouched keys merge as usual (the write's
+	// read-modify-write preserves them).
+	fresh, view, err := a.readState(ctx)
 	if err != nil {
 		return err
 	}
@@ -100,8 +103,10 @@ func runEdit(cmd *cobra.Command, a *app) error {
 	}
 
 	var sets, unsets int
-	for _, w := range writes {
-		if w.Deleted {
+	now := time.Now().Unix()
+	for i := range writes {
+		writes[i].TS = now
+		if writes[i].Deleted {
 			unsets++
 		} else {
 			sets++
@@ -110,14 +115,12 @@ func runEdit(cmd *cobra.Command, a *app) error {
 	var updated *secrets.State
 	if err := ui.Spin(fmt.Sprintf("Encrypting and recording %d change(s)", len(writes)), func() error {
 		var aerr error
-		updated, aerr = a.appendGuardedBatch(ctx, view, fresh, writes)
+		updated, aerr = a.writeNamespace(ctx, view, writes)
 		return aerr
 	}); err != nil {
 		return err
 	}
-	a.cacheFolded(view.mk, updated)
-	reportConflicts(updated.Conflicts)
-	a.maybeCompact(ctx, view.mk, fresh.SegmentCount()+len(writes)-1)
+	a.cacheState(view.mk, updated)
 	declareNewKeys(a, before, writes)
 	ui.Successf("edited namespace %q: %d set, %d unset", a.namespace, sets, unsets)
 	return nil
@@ -131,6 +134,15 @@ func writeEditBuffer(a *app, state *secrets.State) (string, func(), error) {
 	base := os.Getenv("XDG_RUNTIME_DIR")
 	if base == "" {
 		base = os.TempDir()
+		// No runtime dir: on Linux that falls to /tmp on persistent disk, where a
+		// newly typed value (and the editor's own swap/undo files) can outlive the
+		// edit if cleanup never runs (SIGKILL, power loss). macOS/Windows temp dirs
+		// are per-user and acceptable, so the warning is Linux-only. Existing values
+		// never reach the buffer (they render as <keep>), so the exposure is bounded
+		// to values typed this session.
+		if runtime.GOOS == "linux" {
+			ui.Warnf("XDG_RUNTIME_DIR is unset, so the edit buffer uses %s (likely persistent disk); a value you type could linger there if the editor or notenv is killed. Point XDG_RUNTIME_DIR at a RAM-backed dir (e.g. /run/user/$UID) to avoid this", base)
+		}
 	}
 	dir, err := os.MkdirTemp(base, "notenv-edit-*")
 	if err != nil {
@@ -170,8 +182,9 @@ func renderEditBuffer(namespace string, state *secrets.State) string {
 	fmt.Fprintf(&b, "# Editing namespace %q with %d secret(s).\n", namespace, len(state.Secrets))
 	fmt.Fprintf(&b, "# %s leaves a value unchanged; replace it to set a new value.\n", keepSentinel)
 	b.WriteString("# Delete a line to unset that key. Add KEY=value lines to create keys.\n")
-	b.WriteString("# A comment line directly above a key is its description. Values are\n")
-	b.WriteString("# taken literally; no quoting. Existing values are never shown.\n")
+	b.WriteString("# A comment line directly above a key is its description; removing it keeps\n")
+	b.WriteString("# the existing description (clear one with `notenv set KEY --description \"\"`).\n")
+	b.WriteString("# Values are taken literally; no quoting. Existing values are never shown.\n")
 	keys := make([]string, 0, len(state.Secrets))
 	for k := range state.Secrets {
 		keys = append(keys, k)
@@ -258,26 +271,38 @@ func parseEditBuffer(r io.Reader) (map[string]editEntry, error) {
 	return entries, nil
 }
 
-// diffEdit turns the buffer into the write batch: kept values change only
-// when their description does (the old value is carried), new and rewritten
-// values are set, and keys whose lines were deleted are unset. The buffer is
-// authoritative for descriptions: a removed comment clears one.
+// diffEdit turns the buffer into the write batch: new and rewritten values are
+// set, keys whose lines were deleted are unset, and a comment directly above a
+// key sets that key's description. An ABSENT comment keeps the stored
+// description rather than clearing it (via KeepDescription), so an editor reflow
+// or a stray blank line between a comment and its key cannot silently wipe
+// metadata; clearing a description is done with `notenv set KEY --description ""`.
 func diffEdit(before *secrets.State, entries map[string]editEntry) ([]secrets.Write, error) {
 	var writes []secrets.Write
 	for key, e := range entries {
 		prev, exists := before.Secrets[key]
 		prevDesc := before.Meta[key].Description
+		// A non-empty comment is an explicit description; treat it as a change only
+		// when it actually differs from what is stored.
+		setDesc := e.description != "" && e.description != prevDesc
+
 		if e.keep {
 			if !exists {
 				return nil, fmt.Errorf("%s is %s but holds no value yet; give it one (a literal %s value is not storable)", key, keepSentinel, keepSentinel)
 			}
-			if e.description != prevDesc {
+			if setDesc {
 				writes = append(writes, secrets.Write{Key: key, Value: prev, Description: e.description})
 			}
 			continue
 		}
-		if !exists || e.value != prev || e.description != prevDesc {
+		switch {
+		case setDesc:
+			// New or changed description, carrying the (possibly new) value.
 			writes = append(writes, secrets.Write{Key: key, Value: e.value, Description: e.description})
+		case !exists || e.value != prev:
+			// Value moved with no description change in the buffer: keep the stored
+			// description rather than overwrite it with an absent comment.
+			writes = append(writes, secrets.Write{Key: key, Value: e.value, KeepDescription: true})
 		}
 	}
 	for key := range before.Secrets {

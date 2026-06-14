@@ -42,8 +42,7 @@ func rotatedVault(t *testing.T, n int) (*memstore.Store, *crypto.MasterKey, *cry
 	t.Helper()
 	ctx := context.Background()
 	store := memstore.New()
-	blobs := map[string]string{"proj/seg-m1-aa.age": "a"}
-	firstMK, _ := seedVault(t, store, blobs)
+	firstMK, _ := seedVault(t, store, map[string]nsBlobs{"proj": {cur: "a"}})
 	firstHeader := mustParse(t, store)
 	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
 
@@ -168,7 +167,7 @@ func TestFollowRotationsHonorsRevisionCeiling(t *testing.T) {
 func TestConcurrentRotationKeepsWinnersTransition(t *testing.T) {
 	ctx := context.Background()
 	store := memstore.New()
-	firstMK, _ := seedVault(t, store, map[string]string{})
+	firstMK, _ := seedVault(t, store, map[string]nsBlobs{})
 	firstHeader := mustParse(t, store)
 	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock("owner-pass"); return m, e }
 

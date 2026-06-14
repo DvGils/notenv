@@ -1,17 +1,25 @@
-// Package secrets assembles a namespace's secrets from the objects a backend
-// holds for it: an append-only set of per-write segments over zero or more
-// folded snapshots. Each write appends a new, uniquely named segment, so
-// concurrent writers never overwrite one another. Reads fold the snapshots and
-// segments together by a Lamport clock: last write per key wins, ties between
-// machines are reported as conflicts. Compaction collapses what it reads into a
-// fresh snapshot and deletes the objects it folded.
+// Package secrets stores one namespace's secrets as a single encrypted blob.
+// A read decrypts the blob the vault header points at, verifies it against the
+// header's manifest MAC, and returns its keys. A write decrypts the current
+// blob, applies the change in memory (last write wins per key), writes a new,
+// uniquely named blob, and points the header at it under the header
+// compare-and-swap (see internal/keymgmt): two concurrent writers serialize on
+// that swap, and the loser re-reads the now-current blob and re-applies its
+// change, so writes to different keys both survive and only same-key writes
+// resolve last-writer-wins.
 //
-// Every object is one age message sealed under the master key, and every
-// object is bound to the vault's authenticated header by a manifest entry (a
-// keyed MAC of its plaintext, see internal/crypto). A fold trusts the
-// manifest, not the storage listing: a manifest-listed object that is missing,
-// altered, or relocated is an alarm, and an object the manifest does not know
-// is folded in only when it can be nothing but an honest in-flight write.
+// Writing a fresh blob and only then repointing the header keeps a crash
+// harmless: until the swap commits, the header still names the prior blob, which
+// is untouched. The write the header just superseded is kept as a
+// one-generation backup (the manifest's Prev pointer), so a corrupt or
+// bit-rotted current blob can fall back to the last good one, losing at most the
+// most recent write. A blob written by a crashed write that never swapped the
+// header is an orphan no read ever consults; `notenv doctor` sweeps it.
+//
+// The blob is one age message sealed under the master key, bound to the vault's
+// authenticated header by its manifest MAC (a keyed MAC of its plaintext, see
+// internal/crypto) and self-identifying its namespace, so a blob copied to
+// another namespace cannot pass as that namespace's.
 package secrets
 
 import (
@@ -23,669 +31,474 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"slices"
-	"sort"
-	"strings"
 
 	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/crypto"
+	"github.com/DvGils/notenv/internal/keymgmt"
 )
 
-// formatVersion is the on-storage schema version of segment and snapshot
-// objects (the secret values). Every object written carries it; a read rejects
-// any object stamped with a different version: higher means a newer notenv
-// wrote it, lower means an older layout this notenv no longer reads. The key
-// header (internal/crypto) is versioned separately by the same exact-match
-// rule. Bump only on an incompatible change to these payloads.
-//
-// Version 2 added Object: the key the payload was written under, checked
-// against the key it was fetched from, so a master-sealed object copied to
-// another name (or namespace) can never pass as that name. Version 3 added
-// tombstones to snapshot entries: a reader that ignored the deleted flag
-// would surface a deleted key as live, so the exact-match rule makes an old
-// reader refuse loudly instead.
-const formatVersion = 3
+// blobVersion is the on-storage schema version of a namespace blob. Every blob
+// carries it; a read rejects any blob stamped with a different version (higher:
+// a newer notenv wrote it; lower: an older layout this build no longer reads).
+// The key header (internal/crypto) is versioned separately by the same
+// exact-match rule. Bump only on an incompatible change to this payload.
+const blobVersion = 1
 
-// segment is one append: a single key write or deletion, ordered across
-// machines by a Lamport clock and, within a machine, by Seq. Description and
-// TS are advisory metadata riding the write: TS is wall-clock Unix seconds
-// (clocks lie, so it is never used for ordering; Lamport is the truth), and
-// both are carried into snapshot entries so compaction preserves them.
-type segment struct {
-	Version     int    `json:"v"`
-	Object      string `json:"object"`
-	Machine     string `json:"machine"`
-	Seq         int    `json:"seq"`
-	Lamport     int    `json:"lamport"`
-	Key         string `json:"key"`
-	Value       string `json:"value,omitempty"`
-	Deleted     bool   `json:"deleted,omitempty"`
-	Description string `json:"desc,omitempty"`
-	TS          int64  `json:"ts,omitempty"`
+// blob is a namespace's whole state: every live key with its advisory metadata.
+// NS records the namespace it belongs to, checked on read so a blob copied from
+// another namespace cannot pass as this one (the MAC binds NS as it binds the
+// values).
+type blob struct {
+	Version int               `json:"v"`
+	NS      string            `json:"ns"`
+	Entries map[string]record `json:"entries"`
 }
 
-// entry is one key's winning write in a snapshot, carrying the provenance
-// needed to merge the snapshot deterministically against later segments, plus
-// the write's advisory metadata; without it here, the first compaction would
-// destroy every description and timestamp. A deleted entry is a tombstone
-// that survived compaction: it keeps competing under last-write-wins so a
-// write that was in flight while the namespace compacted cannot resurrect a
-// key its deletion outranks. Deletions were the only operation whose evidence
-// compaction destroyed; this is the receipt.
-type entry struct {
-	Value       string `json:"value,omitempty"`
-	Lamport     int    `json:"lamport"`
-	Machine     string `json:"machine"`
-	Seq         int    `json:"seq"`
+// record is one key's stored value and its advisory metadata. Advisory means
+// exactly that: nothing orders or trusts by it.
+type record struct {
+	Value       string `json:"value"`
 	Description string `json:"desc,omitempty"`
 	TS          int64  `json:"ts,omitempty"`
-	Deleted     bool   `json:"deleted,omitempty"`
-}
-
-// snapshot is a folded namespace state: every live key with its provenance,
-// the highest Lamport it folded in, and each machine's highest folded seq.
-// Seqs is what makes replay detection exact: a machine's seqs only move
-// forward, so a stray segment at or below its machine's mark can only be a
-// deleted object someone put back (see classify).
-type snapshot struct {
-	Version int              `json:"v"`
-	Object  string           `json:"object"`
-	Lamport int              `json:"lamport"`
-	Seqs    map[string]int   `json:"seqs"`
-	Entries map[string]entry `json:"entries"`
 }
 
 // Namespace reads and writes one namespace's secrets through a backend, sealing
-// every object under master. machine identifies and orders this machine's
-// writes so two machines never produce the same segment. manifest is the
-// verified header's object manifest; folds check every object against it.
+// its blob under master.
 type Namespace struct {
-	store    backend.Backend
-	name     string
-	master   *crypto.MasterKey
-	machine  string
-	manifest map[string]crypto.ManifestEntry
+	store  backend.Backend
+	name   string
+	master *crypto.MasterKey
 }
 
-// For binds a namespace to a backend, master key, and the verified header's
-// manifest.
-func For(store backend.Backend, name string, master *crypto.MasterKey, machine string, manifest map[string]crypto.ManifestEntry) *Namespace {
-	return &Namespace{store: store, name: name, master: master, machine: machine, manifest: manifest}
+// For binds a namespace to a backend and master key.
+func For(store backend.Backend, name string, master *crypto.MasterKey) *Namespace {
+	return &Namespace{store: store, name: name, master: master}
 }
-
-// DefaultCompactThreshold is the segment count at or above which a write
-// triggers automatic compaction. It bounds the objects a cold read folds, so
-// reads stay fast without anyone running `notenv compact` by hand.
-const DefaultCompactThreshold = 16
 
 // Meta is a live key's advisory metadata: what the secret is for and when its
-// winning write happened (wall-clock Unix seconds; 0 means the write predates
+// write happened (wall-clock Unix seconds; 0 means the write predates
 // timestamps). Advisory means exactly that: nothing orders or trusts by it.
 type Meta struct {
 	Description string
 	TS          int64
 }
 
-// State is a folded namespace: the resolved secrets and any same-key conflicts
-// detected during the fold. lamport is the highest Lamport folded, the basis
-// for the next write's clock; segments is how many segment objects it folded.
+// State is a namespace's resolved secrets. Corrupt is populated only by a
+// salvage read that fell back past an untrustable blob; a strict read fails
+// instead of listing.
 type State struct {
-	Secrets   map[string]string
-	Meta      map[string]Meta
-	Conflicts []Conflict
-	// Adoptable lists objects the fold trusted as honest in-flight writes (see
-	// classify) but the manifest does not record yet, with the entries a writer
-	// should add to adopt them.
-	Adoptable map[string]crypto.ManifestEntry
-	// Prunable lists manifest entries marked folded whose objects are confirmed
-	// gone; any writer may drop them.
-	Prunable []string
-	// Strays lists unknown snapshots the fold ignored (a compaction that crashed
-	// between writing its snapshot and recording it); `notenv compact` removes
-	// them.
-	Strays []string
-	// Corrupt lists recorded objects a salvage fold could not trust and dropped
-	// (missing, undecryptable, or MAC-mismatched). It is empty unless the fold ran
-	// in salvage mode (FoldSalvage); a strict fold fails on the first such object
-	// instead of listing it.
-	Corrupt []CorruptObject
+	Secrets map[string]string
+	Meta    map[string]Meta
+	Corrupt []CorruptBlob
 
-	lamport  int
-	segments int
-	seqs     map[string]int // per-machine seq high-water; the floor for a machine's next write
+	has bool // a blob existed (distinct from a namespace emptied by deletes)
 }
 
-// Conflict reports a key written concurrently on more than one machine (equal
-// Lamport). Winner's value is the one kept; the others are shadowed but remain
-// recoverable from their segments until the next compaction.
-type Conflict struct {
-	Key      string
-	Winner   string
-	Shadowed []string
-}
-
-// CorruptObject is a recorded object a salvage fold could not trust and dropped:
-// missing from storage, undecryptable, or MAC-mismatched. Reason is the read
-// error that disqualified it. A strict fold fails on the first such object; a
-// salvage fold lists them here and resolves every key it still can.
-type CorruptObject struct {
-	Key    string
+// CorruptBlob is a blob a salvage read could not trust and read past: missing
+// from storage, undecryptable, or MAC-mismatched. Blob is its object key; Reason
+// is the read error that disqualified it.
+type CorruptBlob struct {
+	Blob   string
 	Reason string
 }
 
-// errCorruptObject tags a recorded object a fold cannot trust: missing,
-// undecryptable, or MAC-mismatched. It is exactly the set a salvage read may
-// skip. A transient backend error and a format-version skew are deliberately
-// excluded: a read blip is not corruption, and a newer format means "upgrade
-// notenv", not "drop this object".
-var errCorruptObject = errors.New("recorded object cannot be trusted")
-
-// corruptObjectError carries a human-readable message and matches
-// errCorruptObject under errors.Is, so the salvage loop can tell an untrustable
-// object from an error that must still stop the fold.
-type corruptObjectError struct{ msg string }
-
-func (e *corruptObjectError) Error() string        { return e.msg }
-func (e *corruptObjectError) Is(target error) bool { return target == errCorruptObject }
-
-// corruptObjectf builds an errCorruptObject-tagged error.
-func corruptObjectf(format string, a ...any) error {
-	return &corruptObjectError{msg: fmt.Sprintf(format, a...)}
+// Write is one key change to apply: a value (with optional advisory metadata)
+// or a deletion. TS is the write's wall-clock Unix seconds, supplied by the
+// caller so this package never reads a clock; 0 omits it. KeepDescription
+// carries the key's existing description forward instead of setting Description,
+// evaluated against the state being applied to (the live blob inside Commit, not
+// a stale pre-read), so re-stating a value never reverts a concurrent
+// description edit.
+type Write struct {
+	Key             string
+	Value           string
+	Description     string
+	KeepDescription bool
+	TS              int64
+	Deleted         bool
 }
 
-func (n *Namespace) prefix() string { return n.name + "/" }
+// errCorruptBlob tags a blob a read cannot trust: missing, undecryptable, or
+// MAC-mismatched. It is exactly the set a salvage read may fall back past. A
+// transient backend error and a format-version skew are deliberately excluded: a
+// read blip is not corruption, and a newer format means "upgrade notenv", not
+// "this blob rotted".
+var errCorruptBlob = errors.New("blob cannot be trusted")
 
-// HasHistory reports whether any write has ever been folded into this state;
-// false means the namespace is untouched (distinct from one emptied by deletes).
-func (s *State) HasHistory() bool { return s.lamport > 0 }
+// corruptBlobError carries a human-readable message and matches
+// errCorruptBlob under errors.Is, so a salvage read can tell an untrustable
+// blob from an error that must still stop the read.
+type corruptBlobError struct{ msg string }
 
-// SegmentCount is how many uncompacted segment objects this fold read, the
-// signal a caller uses to decide whether the next write should compact.
-func (s *State) SegmentCount() int { return s.segments }
+func (e *corruptBlobError) Error() string        { return e.msg }
+func (e *corruptBlobError) Is(target error) bool { return target == errCorruptBlob }
 
-// HighWater is the highest seq this fold attributes to machine: the floor its
-// next write must clear. A local seq counter that was lost or reset (it is
-// disposable per-machine state) cannot then reissue a number already on storage,
-// which a later fold would mistake for a replay. Zero for a machine with no
-// folded writes.
-func (s *State) HighWater(machine string) int { return s.seqs[machine] }
+func corruptBlobf(format string, a ...any) error {
+	return &corruptBlobError{msg: fmt.Sprintf(format, a...)}
+}
 
-// Exists reports whether a namespace has any stored object yet. It only lists,
-// so it needs no master key.
-func Exists(ctx context.Context, store backend.Backend, name string) (bool, error) {
-	keys, err := store.List(ctx, name+"/")
+// HasHistory reports whether the namespace has ever stored a blob; false means
+// it is untouched (distinct from one emptied by deletes, which still has a blob).
+func (s *State) HasHistory() bool { return s.has }
+
+// Exists reports whether a namespace holds committed secrets, by consulting the
+// authenticated header manifest rather than the raw object listing: a crashed
+// write can leave an orphan blob under the namespace prefix that no manifest
+// entry references, and that must not read as "this namespace has secrets". It
+// needs no master key (parsing the header is enough; the manifest's
+// trustworthiness is confirmed at unlock). Virgin storage (no header) reports
+// false.
+func Exists(ctx context.Context, store backend.HeaderStore, name string) (bool, error) {
+	raw, err := store.GetHeader(ctx)
+	if errors.Is(err, backend.ErrNotFound) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	return len(keys) > 0, nil
-}
-
-// Fold reads every object in the namespace and resolves the current secrets. A
-// single untrustable recorded object (missing, undecryptable, MAC-mismatched)
-// fails the whole fold closed, naming it: a dropped or altered write must never
-// be silently skipped. FoldSalvage is the opt-in escape from that for a vault
-// stuck on honest media loss.
-func (n *Namespace) Fold(ctx context.Context) (*State, error) {
-	return n.foldMode(ctx, false)
-}
-
-// FoldSalvage resolves what it can from a namespace that a strict Fold refuses,
-// dropping every untrustable recorded object and reporting them on State.Corrupt
-// instead of failing. It is non-destructive (it changes no storage and evicts
-// nothing) and deliberately opt-in: the dropped keys revert to an older snapshot
-// value or disappear, so serving the rest silently would hide an attacker who
-// suppressed one object. The caller surfaces State.Corrupt loudly.
-func (n *Namespace) FoldSalvage(ctx context.Context) (*State, error) {
-	return n.foldMode(ctx, true)
-}
-
-func (n *Namespace) foldMode(ctx context.Context, skipCorrupt bool) (*State, error) {
-	l, err := n.load(ctx, skipCorrupt)
+	h, err := crypto.ParseHeader(raw)
 	if err != nil {
+		return false, err
+	}
+	_, ok := h.NamespaceEntry(name)
+	return ok, nil
+}
+
+// Read resolves the namespace's secrets from the blob the manifest entry names.
+// An untrustable blob (missing, undecryptable, MAC-mismatched) fails closed,
+// naming it: a dropped or altered write must never be silently skipped.
+// ReadSalvage is the opt-in escape for a vault stuck on honest media loss. A
+// zero entry (the namespace has no blob yet) yields empty state.
+func (n *Namespace) Read(ctx context.Context, entry crypto.ManifestEntry) (*State, error) {
+	if entry.Blob == "" {
+		return emptyState(false), nil
+	}
+	return n.readBlob(ctx, entry.Blob, entry.MAC)
+}
+
+// ReadSalvage resolves what it can when a strict Read refuses. If the current
+// blob is untrustable it falls back to the verified one-generation backup
+// (entry.Prev), reporting the dropped blob on State.Corrupt instead of failing,
+// so the user sees exactly what reverted. It is non-destructive and deliberately
+// opt-in: silently serving an older blob would hide an attacker who suppressed
+// the latest write. A transient error or a format-version skew still stops the
+// read (those are not "this blob rotted").
+func (n *Namespace) ReadSalvage(ctx context.Context, entry crypto.ManifestEntry) (*State, error) {
+	if entry.Blob == "" {
+		return emptyState(false), nil
+	}
+	state, err := n.readBlob(ctx, entry.Blob, entry.MAC)
+	if err == nil {
+		return state, nil
+	}
+	if !errors.Is(err, errCorruptBlob) {
 		return nil, err
 	}
-	acc, maxLamport := accumulate(l)
-	state := &State{
-		Secrets:   map[string]string{},
-		Meta:      map[string]Meta{},
-		Adoptable: l.adoptable,
-		Prunable:  l.prunable,
-		Strays:    l.strays,
-		Corrupt:   l.corrupt,
-		lamport:   maxLamport,
-		segments:  len(l.segKeys),
-		seqs:      observedSeqs(l.snapshots, l.segments),
-	}
-	for key, w := range acc {
-		if !w.deleted {
-			state.Secrets[key] = w.value
-			state.Meta[key] = Meta{Description: w.description, TS: w.ts}
-		}
-		if len(w.tied) > 1 {
-			state.Conflicts = append(state.Conflicts, w.conflict(key))
+	corrupt := []CorruptBlob{{Blob: entry.Blob, Reason: err.Error()}}
+	if entry.Prev != "" {
+		if prev, perr := n.readBlob(ctx, entry.Prev, entry.PrevMAC); perr == nil {
+			prev.Corrupt = corrupt
+			return prev, nil
+		} else if errors.Is(perr, errCorruptBlob) {
+			corrupt = append(corrupt, CorruptBlob{Blob: entry.Prev, Reason: perr.Error()})
+		} else {
+			return nil, perr
 		}
 	}
-	sort.Slice(state.Conflicts, func(i, j int) bool {
-		return state.Conflicts[i].Key < state.Conflicts[j].Key
-	})
+	// Both generations are gone. Report the loss and resolve to nothing; the
+	// namespace did hold secrets, so it is not "untouched" (has stays true).
+	s := emptyState(true)
+	s.Corrupt = corrupt
+	return s, nil
+}
+
+// readBlob opens the blob at key and resolves it. Everything the manifest
+// promises is enforced: the blob must exist, open under the master, match the
+// recorded MAC, parse at this format version, and carry this namespace's name.
+func (n *Namespace) readBlob(ctx context.Context, key, mac string) (*State, error) {
+	raw, err := n.store.Get(ctx, key)
+	if errors.Is(err, backend.ErrNotFound) {
+		return nil, corruptBlobf("namespace %q blob %s is recorded in the vault manifest but missing from storage: a write was deleted or withheld (if another machine is writing right now, re-run)", n.name, key)
+	}
+	if err != nil {
+		return nil, err // transient: not corruption
+	}
+	plain, err := n.master.Decrypt(raw)
+	if err != nil {
+		return nil, corruptBlobf("namespace %q blob %s: %v", n.name, key, err)
+	}
+	if err := n.master.CheckBlobMAC(plain, mac); err != nil {
+		return nil, corruptBlobf("namespace %q blob %s: %v", n.name, key, err)
+	}
+	return n.decode(key, plain)
+}
+
+// decode parses a verified blob plaintext into state. A version skew is a plain
+// error, not corruption: it means upgrade notenv (higher) or this build no
+// longer reads it (lower), so even a salvage read stops on it. A namespace
+// mismatch is corruption (a blob copied from elsewhere).
+func (n *Namespace) decode(key string, plain []byte) (*State, error) {
+	var b blob
+	if err := json.Unmarshal(plain, &b); err != nil {
+		return nil, corruptBlobf("namespace %q blob %s: %v", n.name, key, err)
+	}
+	switch {
+	case b.Version > blobVersion:
+		return nil, fmt.Errorf("namespace %q blob %s was written by a newer notenv (format v%d, this build understands v%d); upgrade notenv", n.name, key, b.Version, blobVersion)
+	case b.Version < blobVersion:
+		return nil, fmt.Errorf("namespace %q blob %s was written in an older storage format (v%d) that this version of notenv no longer reads", n.name, key, b.Version)
+	case b.NS != n.name:
+		return nil, corruptBlobf("namespace %q blob %s declares namespace %q: it was copied from another namespace and is not trusted", n.name, key, b.NS)
+	}
+	state := emptyState(true)
+	for k, r := range b.Entries {
+		state.Secrets[k] = r.Value
+		state.Meta[k] = Meta{Description: r.Description, TS: r.TS}
+	}
 	return state, nil
 }
 
-// Write is one key change to append: a value (with optional advisory
-// metadata) or a deletion. TS is the write's wall-clock Unix seconds, supplied
-// by the caller so this package never reads a clock; 0 omits it.
-type Write struct {
-	Key         string
-	Value       string
-	Description string
-	TS          int64
-	Deleted     bool
+// Apply returns the state after applying writes under last-write-wins: a value
+// overwrites, a deletion removes. The receiver is not mutated, so a caller can
+// re-apply the same writes against a freshly re-read state on a swap-race retry.
+func (s *State) Apply(writes []Write) *State {
+	next := &State{Secrets: maps.Clone(s.Secrets), Meta: maps.Clone(s.Meta), has: true}
+	if next.Secrets == nil {
+		next.Secrets = map[string]string{}
+	}
+	if next.Meta == nil {
+		next.Meta = map[string]Meta{}
+	}
+	for _, w := range writes {
+		if w.Deleted {
+			delete(next.Secrets, w.Key)
+			delete(next.Meta, w.Key)
+			continue
+		}
+		desc := w.Description
+		if w.KeepDescription {
+			desc = next.Meta[w.Key].Description // the current description (zero for a new key)
+		}
+		next.Secrets[w.Key] = w.Value
+		next.Meta[w.Key] = Meta{Description: desc, TS: w.TS}
+	}
+	return next
 }
 
-// Append writes one key change as a new segment and returns the resulting
-// state, the object key the segment landed under (so the caller can remove the
-// write again if recording it in the manifest fails), and the manifest entry
-// that records it. prev is the fold this write builds on; its Lamport sets the
-// new clock.
-func (n *Namespace) Append(ctx context.Context, prev *State, seq int, w Write) (*State, string, crypto.ManifestEntry, error) {
-	objKey, err := n.objectKey("seg-" + n.machine)
+// WriteBlob seals state into a fresh, uniquely named blob and returns its object
+// key and the manifest entry that records it, carrying prev forward as the
+// one-generation backup. It is the low-level primitive Commit and Rewrite build
+// on (they own the header swap and the cleanup of superseded blobs). The blob is
+// read back after writing (putVerified) so a corrupt write never reaches the
+// manifest.
+func (n *Namespace) WriteBlob(ctx context.Context, state *State, prev crypto.ManifestEntry) (string, crypto.ManifestEntry, error) {
+	b := blob{Version: blobVersion, NS: n.name, Entries: make(map[string]record, len(state.Secrets))}
+	for k, v := range state.Secrets {
+		m := state.Meta[k]
+		b.Entries[k] = record{Value: v, Description: m.Description, TS: m.TS}
+	}
+	plain := mustMarshal(b)
+	mac, err := n.master.BlobMAC(plain)
 	if err != nil {
-		return nil, "", crypto.ManifestEntry{}, err
-	}
-	seg := segment{
-		Version:     formatVersion,
-		Object:      objKey,
-		Machine:     n.machine,
-		Seq:         seq,
-		Lamport:     prev.lamport + 1,
-		Key:         w.Key,
-		Value:       w.Value,
-		Deleted:     w.Deleted,
-		Description: w.Description,
-		TS:          w.TS,
-	}
-	raw, err := json.Marshal(seg)
-	if err != nil {
-		return nil, "", crypto.ManifestEntry{}, err
-	}
-	mac, err := n.master.ObjectMAC(raw)
-	if err != nil {
-		return nil, "", crypto.ManifestEntry{}, err
-	}
-	sealed, err := n.master.Encrypt(raw)
-	if err != nil {
-		return nil, "", crypto.ManifestEntry{}, err
-	}
-	if err := putVerified(ctx, n.store, objKey, sealed); err != nil {
-		return nil, "", crypto.ManifestEntry{}, err
-	}
-	return prev.with(seg), objKey, crypto.ManifestEntry{MAC: mac}, nil
-}
-
-// Compact folds the namespace into a single fresh snapshot and removes the
-// objects it folded, adopting any in-flight writes it found along the way. It
-// writes the new snapshot before deleting anything and only deletes objects it
-// read, so a write that lands concurrently (under a name it never listed) is
-// never lost.
-//
-// commit makes the snapshot authoritative: it must apply the given manifest
-// delta to the vault header (under the compare-and-swap, which also confirms
-// the master this compaction sealed with is still the vault's master). If it
-// errors, Compact removes its own snapshot and returns with the namespace
-// untouched. After the subsumed objects are deleted, commit is called once
-// more, best-effort, to prune their now-pointless entries.
-func (n *Namespace) Compact(ctx context.Context, commit func(crypto.ManifestDelta) error) error {
-	l, err := n.load(ctx, false) // compaction rewrites the manifest; it must trust every object it folds
-	if err != nil {
-		return err
-	}
-	needFold := len(l.segments) > 0 || len(l.snapshots) > 1
-	if !needFold && len(l.prunable) == 0 && len(l.deadwood) == 0 && len(l.strays) == 0 {
-		return nil // already a single recorded snapshot, nothing to do
-	}
-
-	delta := crypto.ManifestDelta{Prune: l.prunable}
-	var snapKey string
-	if needFold {
-		if snapKey, err = n.writeSnapshot(ctx, l, &delta); err != nil {
-			return err
-		}
-	}
-	if !delta.Empty() {
-		if err := commit(delta); err != nil {
-			if snapKey != "" {
-				_ = n.store.Delete(ctx, snapKey) // undo our own snapshot; originals are intact
-			}
-			return fmt.Errorf("compaction abandoned before deleting anything: %w", err)
-		}
-	}
-	return n.sweep(ctx, l, needFold, commit)
-}
-
-// sweep deletes everything a compaction has made redundant and best-effort
-// commits the prune of their entries. By this point everything subsumed is
-// marked folded in the manifest, so deletion is safe at any pace: deadwood
-// (left by an earlier interrupted run) and strays (snapshots no compaction
-// recorded) go too. The objects this run folded are doomed only when a new
-// snapshot actually subsumed them; strays never had an entry to prune.
-func (n *Namespace) sweep(ctx context.Context, l *loaded, needFold bool, commit func(crypto.ManifestDelta) error) error {
-	var doomed []string
-	if needFold {
-		doomed = append(append(doomed, l.snapKeys...), l.segKeys...)
-	}
-	doomed = append(append(doomed, l.deadwood...), l.strays...)
-	var prune []string
-	for _, gone := range doomed {
-		if err := n.store.Delete(ctx, gone); err != nil {
-			return fmt.Errorf("remove %s after compaction: %w (its manifest entry stays marked folded; a later compaction cleans it up)", gone, err)
-		}
-		if !slices.Contains(l.strays, gone) {
-			prune = append(prune, gone)
-		}
-	}
-	if len(prune) > 0 {
-		_ = commit(crypto.ManifestDelta{Prune: prune}) // best-effort tidy-up
-	}
-	return nil
-}
-
-// writeSnapshot folds l into a fresh verified snapshot object and extends the
-// delta that makes it authoritative: the snapshot's entry, plus every subsumed
-// object marked folded (adopted in-flight writes get their first entry already
-// folded: the snapshot subsumes them the moment it is recorded).
-func (n *Namespace) writeSnapshot(ctx context.Context, l *loaded, delta *crypto.ManifestDelta) (string, error) {
-	snapKey, err := n.objectKey("snap")
-	if err != nil {
-		return "", err
-	}
-	snap := foldSnapshot(l)
-	snap.Object = snapKey
-	plain := mustMarshal(snap)
-	mac, err := n.master.ObjectMAC(plain)
-	if err != nil {
-		return "", err
+		return "", crypto.ManifestEntry{}, err
 	}
 	sealed, err := n.master.Encrypt(plain)
 	if err != nil {
-		return "", err
+		return "", crypto.ManifestEntry{}, err
 	}
-	// Write and verify the snapshot before removing what it subsumes, so a
-	// botched write leaves the namespace untouched rather than half-collapsed.
-	if err := putVerified(ctx, n.store, snapKey, sealed); err != nil {
-		return "", err
-	}
-	delta.Add = map[string]crypto.ManifestEntry{snapKey: {MAC: mac}}
-	for _, folded := range append(append([]string{}, l.snapKeys...), l.segKeys...) {
-		if adopted, ok := l.adoptable[folded]; ok {
-			delta.Add[folded] = crypto.ManifestEntry{MAC: adopted.MAC, Folded: true}
-		} else {
-			delta.Fold = append(delta.Fold, folded)
-		}
-	}
-	return snapKey, nil
-}
-
-// loaded holds a namespace's decrypted objects, the keys they came from, and
-// what the fold's classification found around them.
-type loaded struct {
-	snapshots []snapshot
-	segments  []segment
-	snapKeys  []string
-	segKeys   []string
-
-	adoptable map[string]crypto.ManifestEntry
-	prunable  []string
-	deadwood  []string
-	strays    []string
-	corrupt   []CorruptObject // recorded objects a salvage load skipped; nil in strict mode
-}
-
-// foldedSeq is machine's seq high-water mark across the recorded snapshots:
-// everything that machine wrote up to it has been folded away by compaction.
-// This is the replay line: an unrecorded segment at or below it can only be an
-// object that was already folded and removed, then put back. A recorded but
-// not-yet-compacted segment is deliberately NOT counted, since a concurrent
-// in-flight write of the same machine can legitimately carry a lower seq.
-func (l *loaded) foldedSeq(machine string) int {
-	mark := 0
-	for _, s := range l.snapshots {
-		mark = max(mark, s.Seqs[machine])
-	}
-	return mark
-}
-
-// observedSeqs is the per-machine seq high-water across the given snapshots and
-// segments: the highest seq each machine is known to have written, recorded or
-// in flight. It is the floor a fresh write must clear so a lost or reset local
-// counter can never reissue a number that already exists on storage. (It is not
-// the replay line; that is foldedSeq, snapshots only.)
-func observedSeqs(snapshots []snapshot, segments []segment) map[string]int {
-	seqs := map[string]int{}
-	for _, s := range snapshots {
-		for machine, seq := range s.Seqs {
-			seqs[machine] = max(seqs[machine], seq)
-		}
-	}
-	for _, seg := range segments {
-		seqs[seg.Machine] = max(seqs[seg.Machine], seg.Seq)
-	}
-	return seqs
-}
-
-// load assembles the namespace from its manifest entries, then classifies
-// whatever else the listing shows. The manifest, not the listing, is the
-// source of truth: a listed-but-unrecorded object is the exception that has to
-// prove itself, never silently equal to a recorded one.
-//
-// skipCorrupt is the salvage path: an untrustable recorded object (missing,
-// undecryptable, MAC-mismatched) is recorded on l.corrupt and skipped instead
-// of failing the whole load, so a read can surface every key that survives. It
-// never relaxes the other failures (a format-version skew, a transient backend
-// error): those still stop the load, because they are not "this object rotted".
-func (n *Namespace) load(ctx context.Context, skipCorrupt bool) (*loaded, error) {
-	l := &loaded{adoptable: map[string]crypto.ManifestEntry{}}
-
-	live, folded := n.manifestKeys()
-	for _, key := range live {
-		if err := n.openRecorded(ctx, l, key); err != nil {
-			if skipCorrupt && errors.Is(err, errCorruptObject) {
-				l.corrupt = append(l.corrupt, CorruptObject{Key: key, Reason: err.Error()})
-				continue
-			}
-			return nil, err
-		}
-	}
-
-	listed, err := n.store.List(ctx, n.prefix())
+	key, err := n.blobKey()
 	if err != nil {
+		return "", crypto.ManifestEntry{}, err
+	}
+	if err := putVerified(ctx, n.store, key, sealed); err != nil {
+		return "", crypto.ManifestEntry{}, err
+	}
+	return key, crypto.ManifestEntry{Blob: key, MAC: mac, Prev: prev.Blob, PrevMAC: prev.MAC}, nil
+}
+
+// commitPlan is what a commit attempt's build callback decides: the namespace's
+// new manifest entry (nil to remove the namespace), the blob this attempt wrote
+// (an orphan if the attempt is superseded or fails), and the blobs the committed
+// entry orphans.
+type commitPlan struct {
+	entry *crypto.ManifestEntry
+	wrote string
+	dead  []string
+}
+
+// Commit performs a read-modify-write of the namespace blob under the header
+// compare-and-swap. apply computes the new in-memory state from the current one;
+// it is re-run on each swap retry against the freshly re-read blob, so two
+// writers' changes to different keys both survive and only same-key writes
+// resolve last-writer-wins. Commit writes a new uniquely-named blob, points the
+// header at it carrying the prior blob forward as the one-generation backup, and
+// once the swap commits deletes the generation that fell off and calls pin with
+// the committed header. A blob a superseded or failed attempt wrote is cleaned
+// up; errors (including keymgmt.ErrEpochChanged) propagate after that cleanup.
+func (n *Namespace) Commit(ctx context.Context, apply func(*State) (*State, error), pin func(*crypto.Header)) (*State, *crypto.Header, error) {
+	var result *State
+	h, err := n.commit(ctx, func(cur crypto.ManifestEntry) (commitPlan, error) {
+		state, err := n.Read(ctx, cur)
+		if err != nil {
+			return commitPlan{}, err
+		}
+		if state, err = apply(state); err != nil {
+			return commitPlan{}, err
+		}
+		result = state
+		if len(state.Secrets) == 0 {
+			// The last secret was removed: drop the namespace entry rather than
+			// record an empty blob, so Exists and the first-use prompt do not treat
+			// an emptied namespace as one that still holds secrets. Mirrors Rewrite.
+			return commitPlan{dead: []string{cur.Blob, cur.Prev}}, nil
+		}
+		key, entry, err := n.WriteBlob(ctx, state, cur)
+		if err != nil {
+			return commitPlan{}, err
+		}
+		return commitPlan{entry: &entry, wrote: key, dead: []string{cur.Prev}}, nil
+	}, pin)
+	if err != nil {
+		return nil, nil, err
+	}
+	return result, h, nil
+}
+
+// ErrNamespaceChanged reports that a namespace's current blob moved between the
+// read an operation planned against and the swap it tried to commit: another
+// writer landed in between. Rewrite (the evict recovery path) returns it rather
+// than clobber that concurrent write.
+var ErrNamespaceChanged = errors.New("the namespace changed since it was read")
+
+// Rewrite replaces the namespace blob with a fresh one sealed from state, its
+// backup reset: the recovery path, where state came from a salvage read so the
+// corrupt generations are dropped rather than carried. If state holds no secrets
+// the namespace entry is removed entirely. expected is the manifest entry the
+// state was salvaged under; if the live entry no longer matches it (a concurrent
+// write, perhaps a legitimate repair, landed since), Rewrite aborts with
+// ErrNamespaceChanged rather than overwrite that write with the older salvaged
+// state. Same swap, cleanup, and pin contract as Commit.
+func (n *Namespace) Rewrite(ctx context.Context, state *State, expected crypto.ManifestEntry, pin func(*crypto.Header)) (*crypto.Header, error) {
+	return n.commit(ctx, func(cur crypto.ManifestEntry) (commitPlan, error) {
+		if cur.Blob != expected.Blob {
+			return commitPlan{}, fmt.Errorf("%w (namespace %q): re-run to recover against the current state", ErrNamespaceChanged, n.name)
+		}
+		dead := []string{cur.Blob, cur.Prev}
+		if len(state.Secrets) == 0 {
+			return commitPlan{dead: dead}, nil // nothing survives: drop the namespace entry
+		}
+		key, entry, err := n.WriteBlob(ctx, state, crypto.ManifestEntry{})
+		if err != nil {
+			return commitPlan{}, err
+		}
+		return commitPlan{entry: &entry, wrote: key, dead: dead}, nil
+	}, pin)
+}
+
+// commit runs build under the header compare-and-swap. build is given the
+// namespace's current manifest entry and returns a commitPlan. commit deletes
+// the blob a superseded attempt wrote before each retry and after a failure, and
+// on success deletes the generations this write retired and reclaims any orphan
+// blob a past write left in the namespace (see reclaim), then calls pin. It needs
+// the backend's header side: the store a namespace reads/writes blobs through
+// must also be a HeaderStore for the swap (every real vault store is).
+func (n *Namespace) commit(ctx context.Context, build func(cur crypto.ManifestEntry) (commitPlan, error), pin func(*crypto.Header)) (*crypto.Header, error) {
+	hs, ok := n.store.(backend.HeaderStore)
+	if !ok {
+		return nil, errors.New("this backend does not support header writes")
+	}
+	// Snapshot the namespace's blobs before any write. After a successful commit,
+	// reclaim deletes only blobs that were already present here and the committed
+	// header no longer references. A blob a concurrent writer creates during this
+	// commit is absent from the snapshot, so it is never swept: deleting one would
+	// strand the header that writer is about to commit. Best-effort (a listing
+	// error just skips reclamation); the next successful write reclaims anything
+	// missed.
+	preexisting, _ := n.store.List(ctx, n.name+"/")
+	var plan commitPlan
+	h, err := keymgmt.UpdateHeader(ctx, hs, n.master, func(h *crypto.Header) error {
+		if plan.wrote != "" { // a superseded attempt's blob is now an orphan
+			_ = n.store.Delete(ctx, plan.wrote)
+		}
+		cur, _ := h.NamespaceEntry(n.name)
+		p, berr := build(cur)
+		// Capture the plan even on error: if a build ever writes a blob and then
+		// fails, plan.wrote carries it so the cleanup below reclaims it instead of
+		// leaking it. Today every build returns an empty plan on error, so this is a
+		// guard against future build logic, not a change in current behavior.
+		plan = p
+		if berr != nil {
+			return berr
+		}
+		if p.entry == nil {
+			h.RemoveNamespace(n.name)
+		} else {
+			h.SetNamespace(n.name, *p.entry)
+		}
+		return nil
+	})
+	if err != nil {
+		// Only reclaim the blob this attempt wrote when the swap is known NOT to
+		// have committed. On backend.ErrCommitUncertain the header may already
+		// reference it, so deleting it would strand the committed header (the blob
+		// stays as a harmless orphan `doctor` reports instead).
+		if plan.wrote != "" && !errors.Is(err, backend.ErrCommitUncertain) {
+			_ = n.store.Delete(ctx, plan.wrote)
+		}
 		return nil, err
 	}
-	sort.Strings(listed)
-	present := map[string]bool{}
-	for _, key := range listed {
-		present[key] = true
-		if _, ok := n.manifest[key]; ok {
-			continue // recorded: live ones were opened above, folded ones are dead weight awaiting deletion
-		}
-		if err := n.classify(ctx, l, key); err != nil {
-			return nil, err
+	for _, k := range plan.dead {
+		if k != "" && k != plan.wrote {
+			_ = n.store.Delete(ctx, k)
 		}
 	}
-	// Folded entries split by whether their object still exists: a gone object
-	// frees its entry (prunable), a present one awaits deletion (deadwood).
-	for _, key := range folded {
-		if present[key] {
-			l.deadwood = append(l.deadwood, key)
-		} else {
-			l.prunable = append(l.prunable, key)
-		}
+	n.reclaim(ctx, h, preexisting, plan.wrote)
+	if pin != nil {
+		pin(h)
 	}
-	sort.Strings(l.prunable)
-	return l, nil
+	return h, nil
 }
 
-// manifestKeys splits this namespace's manifest entries into live and folded
-// object keys, sorted for deterministic processing.
-func (n *Namespace) manifestKeys() (live, folded []string) {
-	for key, e := range n.manifest {
-		if !strings.HasPrefix(key, n.prefix()) {
+// reclaim deletes the namespace's orphan blobs after a successful commit: objects
+// that were present before this write began (preexisting) and that the committed
+// header no longer references. That is the backup this write retired plus any
+// blob a past write crashed before recording. Because preexisting was listed
+// before the write, a blob a concurrent writer created during it is absent and
+// never deleted, even though it is unreferenced now (that writer is about to
+// record it). Deletes are idempotent and best-effort; a failure leaves a harmless
+// orphan the next write reclaims. This is why notenv needs no separate
+// garbage-collect step: orphan cleanup rides every write.
+func (n *Namespace) reclaim(ctx context.Context, h *crypto.Header, preexisting []string, wrote string) {
+	keep := make(map[string]bool, 2)
+	if e, ok := h.NamespaceEntry(n.name); ok {
+		keep[e.Blob] = true
+		if e.Prev != "" {
+			keep[e.Prev] = true
+		}
+	}
+	for _, k := range preexisting {
+		if k == wrote || keep[k] {
 			continue
 		}
-		if e.Folded {
-			folded = append(folded, key)
-		} else {
-			live = append(live, key)
-		}
+		_ = n.store.Delete(ctx, k)
 	}
-	sort.Strings(live)
-	sort.Strings(folded)
-	return live, folded
 }
 
-// openRecorded opens one live manifest entry's object and folds it into l.
-// Everything the manifest promises is enforced here: the object must exist,
-// open under the master, match its recorded MAC, and carry its own key.
-func (n *Namespace) openRecorded(ctx context.Context, l *loaded, key string) error {
-	blob, err := n.store.Get(ctx, key)
-	if errors.Is(err, backend.ErrNotFound) {
-		return corruptObjectf("object %s is recorded in the vault manifest but missing from storage: a write was deleted or withheld (if another machine is compacting right now, re-run)", key)
-	}
-	if err != nil {
-		return err
-	}
-	plain, err := n.master.Decrypt(blob)
-	if err != nil {
-		return corruptObjectf("object %s: %v", key, err)
-	}
-	if err := n.master.CheckObjectMAC(plain, n.manifest[key].MAC); err != nil {
-		return corruptObjectf("object %s: %v", key, err)
-	}
-	return n.fold(l, key, plain)
-}
-
-// classify decides what an object the manifest does not know is allowed to be.
-// The only honest explanation for a stray segment is a write whose manifest
-// update has not landed (still in flight, lost the swap race, or its writer
-// crashed): such a segment opens under the current master and carries a seq
-// above its machine's folded high-water mark, and is folded in and reported
-// adoptable. A stray segment at or below the mark can only be a deleted object
-// someone put back: the machine's own seqs already moved past it, and every
-// honest write is preceded by a fold that adopts whatever in-flight segments
-// exist before the seq can advance over them. Stray snapshots are reported for
-// cleanup without any further judgment, undecipherable ones included: no fold
-// ever reads an unrecorded snapshot, so it cannot affect a value, and alarming
-// would turn an honest crashed compaction overtaken by a re-key into a
-// permanent false positive. Everything else is evidence and fails the fold.
-func (n *Namespace) classify(ctx context.Context, l *loaded, key string) error {
-	base := strings.TrimPrefix(key, n.prefix())
-	isSeg := strings.HasPrefix(base, "seg-")
-	if !isSeg && !strings.HasPrefix(base, "snap-") {
-		return nil // not a payload object; nothing folds it, so it can't carry a value
-	}
-	if !isSeg {
-		l.strays = append(l.strays, key)
-		return nil
-	}
-	blob, err := n.store.Get(ctx, key)
-	if errors.Is(err, backend.ErrNotFound) {
-		return nil // vanished between list and read: an in-flight writer undid it
-	}
-	if err != nil {
-		return err
-	}
-	plain, err := n.master.Decrypt(blob)
-	if err != nil {
-		return fmt.Errorf("object %s is not recorded in the vault manifest and does not open under the current master key (left over from a write interrupted by a re-key, or planted); inspect it and remove it, e.g. `rclone deletefile`: %w", key, err)
-	}
-	seg, err := n.intoSegment(key, plain)
-	if err != nil {
-		return err
-	}
-	if seg.Seq <= l.foldedSeq(seg.Machine) {
-		return fmt.Errorf("object %s is not recorded in the vault manifest, and machine %s's writes up to its seq are already folded: it looks like a deleted write that was put back (replayed). If you did not just restore older storage onto this remote, treat it as storage tampering. Remove it to continue, e.g. `rclone deletefile`", key, seg.Machine)
-	}
-	mac, err := n.master.ObjectMAC(plain)
-	if err != nil {
-		return err
-	}
-	l.segments = append(l.segments, seg)
-	l.segKeys = append(l.segKeys, key)
-	l.adoptable[key] = crypto.ManifestEntry{MAC: mac}
-	return nil
-}
-
-// fold parses a recorded object's plaintext into l under its kind's rules.
-func (n *Namespace) fold(l *loaded, key string, plain []byte) error {
-	if strings.HasPrefix(strings.TrimPrefix(key, n.prefix()), "snap-") {
-		snap, err := n.intoSnapshot(key, plain)
-		if err != nil {
-			return err
-		}
-		l.snapshots = append(l.snapshots, snap)
-		l.snapKeys = append(l.snapKeys, key)
-		return nil
-	}
-	seg, err := n.intoSegment(key, plain)
-	if err != nil {
-		return err
-	}
-	l.segments = append(l.segments, seg)
-	l.segKeys = append(l.segKeys, key)
-	return nil
-}
-
-func (n *Namespace) intoSegment(key string, plain []byte) (segment, error) {
-	var seg segment
-	if err := json.Unmarshal(plain, &seg); err != nil {
-		return segment{}, fmt.Errorf("corrupt object %s: %w", key, err)
-	}
-	if err := checkPayload(seg.Version, seg.Object, key); err != nil {
-		return segment{}, err
-	}
-	return seg, nil
-}
-
-func (n *Namespace) intoSnapshot(key string, plain []byte) (snapshot, error) {
-	var snap snapshot
-	if err := json.Unmarshal(plain, &snap); err != nil {
-		return snapshot{}, fmt.Errorf("corrupt object %s: %w", key, err)
-	}
-	if err := checkPayload(snap.Version, snap.Object, key); err != nil {
-		return snapshot{}, err
-	}
-	return snap, nil
-}
-
-// checkPayload rejects an object this build cannot faithfully trust: a format
-// version other than ours (higher: a newer notenv wrote it; lower: upgrade the
-// vault), or a payload that names a different object key than it was fetched
-// from (a copy or rename is never the object it claims to be).
-func checkPayload(version int, object, key string) error {
-	switch {
-	case version > formatVersion:
-		return fmt.Errorf("%s was written by a newer notenv (format v%d, this build understands up to v%d); upgrade notenv", key, version, formatVersion)
-	case version < formatVersion:
-		return fmt.Errorf("%s was written in an older storage format (v%d) that this version of notenv no longer reads", key, version)
-	case object != key:
-		return fmt.Errorf("object %s declares it was written as %s: it was copied or renamed, and is not trusted", key, object)
-	}
-	return nil
-}
-
-// objectKey builds a unique key under the namespace from a name prefix and a
-// random suffix, so no two writes ever collide on a name.
-func (n *Namespace) objectKey(prefix string) (string, error) {
-	buf := make([]byte, 8) // 64 bits of randomness: collision-safe well past any realistic object count
+// blobKey builds a unique key under the namespace, so no two writes ever collide
+// on a name and a crash before the header swap leaves an orphan rather than
+// clobbering the live blob.
+func (n *Namespace) blobKey() (string, error) {
+	buf := make([]byte, 8) // 64 bits: collision-safe past any realistic write count
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s%s-%s.age", n.prefix(), prefix, hex.EncodeToString(buf)), nil
+	return fmt.Sprintf("%s/data-%s.age", n.name, hex.EncodeToString(buf)), nil
 }
 
 // putVerified writes sealed at key and reads it back. Because reads fail closed
-// on any unreadable object (a dropped or tampered write must not be silently
-// skipped), a botched write would otherwise poison every later fold; this stops
-// a genuinely corrupt object from being left behind. It deletes only on a real
+// on any untrustable blob (a dropped or tampered write must not be silently
+// skipped), a botched write would otherwise poison every later read; this stops
+// a genuinely corrupt blob from reaching the manifest. It deletes only on a real
 // byte mismatch: a read-back that merely errors could be read-after-write lag,
 // and deleting a write that may have landed is the wrong reflex, so it surfaces
 // the error and leaves the object for the caller to retry over.
@@ -698,146 +511,14 @@ func putVerified(ctx context.Context, store backend.Backend, key string, sealed 
 		return fmt.Errorf("verify %s after write: %w", key, err)
 	}
 	if !bytes.Equal(got, sealed) {
-		// The backend stored different bytes than we sent: a corrupt write.
 		_ = store.Delete(ctx, key)
-		return fmt.Errorf("object %s read back corrupted; write not recorded", key)
+		return fmt.Errorf("blob %s read back corrupted; write not recorded", key)
 	}
 	return nil
 }
 
-// winner tracks the leading write for a key during a fold.
-type winner struct {
-	value       string
-	machine     string
-	seq         int
-	lamport     int
-	deleted     bool
-	description string
-	ts          int64
-	tied        map[string]struct{} // machines that wrote at the leading Lamport
-}
-
-// lead replaces the winner's write wholesale; metadata rides the winning write.
-func (w *winner) lead(e entry, deleted bool) {
-	w.value, w.machine, w.seq, w.lamport, w.deleted = e.Value, e.Machine, e.Seq, e.Lamport, deleted
-	w.description, w.ts = e.Description, e.TS
-}
-
-// accumulate replays a namespace's snapshots and segments into the winning
-// write per key (last write wins by Lamport, then machine, then Seq) and
-// returns the highest Lamport seen. Writes travel as entries: a snapshot's
-// entries directly, a segment reshaped into one.
-func accumulate(l *loaded) (map[string]*winner, int) {
-	acc := map[string]*winner{}
-	maxLamport := 0
-	apply := func(key string, e entry, deleted bool) {
-		if e.Lamport > maxLamport {
-			maxLamport = e.Lamport
-		}
-		w := acc[key]
-		if w == nil {
-			w = &winner{tied: map[string]struct{}{}}
-			w.lead(e, deleted)
-			w.tied[e.Machine] = struct{}{}
-			acc[key] = w
-			return
-		}
-		switch {
-		case e.Lamport > w.lamport:
-			w.lead(e, deleted)
-			w.tied = map[string]struct{}{e.Machine: {}}
-		case e.Lamport == w.lamport:
-			w.tied[e.Machine] = struct{}{}
-			if leads(e.Machine, e.Seq, w.machine, w.seq) {
-				w.lead(e, deleted)
-			}
-		}
-	}
-	for _, s := range l.snapshots {
-		// Defensive: a snapshot's clock should equal its highest entry now that
-		// tombstones are retained, but carry it forward regardless so the next
-		// write's clock never regresses.
-		if s.Lamport > maxLamport {
-			maxLamport = s.Lamport
-		}
-		for key, e := range s.Entries {
-			apply(key, e, e.Deleted)
-		}
-	}
-	for _, s := range l.segments {
-		apply(s.Key, entry{Value: s.Value, Lamport: s.Lamport, Machine: s.Machine, Seq: s.Seq, Description: s.Description, TS: s.TS}, s.Deleted)
-	}
-	return acc, maxLamport
-}
-
-// foldSnapshot accumulates a namespace into a snapshot of its live keys and
-// its tombstones. A tombstone keeps its provenance and advisory timestamp but
-// no value or description; it stays in the snapshot indefinitely (dropping it
-// would reopen the resurrection window for a sufficiently late write, and the
-// cost of keeping it is bytes), until a later live write to the key
-// supersedes it. The per-machine seq marks fold in everything (prior
-// snapshots' marks and every segment), so the marks never regress.
-func foldSnapshot(l *loaded) snapshot {
-	acc, maxLamport := accumulate(l)
-	s := snapshot{Version: formatVersion, Lamport: maxLamport, Seqs: observedSeqs(l.snapshots, l.segments), Entries: map[string]entry{}}
-	for key, w := range acc {
-		if w.deleted {
-			s.Entries[key] = entry{Lamport: w.lamport, Machine: w.machine, Seq: w.seq, TS: w.ts, Deleted: true}
-			continue
-		}
-		s.Entries[key] = entry{Value: w.value, Lamport: w.lamport, Machine: w.machine, Seq: w.seq, Description: w.description, TS: w.ts}
-	}
-	return s
-}
-
-// leads reports whether write a outranks write b at an equal Lamport: higher
-// machine id wins, then higher sequence number, giving every machine the same
-// deterministic winner.
-func leads(aMachine string, aSeq int, bMachine string, bSeq int) bool {
-	if aMachine != bMachine {
-		return aMachine > bMachine
-	}
-	return aSeq > bSeq
-}
-
-func (w *winner) conflict(key string) Conflict {
-	shadowed := make([]string, 0, len(w.tied)-1)
-	for machine := range w.tied {
-		if machine != w.machine {
-			shadowed = append(shadowed, machine)
-		}
-	}
-	sort.Strings(shadowed)
-	return Conflict{Key: key, Winner: w.machine, Shadowed: shadowed}
-}
-
-// with returns the state after applying one freshly written segment: the
-// segment is now the sole leader for its key, clearing any prior conflict there.
-// The classification slices are dropped on purpose: the caller's manifest
-// update consumes them alongside the new segment's own entry. The seq high-water
-// carries forward (raised for this segment's machine), so a batch's later writes
-// floor against the writes already in it.
-func (s *State) with(seg segment) *State {
-	next := &State{Secrets: make(map[string]string, len(s.Secrets)), Meta: make(map[string]Meta, len(s.Meta)), lamport: seg.Lamport, seqs: maps.Clone(s.seqs)}
-	if next.seqs == nil {
-		next.seqs = map[string]int{}
-	}
-	next.seqs[seg.Machine] = max(next.seqs[seg.Machine], seg.Seq)
-	maps.Copy(next.Secrets, s.Secrets)
-	maps.Copy(next.Meta, s.Meta)
-	if seg.Deleted {
-		delete(next.Secrets, seg.Key)
-		delete(next.Meta, seg.Key)
-	} else {
-		next.Secrets[seg.Key] = seg.Value
-		next.Meta[seg.Key] = Meta{Description: seg.Description, TS: seg.TS}
-	}
-	for _, c := range s.Conflicts {
-		if c.Key != seg.Key {
-			next.Conflicts = append(next.Conflicts, c)
-		}
-	}
-	return next
+func emptyState(has bool) *State {
+	return &State{Secrets: map[string]string{}, Meta: map[string]Meta{}, has: has}
 }
 
 // mustMarshal serializes a value that cannot fail to marshal (plain structs of

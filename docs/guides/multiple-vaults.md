@@ -31,3 +31,9 @@ and no checkout. The contract is bypassed entirely, so `run` injects every secre
 This is how an agent or a machine with no git checkout reaches its credentials. First use of a
 namespace that already holds secrets is confirmed once, recorded per user. See
 [AI agents](ai-agents.md).
+
+---
+
+**Under the hood:** why the namespace pin stops a malicious clone from silently
+reaching another project's secrets is in the
+[threat model](../security/threat-model.md).

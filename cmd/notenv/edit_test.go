@@ -91,6 +91,39 @@ NEW=fresh
 	}
 }
 
+// TestEditBlankLineKeepsDescription: a blank line slipped between a key's comment
+// and the key (an editor reflow) detaches the comment, but a value change must
+// then KEEP the stored description, never silently clear it.
+func TestEditBlankLineKeepsDescription(t *testing.T) {
+	state := editState(
+		map[string]string{"TOKEN": "old"},
+		map[string]string{"TOKEN": "the API token"},
+	)
+	// The description comment is no longer directly above the key.
+	buffer := "# the API token\n\nTOKEN=newvalue\n"
+	entries, err := parseEditBuffer(strings.NewReader(buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries["TOKEN"].description != "" {
+		t.Fatalf("a blank line detaches the comment, so the parsed description is empty: %+v", entries["TOKEN"])
+	}
+	writes, err := diffEdit(state, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(writes) != 1 {
+		t.Fatalf("want one write for the value change, got %+v", writes)
+	}
+	w := writes[0]
+	if w.Key != "TOKEN" || w.Value != "newvalue" {
+		t.Fatalf("TOKEN value must change: %+v", w)
+	}
+	if !w.KeepDescription || w.Description != "" {
+		t.Fatalf("the description must be kept (KeepDescription), not cleared: %+v", w)
+	}
+}
+
 // TestEditParseErrors: the strict failures, each naming its line.
 func TestEditParseErrors(t *testing.T) {
 	for name, buffer := range map[string]string{

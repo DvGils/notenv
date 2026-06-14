@@ -7,10 +7,11 @@ and what is deliberately out of scope.
 
 - **Onboarding.** `setup`, `init`, and `import`; local vaults as the zero-account default, with
   one-command replication to a cloud remote (`vault copy`).
-- **The core loop.** `set`, `unset`, `list`, and `run`, with `compact` and `cache` for housekeeping.
-- **Storage.** Append-only writes so concurrent `set`s never lose each other, automatic compaction
-  keeping reads fast, and an authenticated, version-pinned header with a manifest binding every stored
-  object (so storage-level tampering with any single secret alarms by name).
+- **The core loop.** `set`, `unset`, `list`, and `run`, with `cache` and `doctor` for housekeeping.
+- **Storage.** One encrypted blob per namespace under last-write-wins, so concurrent writers serialize
+  on the header swap without losing each other, plus a one-generation backup per namespace and an
+  authenticated, version-pinned header with a manifest binding every stored object (so storage-level
+  tampering with any single secret alarms by name).
 - **Keys and teams.** Full key and slot management (`notenv key ...`): team access by age recipient,
   passphrase and master-key rotation, offboarding by re-key, advisory primary governance, and signed
   rotation transitions so legitimate re-keys propagate to every machine without prompts.
@@ -34,7 +35,7 @@ and what is deliberately out of scope.
 - **Blob caching on macOS and Windows.** The master key is cached on all three platforms, but the
   ciphertext blob cache stays Linux-only: there is no RAM-backed location to promise elsewhere that a
   logout or reboot reliably reclaims, and a cold fetch is latency, not a prompt. See
-  [What each platform guarantees](../guides/caching.md#what-each-platform-guarantees).
+  [What each platform guarantees](../concepts/caching.md#what-each-platform-guarantees).
 
 See the [threat model](../security/threat-model.md) for the security properties and the explicit list
 of what notenv does not defend.

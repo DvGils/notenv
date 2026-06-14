@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -122,7 +123,7 @@ func runImport(cmd *cobra.Command, a *app, file string, items []importItem, skip
 		return errors.New("every assignment was empty; nothing to import")
 	}
 	ctx := cmd.Context()
-	state, view, err := a.foldState(ctx)
+	state, view, err := a.readState(ctx)
 	if err != nil {
 		return err
 	}
@@ -133,23 +134,23 @@ func runImport(cmd *cobra.Command, a *app, file string, items []importItem, skip
 		}
 	}
 
-	// An import overwrites values, not what the keys mean: each write
-	// carries the key's existing description forward.
+	// An import overwrites values, not what the keys mean: each write carries the
+	// key's existing description forward (KeepDescription reads the live one under
+	// the swap, so a concurrent description edit is not reverted).
 	writes := make([]secrets.Write, 0, len(items))
+	now := time.Now().Unix()
 	for _, it := range items {
-		writes = append(writes, secrets.Write{Key: it.storageKey, Value: it.value, Description: state.Meta[it.storageKey].Description})
+		writes = append(writes, secrets.Write{Key: it.storageKey, Value: it.value, KeepDescription: true, TS: now})
 	}
 	var updated *secrets.State
 	if err := ui.Spin(fmt.Sprintf("Encrypting and recording %d secrets", len(items)), func() error {
 		var aerr error
-		updated, aerr = a.appendGuardedBatch(ctx, view, state, writes)
+		updated, aerr = a.writeNamespace(ctx, view, writes)
 		return aerr
 	}); err != nil {
 		return err
 	}
-	a.cacheFolded(view.mk, updated)
-	reportConflicts(updated.Conflicts)
-	a.maybeCompact(ctx, view.mk, state.SegmentCount()+len(items)-1)
+	a.cacheState(view.mk, updated)
 
 	if a.contract != nil {
 		for _, it := range items {

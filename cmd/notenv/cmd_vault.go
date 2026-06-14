@@ -101,7 +101,7 @@ func copyDestination(ctx context.Context) (string, config.StorageEntry, error) {
 		if base == "" {
 			base = config.DefaultBase
 		}
-		entry = config.StorageEntry{Remote: vaultCopyToRemote, Base: base, Versioned: remoteIsVersioned(ctx, vaultCopyToRemote)}
+		entry = config.StorageEntry{Remote: vaultCopyToRemote, Base: base}
 	case !ui.Interactive():
 		return "", config.StorageEntry{}, errors.New("destination required: --to-remote (with --to-base) or --to-path")
 	default:
@@ -158,7 +158,7 @@ func promptDestination(ctx context.Context) (config.StorageEntry, error) {
 	if err != nil {
 		return config.StorageEntry{}, err
 	}
-	return config.StorageEntry{Remote: remote, Base: base, Versioned: remoteIsVersioned(ctx, remote)}, nil
+	return config.StorageEntry{Remote: remote, Base: base}, nil
 }
 
 func suggestedCopyName(entry config.StorageEntry) string {
@@ -271,14 +271,11 @@ func copyObjects(ctx context.Context, src, dst vaultStorage) error {
 }
 
 // reservedCopyName filters storage plumbing out of the object copy: header
-// artifacts travel through the header calls (rclone's listing includes them as
-// plain files; the local backend's never does).
+// artifacts travel through the header calls, not the blob copy. It defers to the
+// backend package so the reserved-name set has one definition (the divergence
+// that let orphan cleanup delete the header lived in two copies of this list).
 func reservedCopyName(key string) bool {
-	switch key {
-	case ".header.json", ".header.json.prev", ".header.lock", ".notenv-probe":
-		return true
-	}
-	return false
+	return backend.IsReserved(key)
 }
 
 var vaultDeleteYes bool
@@ -317,7 +314,7 @@ local trust state.`,
 		store := openStorage(eff)
 		scope := eff.Scope()
 
-		_, slot, header, err := humanUnlock(ctx, store, fmt.Sprintf("permanently deleting vault %q", name))
+		_, slot, header, err := humanUnlock(ctx, store, scope, fmt.Sprintf("permanently deleting vault %q", name))
 		if err != nil {
 			return err
 		}

@@ -58,7 +58,7 @@ signed proof.
 
     A non-holder cannot forge a transition: they lack the old signing key. An **ex-holder can**, which
     is why offboarding ends with rotating the storage credential. See the
-    [threat model](../security/threat-model.md#known-limitations).
+    [threat model](../security/threat-model.md#edge-cases-and-recovery).
 
 ## Governance
 

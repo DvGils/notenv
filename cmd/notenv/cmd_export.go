@@ -15,7 +15,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/DvGils/notenv/internal/backend"
-	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
@@ -38,6 +37,11 @@ If you want a file, redirect it yourself (` + "`notenv export > .env`" + `), whi
 your deliberate act. There is deliberately no --output flag: opening a plaintext
 file is exactly what the rest of notenv exists to avoid.
 
+The output is meant for ` + "`notenv import`" + `, not for ` + "`source`" + `: values are emitted
+literally, so a value containing ` + "`$(...)`" + ` or backticks is just data here, but a
+POSIX shell would execute it on ` + "`source`" + `. Feed it to ` + "`notenv import`" + ` (or load it
+with a parser that does no expansion).
+
 Bulk plaintext egress is gated like ` + "`run --no-mask`" + `: it asks for the vault's
 primary passphrase even when the session key is cached, and refuses without a
 terminal. A machine identity cannot export.`,
@@ -51,7 +55,7 @@ terminal. A machine identity cannot export.`,
 }
 
 // exportOneNamespace exports the project's namespace (or --namespace), gated by
-// the primary passphrase, folded under the just-typed master.
+// the primary passphrase, read under the just-typed master.
 func exportOneNamespace(ctx context.Context) error {
 	a, err := loadApp(ctx)
 	if err != nil {
@@ -61,14 +65,14 @@ func exportOneNamespace(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	mk, slot, header, err := humanUnlock(ctx, v, fmt.Sprintf("exporting the plaintext secrets in namespace %q", a.namespace))
+	mk, slot, header, err := humanUnlock(ctx, v, a.cacheScope, fmt.Sprintf("exporting the plaintext secrets in namespace %q", a.namespace))
 	if err != nil {
 		return err
 	}
 	if err := requirePrimarySlot(header, slot, "export"); err != nil {
 		return err
 	}
-	state, err := foldNamespaceUnder(ctx, a.store, a.namespace, mk, a.machine, header)
+	state, err := readNamespaceUnder(ctx, a.store, a.namespace, mk, header)
 	if err != nil {
 		return err
 	}
@@ -84,27 +88,20 @@ func exportWholeVault(ctx context.Context) error {
 		return err
 	}
 	ui.Warnf("this prints EVERY secret in the vault as plaintext")
-	mk, slot, header, err := humanUnlock(ctx, store, "exporting every secret in the vault")
+	mk, slot, header, err := humanUnlock(ctx, store, store.scope, "exporting every secret in the vault")
 	if err != nil {
 		return err
 	}
 	if err := requirePrimarySlot(header, slot, "export --all"); err != nil {
 		return err
 	}
-	machine, err := config.MachineID()
-	if err != nil {
-		return err
-	}
-	names, err := vaultNamespaces(ctx, store)
-	if err != nil {
-		return err
-	}
+	names := vaultNamespaces(header)
 	if len(names) == 0 {
 		return errors.New("the vault holds no secrets to export")
 	}
 	out := map[string]*secrets.State{}
 	for _, ns := range names {
-		state, err := foldNamespaceUnder(ctx, store, ns, mk, machine, header)
+		state, err := readNamespaceUnder(ctx, store, ns, mk, header)
 		if err != nil {
 			return fmt.Errorf("namespace %q: %w", ns, err)
 		}
@@ -124,28 +121,21 @@ func requirePrimarySlot(header *crypto.Header, slot int, action string) error {
 	return nil
 }
 
-func foldNamespaceUnder(ctx context.Context, store backend.Backend, ns string, mk *crypto.MasterKey, machine string, header *crypto.Header) (*secrets.State, error) {
-	return secrets.For(store, ns, mk, machine, header.Manifest).Fold(ctx)
+func readNamespaceUnder(ctx context.Context, store backend.Backend, ns string, mk *crypto.MasterKey, header *crypto.Header) (*secrets.State, error) {
+	entry, _ := header.NamespaceEntry(ns)
+	return secrets.For(store, ns, mk).Read(ctx, entry)
 }
 
-// vaultNamespaces lists the namespaces a storage holds, from object names alone.
-func vaultNamespaces(ctx context.Context, store backend.Backend) ([]string, error) {
-	keys, err := store.List(ctx, "")
-	if err != nil {
-		return nil, err
-	}
-	seen := map[string]bool{}
-	var names []string
-	for _, k := range keys {
-		ns, _, found := strings.Cut(k, "/")
-		if !found || seen[ns] {
-			continue
-		}
-		seen[ns] = true
+// vaultNamespaces lists the namespaces a vault holds, from the authenticated
+// header manifest (not the raw object listing, which would include orphan blobs
+// from interrupted writes), sorted.
+func vaultNamespaces(header *crypto.Header) []string {
+	names := make([]string, 0, len(header.Manifest))
+	for ns := range header.Manifest {
 		names = append(names, ns)
 	}
 	sort.Strings(names)
-	return names, nil
+	return names
 }
 
 func warnExportScrollback() {
@@ -158,6 +148,12 @@ func writeExport(w io.Writer, byNS map[string]*secrets.State, asJSON, all bool) 
 	if asJSON {
 		return writeExportJSON(w, byNS, all)
 	}
+	// A warning at the point a human would see the file: this is for
+	// `notenv import`, not for `source`. Values are literal here, but a POSIX
+	// shell would execute `$(...)`/backticks in a value on `source`. The dotenv
+	// parser ignores these comment lines, so the import round-trip is unaffected.
+	fmt.Fprintln(w, "# notenv export: import with `notenv import`. Do NOT `source` this in a shell;")
+	fmt.Fprintln(w, "# values are literal and may contain characters a shell would execute.")
 	names := make([]string, 0, len(byNS))
 	for ns := range byNS {
 		names = append(names, ns)

@@ -30,8 +30,8 @@ somewhere it will outlive. notenv removes the file instead of guarding it.
 - **Joining and leaving are one command.** Onboard a teammate with a string over chat; their first
   run swaps it for a credential only they know. Offboarding re-encrypts everything, so leaving
   actually revokes.
-- **Built for agents and CI.** `notenv run` lets a process *use* a secret without *seeing* it, and
-  your CI secret store holds one credential instead of thirty.
+- **Built for AI agents.** `notenv run` lets a process *use* a secret without *seeing* it, and
+  captured output is masked, so an agent runs your commands without a value ever entering its context.
 
 **Not this if** you want a platform: there is no web console or SSO, and access is scoped per vault,
 not per secret (everyone in a vault can read that vault). If a platform team already runs Vault, keep
@@ -71,9 +71,9 @@ Full docs live at **[dvgils.github.io/notenv](https://dvgils.github.io/notenv/)*
 
 - [Quick start](https://dvgils.github.io/notenv/getting-started/quick-start/) and
   [installation](https://dvgils.github.io/notenv/getting-started/installation/)
-- Guides: [teams and keys](https://dvgils.github.io/notenv/guides/teams-and-keys/),
+- Guides: [share a vault with your team](https://dvgils.github.io/notenv/guides/teams-and-keys/),
   [cloud remotes](https://dvgils.github.io/notenv/guides/cloud-remotes/),
-  [CI](https://dvgils.github.io/notenv/guides/ci/),
+  [export or delete a vault](https://dvgils.github.io/notenv/guides/export-and-delete/),
   [AI agents](https://dvgils.github.io/notenv/guides/ai-agents/)
 - Reference: [commands](https://dvgils.github.io/notenv/reference/commands/),
   [configuration](https://dvgils.github.io/notenv/reference/configuration/)

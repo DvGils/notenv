@@ -8,7 +8,33 @@ import (
 
 	"github.com/DvGils/notenv/internal/backend/memstore"
 	"github.com/DvGils/notenv/internal/config"
+	"github.com/DvGils/notenv/internal/crypto"
 )
+
+// seedNamespaceHeader gives store a sealed header whose manifest records the
+// named namespaces, the authenticated "this namespace holds committed secrets"
+// signal the guard now checks (a raw blob with no manifest entry is an orphan
+// and must not count).
+func seedNamespaceHeader(t *testing.T, store *memstore.Store, namespaces ...string) {
+	t.Helper()
+	header, mk, err := crypto.NewHeader("p", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ns := range namespaces {
+		header.SetNamespace(ns, crypto.ManifestEntry{Blob: ns + "/data-x.age", MAC: "x"})
+	}
+	if err := header.Seal(mk); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := header.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutHeader(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // forceNonInteractive pins the prompt seam for a test: the real check opens
 // /dev/tty, which exists when tests run from a terminal and not in CI, so
@@ -37,9 +63,7 @@ func TestGuardFlagNamespace(t *testing.T) {
 		t.Fatal("virgin acceptance must be recorded")
 	}
 
-	if err := store.Put(ctx, "ops/seg-m1-aaaaaaaaaaaa.age", []byte("x")); err != nil {
-		t.Fatal(err)
-	}
+	seedNamespaceHeader(t, store, "ops")
 	// The join must refuse without a terminal and without the env opt-in.
 	err := guardFlagNamespace(ctx, store, "scope", "ops")
 	if err == nil || !strings.Contains(err.Error(), acceptNamespaceEnv) {
@@ -48,18 +72,22 @@ func TestGuardFlagNamespace(t *testing.T) {
 	if ok, _ := config.NamespaceAccepted("scope", "ops"); ok {
 		t.Fatal("a refused namespace must not be recorded")
 	}
-	// The operator's environment naming the namespace is the opt-in.
+	// The operator's environment naming the namespace is the opt-in, but only for
+	// this invocation: NOTENV_ACCEPT_NAMESPACE is a per-run override, not a durable
+	// grant, so it must NOT be persisted.
 	t.Setenv(acceptNamespaceEnv, "other, ops")
 	if err := guardFlagNamespace(ctx, store, "scope", "ops"); err != nil {
 		t.Fatalf("env-accepted namespace: %v", err)
 	}
-	if ok, _ := config.NamespaceAccepted("scope", "ops"); !ok {
-		t.Fatal("join acceptance must be recorded")
+	if ok, _ := config.NamespaceAccepted("scope", "ops"); ok {
+		t.Fatal("an env-accepted namespace must not be persisted (it is a per-invocation override)")
 	}
+	// With the env cleared, the next run has no durable acceptance to lean on and
+	// must re-confirm (here: refuse, since there is no terminal and no env).
 	t.Setenv(acceptNamespaceEnv, "")
-	// Accepted: the guard must not even list storage again.
-	if err := guardFlagNamespace(ctx, nil, "scope", "ops"); err != nil {
-		t.Fatalf("accepted namespace must short-circuit: %v", err)
+	err = guardFlagNamespace(ctx, store, "scope", "ops")
+	if err == nil || !strings.Contains(err.Error(), acceptNamespaceEnv) {
+		t.Fatalf("a non-persisted env accept must re-confirm next run: err = %v, want a refusal naming %s", err, acceptNamespaceEnv)
 	}
 }
 
@@ -71,9 +99,7 @@ func TestGuardNamespaceCheckoutFailsClosed(t *testing.T) {
 	isolateConfig(t)
 	forceNonInteractive(t)
 	store := memstore.New()
-	if err := store.Put(ctx, "victim/seg-m1-aaaaaaaaaaaa.age", []byte("x")); err != nil {
-		t.Fatal(err)
-	}
+	seedNamespaceHeader(t, store, "victim")
 
 	dir := t.TempDir() // base name is never "victim", so this is the mismatch case
 	err := guardNamespace(ctx, store, dir, config.LocalBinding{}, "victim")

@@ -20,8 +20,9 @@ var doctorCmd = &cobra.Command{
 	Short: "Check a storage for known problem states and say how to fix them",
 	Long: `Inspect a storage read-only and report anything in a known problem state,
 with the way out for each: a vanished or unreadable header, a pending
-rollback alarm, unfinished onboarding, objects a crashed write left
-unrecorded, recorded objects that are missing.
+rollback alarm, unfinished onboarding, a namespace blob that is missing or
+corrupt, and orphan blobs a crashed write left behind (the next write to that
+namespace reclaims them).
 
 doctor never fixes, writes, or prompts. With a session key cached it also
 verifies the header's authentication tag; without one it says so and reads
@@ -115,7 +116,7 @@ func runDoctor(cmd *cobra.Command, store *headerTarget, c *checkup) {
 	mk, _ := verifyWithSessionKey(c, store.scope, header)
 	checkPin(c, store.scope, header)
 	checkSlots(c, header)
-	checkObjects(cmd, store, c, header, mk)
+	checkBlobs(cmd, store, c, header, mk)
 }
 
 // verifyWithSessionKey authenticates the header when (and only when) a session
@@ -200,15 +201,17 @@ func checkSlots(c *checkup, header *crypto.Header) {
 	c.ok("%d slot(s): %d human, %d machine", len(header.Slots), humans, machines)
 }
 
-// checkObjects diffs the storage listing against the header manifest and, when
-// a session master is available, verifies the content of every live recorded
-// object the way a fold would: an unrecorded object is a crashed write (or
-// something put back); a live recorded object that is missing, that does not
-// decrypt, or that fails its manifest MAC is exactly what fails a fold closed.
-// Folded entries are skipped: a fold never reads them, so their state cannot
-// fail a read. With a master this reads and decrypts every live object, the
-// same cost as a fold; without one it can only check presence.
-func checkObjects(cmd *cobra.Command, store *headerTarget, c *checkup, header *crypto.Header, mk *crypto.MasterKey) {
+// checkBlobs diffs the storage listing against the header manifest and, when a
+// session master is available, verifies each namespace's current blob the way a
+// read would: a recorded blob that is missing, that does not decrypt, or that
+// fails its manifest MAC is exactly what fails a read closed. The
+// one-generation backup is checked too, but a bad backup is a degraded-recovery
+// note, not a fail-closed problem (it is never served on the happy path). A
+// stored object no manifest entry references is an orphan from a crashed write:
+// harmless to reads, offered for cleanup. With a master this reads and decrypts
+// every current blob, the same cost as a read; without one it can only check
+// presence.
+func checkBlobs(cmd *cobra.Command, store *headerTarget, c *checkup, header *crypto.Header, mk *crypto.MasterKey) {
 	ctx := cmd.Context()
 	keys, err := store.List(ctx, "")
 	if err != nil {
@@ -219,60 +222,99 @@ func checkObjects(cmd *cobra.Command, store *headerTarget, c *checkup, header *c
 	for _, k := range keys {
 		present[k] = true
 	}
-	unrecorded := 0
+	referenced := referencedBlobs(header)
+	orphans := 0
 	for _, k := range keys {
-		if _, ok := header.Manifest[k]; !ok {
-			unrecorded++
-			c.problem("object %s is not recorded in the vault manifest: a write that crashed mid-protocol, or something put back after deletion. Folds include it with a warning and the next compaction records it; if a master rotation happened since it was written, the fold fails closed naming it, and the fix is to delete it and re-set that key", k)
+		if !referenced[k] {
+			orphans++
+			c.note("object %s is not referenced by the vault manifest: an orphan from a write that crashed before recording it. It is never read, and the next write to its namespace reclaims it", k)
 		}
 	}
-	missing, corrupt := 0, 0
-	for k, entry := range header.Manifest {
-		if entry.Folded {
-			continue // a fold skips folded objects, so their absence or corruption never fails a read
-		}
-		if !present[k] {
-			missing++
-			c.problem("object %s is recorded in the vault manifest but missing from storage: reads fail closed naming it. Recover it from the remote's version history (versioned remotes), read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it for good (acknowledged data loss). Compaction cannot rebuild it: it reads every recorded object first and fails on this same one", k, k)
-			continue
-		}
-		if mk == nil {
-			continue // no session master: cannot check content; the header note already says so
-		}
-		if verifyRecordedObject(ctx, store, c, k, entry, mk) {
-			corrupt++
-		}
-	}
-	if unrecorded == 0 && missing == 0 && corrupt == 0 {
+	missing, corrupt := checkNamespaceBlobs(ctx, store, c, header, mk, present)
+	if orphans == 0 && missing == 0 && corrupt == 0 {
 		if mk != nil {
-			c.ok("%d object(s), all recorded, present, and matching their manifest MAC", len(keys))
+			c.ok("%d namespace blob(s), all present and matching their manifest MAC", len(header.Manifest))
 		} else {
-			c.ok("%d object(s), all recorded and present (content unverified: no session key)", len(keys))
+			c.ok("%d namespace blob(s), all present (content unverified: no session key)", len(header.Manifest))
 		}
 	}
 }
 
-// verifyRecordedObject checks one present, non-folded recorded object's content
-// the way a fold would: it must decrypt under the master and match its manifest
-// MAC. It reports true only when the object is genuinely corrupt (a fold will
-// fail closed on it); a transient read error is surfaced but not counted as
-// corruption. Called only with a session master available.
-func verifyRecordedObject(ctx context.Context, store *headerTarget, c *checkup, key string, entry crypto.ManifestEntry, mk *crypto.MasterKey) bool {
+// checkNamespaceBlobs verifies each namespace's current blob (and notes a
+// missing or corrupt backup), returning how many were missing or corrupt.
+func checkNamespaceBlobs(ctx context.Context, store *headerTarget, c *checkup, header *crypto.Header, mk *crypto.MasterKey, present map[string]bool) (missing, corrupt int) {
+	for _, ns := range vaultNamespaces(header) {
+		e := header.Manifest[ns]
+		switch {
+		case !present[e.Blob]:
+			missing++
+			c.problem("namespace %q blob %s is recorded in the vault manifest but missing from storage: reads fail closed. Read what survives (its one-generation backup) with `notenv run --skip-corrupt`, or `notenv key evict %s` to rewrite the namespace from what survives", ns, e.Blob, ns)
+		case mk == nil:
+			// no session master: cannot check content; the header note already says so
+		case verifyNamespaceBlob(ctx, store, c, ns, e.Blob, e.MAC, mk):
+			corrupt++
+		}
+		if e.Prev != "" && mk != nil {
+			checkNamespaceBackup(ctx, store, c, ns, e, present, mk)
+		}
+	}
+	return missing, corrupt
+}
+
+// verifyNamespaceBlob checks one namespace's current blob the way a read would:
+// it must decrypt under the master and match its manifest MAC. It reports true
+// only when the blob is genuinely corrupt (a read will fail closed on it); a
+// transient read error is surfaced but not counted as corruption.
+func verifyNamespaceBlob(ctx context.Context, store *headerTarget, c *checkup, ns, key, mac string, mk *crypto.MasterKey) bool {
 	blob, err := store.Get(ctx, key)
 	if err != nil {
-		c.problem("object %s could not be read for verification: %v", key, err)
+		c.problem("namespace %q blob %s could not be read for verification: %v", ns, key, err)
 		return false
 	}
 	plain, err := mk.Decrypt(blob)
 	if err != nil {
-		c.problem("object %s is recorded but does not decrypt under the master (bit-rot or tampering): a fold will fail closed naming it. Recover it from the remote's version history, read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it for good (acknowledged data loss)", key, key)
+		c.problem("namespace %q blob %s does not decrypt under the master (bit-rot or tampering): reads fail closed. Read its one-generation backup with `notenv run --skip-corrupt`, or `notenv key evict %s` to rewrite the namespace from what survives", ns, key, ns)
 		return true
 	}
-	if err := mk.CheckObjectMAC(plain, entry.MAC); err != nil {
-		c.problem("object %s does not match its manifest MAC (reverted or substituted): a fold will fail closed naming it. Recover the correct bytes from the remote's version history, read what survives with `notenv run --skip-corrupt`, or `notenv key evict-object %s` to drop it (acknowledged data loss)", key, key)
+	if err := mk.CheckBlobMAC(plain, mac); err != nil {
+		c.problem("namespace %q blob %s does not match its manifest MAC (reverted or substituted): reads fail closed. Read its one-generation backup with `notenv run --skip-corrupt`, or `notenv key evict %s` to rewrite the namespace", ns, key, ns)
 		return true
 	}
 	return false
+}
+
+// checkNamespaceBackup verifies a namespace's one-generation backup blob. A
+// missing or corrupt backup only narrows recovery (it is never served on the
+// happy path), so it is a note, not a fail-closed problem.
+func checkNamespaceBackup(ctx context.Context, store *headerTarget, c *checkup, ns string, e crypto.ManifestEntry, present map[string]bool, mk *crypto.MasterKey) {
+	if !present[e.Prev] {
+		c.note("namespace %q backup blob %s is missing: recovery from a corrupt current blob is no longer possible until the next write re-establishes a backup", ns, e.Prev)
+		return
+	}
+	blob, err := store.Get(ctx, e.Prev)
+	if err != nil {
+		return // transient read error: not the backup's fault
+	}
+	plain, err := mk.Decrypt(blob)
+	if err != nil || mk.CheckBlobMAC(plain, e.PrevMAC) != nil {
+		c.note("namespace %q backup blob %s is corrupt: recovery from a corrupt current blob is no longer possible until the next write re-establishes a backup", ns, e.Prev)
+	}
+}
+
+// referencedBlobs is the set of object keys the header manifest points at: each
+// namespace's current blob and its one-generation backup. An object outside this
+// set is an orphan from a crashed write; doctor notes it, and the next write to
+// its namespace reclaims it (internal/secrets reclaim), so there is no separate
+// collect step.
+func referencedBlobs(header *crypto.Header) map[string]bool {
+	ref := make(map[string]bool, len(header.Manifest)*2)
+	for _, e := range header.Manifest {
+		ref[e.Blob] = true
+		if e.Prev != "" {
+			ref[e.Prev] = true
+		}
+	}
+	return ref
 }
 
 func init() {

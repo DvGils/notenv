@@ -99,20 +99,21 @@ nav:
   - Recipes: recipes.md
   - Guides:
       - Import an existing .env: guides/import.md
-      - Teams and key management: guides/teams-and-keys.md
+      - Share a vault with your team: guides/teams-and-keys.md
       - Cloud remotes: guides/cloud-remotes.md
       - Multiple vaults: guides/multiple-vaults.md
-      - Continuous integration: guides/ci.md
+      - Export or delete a vault: guides/export-and-delete.md
+      - Recover from problems: guides/recovery.md
       - AI agents: guides/ai-agents.md
-      - Caching and performance: guides/caching.md
   - Reference:
       - Commands: reference/commands.md
       - Configuration files: reference/configuration.md
       - Environment variables: reference/environment.md
-  - Concepts:
-      - How it works: concepts/how-it-works.md
+  - How it works:
+      - Overview: concepts/how-it-works.md
       - Keys and slots: concepts/keys-and-slots.md
       - Storage and concurrency: concepts/storage.md
+      - Caching: concepts/caching.md
   - Security:
       - Threat model: security/threat-model.md
       - Reporting a vulnerability: security/reporting.md

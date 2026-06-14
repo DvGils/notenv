@@ -23,10 +23,6 @@ const (
 type RcloneStorage struct {
 	Remote string // rclone remote name, e.g. "b2"
 	Base   string // path within the remote, e.g. "my-bucket/notenv"
-	// Versioned: the remote retains old versions on overwrite (B2 does
-	// natively), so the header's ".prev" backup copy (~3s server-side on B2)
-	// is redundant and skipped (see BackupHeader).
-	Versioned bool
 }
 
 // ErrRcloneMissing is returned when no rclone binary is on PATH.
@@ -74,7 +70,15 @@ func RemoteType(ctx context.Context, name string) (string, error) {
 // processes, but with no shell nothing lands in history. Acceptable for
 // bucket credentials, which guard only ciphertext; weigh it for SFTP/WebDAV
 // passwords, which may guard a whole server (prefer key-based SFTP auth).
-// Revisit if rclone grows a stdin-based config path.
+//
+// There is no argv-free fix available: as of rclone v1.74 `config create`
+// (and `config update`/`config password`) take parameter values only as argv;
+// only `rclone obscure -` reads from stdin. Writing rclone.conf directly would
+// avoid argv but breaks configs encrypted with RCLONE_CONFIG_PASS (which
+// `config create` handles transparently), so it is rejected. The argv-free path
+// for a user who wants it already exists in `notenv setup`: pick "I'll run
+// rclone config myself" to type secrets at rclone's own stdin prompts, then
+// point notenv at the remote.
 func CreateRemote(ctx context.Context, name, kind string, params map[string]string) error {
 	paths := []string{name, kind}
 	for key, value := range params {
@@ -174,6 +178,16 @@ func (s *RcloneStorage) List(ctx context.Context, prefix string) ([]string, erro
 		}
 		return nil, err
 	}
+	return keysFromLsf(out, clean), nil
+}
+
+// keysFromLsf turns `rclone lsf -R --files-only` output into base-relative keys,
+// re-prefixing them when the listing was scoped, and drops reserved plumbing (the
+// header, its backup, the probe). rclone returns those as ordinary files, unlike
+// the local backend; routing the filter through IsReserved keeps the two List
+// implementations from diverging (a divergence once let orphan cleanup delete the
+// header). Split out from List so the filter is unit-testable without rclone.
+func keysFromLsf(out []byte, clean string) []string {
 	var keys []string
 	for line := range strings.SplitSeq(string(out), "\n") {
 		rel := strings.TrimSpace(line)
@@ -183,14 +197,18 @@ func (s *RcloneStorage) List(ctx context.Context, prefix string) ([]string, erro
 		if clean != "" {
 			rel = clean + "/" + rel
 		}
+		if IsReserved(rel) {
+			continue
+		}
 		keys = append(keys, rel)
 	}
-	return keys, nil
+	return keys
 }
 
+// Header object names. These are reserved (see IsReserved); List excludes them.
 const (
-	headerObject       = ".header.json"
-	headerBackupObject = headerObject + ".prev" // dot-prefixed: excluded by List's filter
+	headerObject       = HeaderName
+	headerBackupObject = HeaderBackupName
 )
 
 func (s *RcloneStorage) GetHeader(ctx context.Context) ([]byte, error) {
@@ -208,11 +226,13 @@ func (s *RcloneStorage) PutHeader(ctx context.Context, raw []byte) error {
 // SwapHeader implements the compare-and-swap as read-compare-put-readback,
 // which is the strongest rclone offers: object stores expose no conditional
 // write through it. Two writers that both pass the compare inside the same
-// sub-second window still last-write-wins; the read-back converts the loss
-// into ErrHeaderChanged whenever the winner's bytes have already landed, and
-// the one ordering it cannot see (our read-back completes before the winner's
-// put) is recovered by the manifest's adoption path, never lost silently. A
-// backend with native conditional writes can implement this atomically.
+// sub-second window still last-write-wins; the read-back converts the loss into
+// ErrHeaderChanged whenever the winner's bytes have already landed, so the
+// loser re-reads, re-applies, and retries (keymgmt.UpdateHeader), and its
+// superseded blob is reclaimed as an orphan. A read-back that cannot confirm the
+// write surfaces as ErrCommitUncertain (the put may have landed, so the caller
+// must not roll back). A backend with native conditional writes can implement
+// this atomically.
 func (s *RcloneStorage) SwapHeader(ctx context.Context, base, updated []byte) error {
 	current, err := s.GetHeader(ctx)
 	if errors.Is(err, ErrNotFound) {
@@ -228,7 +248,10 @@ func (s *RcloneStorage) SwapHeader(ctx context.Context, base, updated []byte) er
 	}
 	readBack, err := s.GetHeader(ctx)
 	if err != nil {
-		return fmt.Errorf("read header back after write: %w", err)
+		// The Put returned success but we cannot read it back to confirm. It may
+		// have landed, so the caller must not roll back a data object it wrote for
+		// this header (see ErrCommitUncertain).
+		return fmt.Errorf("%w: read header back after write: %v", ErrCommitUncertain, err)
 	}
 	if !bytes.Equal(readBack, updated) {
 		return fmt.Errorf("%w (another writer landed over ours)", ErrHeaderChanged)
@@ -237,14 +260,13 @@ func (s *RcloneStorage) SwapHeader(ctx context.Context, base, updated []byte) er
 }
 
 // BackupHeader copies the current header to its ".prev" sibling so a bad
-// overwrite is recoverable. It is a no-op when the remote keeps native object
-// versions (those versions are the backup) and when no header exists yet
-// (nothing to preserve). Any other copy failure is returned so the caller can
-// refuse to overwrite a header it couldn't back up.
+// overwrite is recoverable. It is kept on every remote (the copy is a
+// server-side operation that moves no bytes through the client); a remote's own
+// version history, if any, is an additional backstop, not a substitute notenv
+// relies on. A no-op when no header exists yet (nothing to preserve). Any other
+// copy failure is returned so the caller can refuse to overwrite a header it
+// couldn't back up.
 func (s *RcloneStorage) BackupHeader(ctx context.Context) error {
-	if s.Versioned {
-		return nil
-	}
 	src := s.basePath() + "/" + headerObject
 	dst := s.basePath() + "/" + headerBackupObject
 	if _, err := runRclone(ctx, nil, []string{"copyto"}, src, dst); err != nil {
@@ -257,13 +279,8 @@ func (s *RcloneStorage) BackupHeader(ctx context.Context) error {
 }
 
 // RestoreHeaderBackup copies the ".prev" backup back over the header. Returns
-// ErrNotFound when there is no backup to restore, including on versioned
-// remotes, which keep no ".prev" (use rclone's version listing to recover a
-// prior object version there).
+// ErrNotFound when there is no backup to restore (none has been written yet).
 func (s *RcloneStorage) RestoreHeaderBackup(ctx context.Context) error {
-	if s.Versioned {
-		return ErrNotFound
-	}
 	src := s.basePath() + "/" + headerBackupObject
 	dst := s.basePath() + "/" + headerObject
 	if _, err := runRclone(ctx, nil, []string{"copyto"}, src, dst); err != nil {
