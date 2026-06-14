@@ -298,7 +298,7 @@ func writeUserConfigFromFlags(ctx context.Context) error {
 	if name == "" {
 		name = config.DefaultStorage
 	}
-	entry := config.StorageEntry{Remote: initRemote, Base: base, Versioned: remoteIsVersioned(ctx, initRemote)}
+	entry := config.StorageEntry{Remote: initRemote, Base: base}
 	path, err := config.UpsertStorage(name, entry, false)
 	if err != nil {
 		return err

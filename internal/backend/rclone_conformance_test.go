@@ -38,9 +38,15 @@ func TestRcloneConformance(t *testing.T) {
 		clean()
 		t.Cleanup(clean)
 		return &backend.RcloneStorage{Remote: remote, Base: base}
-	}, false)
+	})
 
 	backendtest.BackendContract(t, func(t *testing.T) backend.Backend {
+		clean()
+		t.Cleanup(clean)
+		return &backend.RcloneStorage{Remote: remote, Base: base}
+	})
+
+	backendtest.VaultContract(t, func(t *testing.T) backendtest.Vault {
 		clean()
 		t.Cleanup(clean)
 		return &backend.RcloneStorage{Remote: remote, Base: base}

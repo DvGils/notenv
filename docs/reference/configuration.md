@@ -37,7 +37,6 @@ path      = "~/.local/share/notenv/vaults/local"   # a local vault directory (no
 [storage.personal]
 remote    = "s3-notenv"            # an rclone remote name
 base      = "my-bucket/notenv"     # path within the remote
-versioned = true                   # remote keeps old versions on overwrite (B2 does)
 # read_only = true                 # refuse mutating commands here (policy, not enforcement)
 # cache_ttl = "1h"                 # ciphertext cache lifetime (remote storages only); "0" disables
 
@@ -56,7 +55,6 @@ of the two forms is set.
 | `path` | local | A local vault directory. Pure-Go backend, no rclone. |
 | `remote` | cloud | An rclone remote name. |
 | `base` | cloud | The path within the remote. |
-| `versioned` | cloud | The remote retains old object versions on overwrite (B2 does natively), so notenv skips the extra server-side `.prev` backup copy. |
 | `read_only` | both | Refuse every mutating command against this storage. Policy for cooperating clients, not enforcement; see [Environment variables](environment.md). |
 | `cache_ttl` | cloud | Ciphertext cache lifetime. `"0"` disables. Remote storages only; a local vault does not blob-cache. |
 

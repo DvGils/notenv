@@ -139,5 +139,5 @@ func init() {
 	runCmd.Flags().BoolVar(&runRefresh, "refresh", false, "bypass the local cache and pull the latest secrets (e.g. after a change on another machine)")
 	runCmd.Flags().BoolVar(&runMask, "mask", false, "mask secret values in output even on a live terminal")
 	runCmd.Flags().BoolVar(&runNoMask, "no-mask", false, "never mask output (asks for your passphrase: raw values may reach a captured stream)")
-	runCmd.Flags().BoolVar(&runSalvage, "skip-corrupt", false, "read past recorded objects that are missing or corrupt instead of failing closed (affected keys may be absent or stale; each is reported)")
+	runCmd.Flags().BoolVar(&runSalvage, "skip-corrupt", false, "fall back to a namespace's one-generation backup when its current blob is missing or corrupt, instead of failing closed (the most recent write may be lost; it is reported)")
 }

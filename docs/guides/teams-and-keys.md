@@ -22,7 +22,7 @@ session. Adding or removing a slot rewraps only the header, never the secrets.
     ```
 
     notenv prints a **one-time onboarding string**: a generated high-entropy passphrase plus a
-    short code that fingerprints your vault, like `pupil-spend-fresh-flap-skit-shun/5pa7xxh6xspq`.
+    short code that fingerprints your vault, like `pupil-spend-fresh-flap-skit-shun/5pa7xxh6xspq4m2n`.
 
 2. Send that string to Alice over a private channel (a chat message is fine; see the note below on
    what an interceptor would need).

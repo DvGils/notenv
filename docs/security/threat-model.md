@@ -251,7 +251,7 @@ recoverable states described here and below and names the way out of each:
   fingerprint of the vault's identity and signing key, the first contact verifies the served
   header against it before anything is pinned, and a re-key between invite and first contact
   proves itself through the signed rotation chain. Defeating it requires the vault's master key
-  (or grinding a 60-bit digest collision) *in addition to* the intercepted one-time passphrase.
+  (or grinding an 80-bit digest collision) *in addition to* the intercepted one-time passphrase.
   TOFU remains for the vault creator's own machines and for identity-enrolled machines, whose
   operator provisioned the storage deliberately.
 - **Warm-cache runs defer the pin checks.** With the master key cached, a run never reads the header, so

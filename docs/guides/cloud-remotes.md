@@ -30,8 +30,8 @@ destination must not already hold a vault (copies never merge).
 
 ## Object versioning
 
-Some remotes (Backblaze B2 natively) retain old object versions on overwrite. Mark such a storage
-`versioned = true` in your machine config so notenv skips the extra server-side `.prev` backup copy.
-Versioning also means a deleted or corrupted object can be recovered from history, which matters
-because deletion is an availability concern that detection alone cannot undo. See
-[Configuration files](../reference/configuration.md).
+Some remotes (Backblaze B2 natively) retain old object versions on overwrite. notenv does not depend
+on that: it always keeps its own backups (a `.prev` sibling of the key header, and a one-generation
+backup of each namespace blob), so recovery never relies on a remote feature notenv cannot verify is
+configured. Where a remote does keep versions, it is a useful extra backstop for the rarer case of a
+deleted object, which is an availability concern that detection alone cannot undo.

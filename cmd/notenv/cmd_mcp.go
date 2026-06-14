@@ -8,11 +8,12 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/DvGils/notenv/internal/backend"
+	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/mcp"
 	"github.com/DvGils/notenv/internal/runner"
 )
@@ -197,9 +198,11 @@ func mcpListSecrets(ctx context.Context, raw json.RawMessage) (any, error) {
 	return listOutput{Namespace: a.namespace, Secrets: listedSecrets(names, res.meta)}, nil
 }
 
-// mcpListNamespaces lists what namespaces a storage holds, from object names
-// alone: no unlock, no plaintext, just the discovery hop the other tools
-// assume has already happened.
+// mcpListNamespaces lists what namespaces a storage holds, from the header's
+// manifest: no unlock, no plaintext, just the discovery hop the other tools
+// assume has already happened. It reads the manifest rather than the raw object
+// listing so an orphan blob from a crashed write cannot show up as a phantom
+// namespace (the authenticated read every other path now uses).
 func mcpListNamespaces(ctx context.Context, raw json.RawMessage) (any, error) {
 	var args struct {
 		Storage string `json:"storage"`
@@ -211,22 +214,18 @@ func mcpListNamespaces(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	keys, err := store.List(ctx, "")
+	rawHeader, err := store.GetHeader(ctx)
+	if errors.Is(err, backend.ErrNotFound) {
+		return map[string]any{"namespaces": []string{}}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	namespaces := []string{}
-	for _, k := range keys {
-		ns, _, found := strings.Cut(k, "/")
-		if !found || seen[ns] {
-			continue
-		}
-		seen[ns] = true
-		namespaces = append(namespaces, ns)
+	header, err := crypto.ParseHeader(rawHeader)
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(namespaces)
-	return map[string]any{"namespaces": namespaces}, nil
+	return map[string]any{"namespaces": vaultNamespaces(header)}, nil
 }
 
 // mcpDoctor runs the same checkup the doctor command does, returning the

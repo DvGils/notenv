@@ -25,7 +25,11 @@ func TestBackendConformance(t *testing.T) {
 }
 
 func TestHeaderStoreConformance(t *testing.T) {
-	backendtest.HeaderStoreContract(t, func(t *testing.T) backend.HeaderStore { return newStore(t) }, false)
+	backendtest.HeaderStoreContract(t, func(t *testing.T) backend.HeaderStore { return newStore(t) })
+}
+
+func TestVaultConformance(t *testing.T) {
+	backendtest.VaultContract(t, func(t *testing.T) backendtest.Vault { return newStore(t) })
 }
 
 // TestSwapHeaderConcurrentNoLostUpdates is the guarantee that distinguishes

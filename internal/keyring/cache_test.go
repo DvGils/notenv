@@ -1,6 +1,7 @@
 package keyring
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -11,6 +12,23 @@ import (
 // CI keychain) skips rather than fails; the null cache passes trivially
 // (every Get is a miss and Store is a no-op).
 
+// storeOrSkip stores key, skipping the test when the platform store is
+// unavailable, unless NOTENV_TEST_REQUIRE_NATIVE_CACHE is set: CI's native-store
+// job provisions a working Keychain/DPAPI, so there a Store failure is a real
+// regression (the macOS interactive-mode write breaking, say), not an
+// unsupported environment, and must fail rather than hide as a skip.
+func storeOrSkip(t *testing.T, c Cache, ns, key string, ttl time.Duration) {
+	t.Helper()
+	err := c.Store(ns, key, ttl)
+	if err == nil {
+		return
+	}
+	if os.Getenv("NOTENV_TEST_REQUIRE_NATIVE_CACHE") != "" {
+		t.Fatalf("a native key store is required here but Store failed: %v", err)
+	}
+	t.Skipf("platform key store unavailable in this environment: %v", err)
+}
+
 func TestCacheRoundTrip(t *testing.T) {
 	c := newCache()
 	const ns = "notenv-test-roundtrip"
@@ -19,9 +37,7 @@ func TestCacheRoundTrip(t *testing.T) {
 	if _, ok := c.Get(ns); ok {
 		t.Fatal("unexpected cache hit before Store")
 	}
-	if err := c.Store(ns, "hunter2", time.Minute); err != nil {
-		t.Skipf("platform key store unavailable in this environment: %v", err)
-	}
+	storeOrSkip(t, c, ns, "hunter2", time.Minute)
 	got, ok := c.Get(ns)
 	if cacheIsNull {
 		if ok {
@@ -62,9 +78,7 @@ func TestCacheTTLExpires(t *testing.T) {
 	const ns = "notenv-test-expiry"
 	t.Cleanup(func() { c.Drop(ns) })
 
-	if err := c.Store(ns, "hunter2", time.Second); err != nil {
-		t.Skipf("platform key store unavailable in this environment: %v", err)
-	}
+	storeOrSkip(t, c, ns, "hunter2", time.Second)
 	if _, ok := c.Get(ns); !ok {
 		t.Fatal("entry must be readable inside its TTL")
 	}

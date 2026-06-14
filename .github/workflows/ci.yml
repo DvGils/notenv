@@ -58,8 +58,13 @@ jobs:
           security default-keychain -s ci.keychain
           security unlock-keychain -p ci ci.keychain
           security set-keychain-settings ci.keychain
+      # This job provisions a working native store, so a Store failure here is a
+      # real regression (e.g. the macOS Keychain write that feeds the key over
+      # stdin), not an unsupported environment: assert hard instead of skipping.
       - name: test
         run: go test ./...
+        env:
+          NOTENV_TEST_REQUIRE_NATIVE_CACHE: "1"
 
   fuzz:
     runs-on: ubuntu-latest

@@ -109,10 +109,10 @@ func testDelete(t *testing.T, newStore func(t *testing.T) backend.Backend) {
 }
 
 // HeaderStoreContract runs the header conformance suite. newStore must return a
-// fresh, empty store on each call (registering any cleanup via t itself).
-// versioned states whether the store keeps native object versions, which
-// changes the expected backup and restore behaviour.
-func HeaderStoreContract(t *testing.T, newStore func(t *testing.T) backend.HeaderStore, versioned bool) {
+// fresh, empty store on each call (registering any cleanup via t itself). Every
+// store keeps a ".prev" backup (notenv no longer relies on a remote's own
+// version history as a substitute).
+func HeaderStoreContract(t *testing.T, newStore func(t *testing.T) backend.HeaderStore) {
 	t.Helper()
 	t.Run("GetHeaderNotFoundWhenEmpty", func(t *testing.T) { testHeaderMissing(t, newStore) })
 	t.Run("PutGetRoundTrip", func(t *testing.T) { testHeaderRoundTrip(t, newStore) })
@@ -121,7 +121,7 @@ func HeaderStoreContract(t *testing.T, newStore func(t *testing.T) backend.Heade
 	t.Run("SwapHeaderRefusesOnMismatch", func(t *testing.T) { testSwapMismatch(t, newStore) })
 	t.Run("BackupNoHeaderIsNoop", func(t *testing.T) { testBackupNoHeader(t, newStore) })
 	t.Run("RestoreWithoutBackupIsNotFound", func(t *testing.T) { testRestoreWithoutBackup(t, newStore) })
-	t.Run("BackupThenRestoreRecoversPriorHeader", func(t *testing.T) { testBackupThenRestore(t, newStore, versioned) })
+	t.Run("BackupThenRestoreRecoversPriorHeader", func(t *testing.T) { testBackupThenRestore(t, newStore) })
 }
 
 func testHeaderMissing(t *testing.T, newStore func(t *testing.T) backend.HeaderStore) {
@@ -212,7 +212,7 @@ func testRestoreWithoutBackup(t *testing.T, newStore func(t *testing.T) backend.
 	}
 }
 
-func testBackupThenRestore(t *testing.T, newStore func(t *testing.T) backend.HeaderStore, versioned bool) {
+func testBackupThenRestore(t *testing.T, newStore func(t *testing.T) backend.HeaderStore) {
 	ctx := context.Background()
 	s := newStore(t)
 	v1, v2 := []byte("header-v1"), []byte("header-v2")
@@ -226,20 +226,59 @@ func testBackupThenRestore(t *testing.T, newStore func(t *testing.T) backend.Hea
 		t.Fatalf("PutHeader v2: %v", err)
 	}
 
-	err := s.RestoreHeaderBackup(ctx)
-	if versioned {
-		// Versioned remotes keep no ".prev"; recovery goes through the remote's
-		// own version history, not RestoreHeaderBackup.
-		if !errors.Is(err, backend.ErrNotFound) {
-			t.Fatalf("RestoreHeaderBackup on versioned store: want ErrNotFound, got %v", err)
-		}
-		assertHeader(t, s, v2, "versioned store header changed unexpectedly")
-		return
-	}
-	if err != nil {
+	if err := s.RestoreHeaderBackup(ctx); err != nil {
 		t.Fatalf("RestoreHeaderBackup: %v", err)
 	}
 	assertHeader(t, s, v1, "restore did not recover prior header")
+}
+
+// Vault is a backend that holds both objects and the key-slot header in one flat
+// key space, the shape every client-side-crypto backend has.
+type Vault interface {
+	backend.Backend
+	backend.HeaderStore
+}
+
+// VaultContract asserts the property the Backend and HeaderStore suites miss by
+// running on separate stores: when a header and blobs coexist, List must return
+// only the blobs, never the header artifacts. A backend that leaks the header
+// into List lets whole-vault and orphan-cleanup callers mistake it for a stray
+// object and delete it, bricking the vault. newStore must return a fresh, empty
+// store on each call.
+func VaultContract(t *testing.T, newStore func(t *testing.T) Vault) {
+	t.Helper()
+	t.Run("ListExcludesHeaderArtifacts", func(t *testing.T) { testListExcludesHeader(t, newStore) })
+}
+
+func testListExcludesHeader(t *testing.T, newStore func(t *testing.T) Vault) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	// Make both the header and its ".prev" backup exist alongside real blobs.
+	if err := s.PutHeader(ctx, []byte(`{"version":1}`)); err != nil {
+		t.Fatalf("PutHeader v1: %v", err)
+	}
+	if err := s.BackupHeader(ctx); err != nil {
+		t.Fatalf("BackupHeader: %v", err)
+	}
+	if err := s.PutHeader(ctx, []byte(`{"version":2}`)); err != nil {
+		t.Fatalf("PutHeader v2: %v", err)
+	}
+	blobs := []string{"app/data-a.age", "app/data-b.age"}
+	for _, key := range blobs {
+		if err := s.Put(ctx, key, []byte("ciphertext")); err != nil {
+			t.Fatalf("Put %s: %v", key, err)
+		}
+	}
+
+	got, err := s.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List all: %v", err)
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, blobs) {
+		t.Fatalf("List with a header present: got %v, want only the blobs %v (header artifacts must be excluded)", got, blobs)
+	}
 }
 
 func assertHeader(t *testing.T, s backend.HeaderStore, want []byte, msg string) {

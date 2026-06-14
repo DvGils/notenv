@@ -4,50 +4,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/contract"
 )
-
-// TestNextSeqConcurrent hammers NextSeq from many goroutines at once; with the
-// read-modify-write locked, every returned sequence number must be distinct.
-func TestNextSeqConcurrent(t *testing.T) {
-	isolateConfig(t)
-	const workers, perWorker = 16, 5
-
-	results := make(chan int, workers*perWorker)
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range perWorker {
-				n, err := config.NextSeq("scope", "ns", 0)
-				if err != nil {
-					t.Errorf("NextSeq: %v", err)
-					return
-				}
-				results <- n
-			}
-		}()
-	}
-	wg.Wait()
-	close(results)
-
-	seen := map[int]bool{}
-	for n := range results {
-		if seen[n] {
-			t.Fatalf("duplicate sequence number %d under concurrency", n)
-		}
-		seen[n] = true
-	}
-	if len(seen) != workers*perWorker {
-		t.Fatalf("got %d distinct sequence numbers, want %d", len(seen), workers*perWorker)
-	}
-}
 
 func TestSelectStorage(t *testing.T) {
 	two := &config.User{
@@ -93,7 +55,7 @@ func TestUpsertStorageRoundTrip(t *testing.T) {
 	isolateConfig(t)
 
 	// First storage becomes the default.
-	if _, err := config.UpsertStorage("personal", config.StorageEntry{Remote: "b2", Base: "p", Versioned: true}, false); err != nil {
+	if _, err := config.UpsertStorage("personal", config.StorageEntry{Remote: "b2", Base: "p"}, false); err != nil {
 		t.Fatalf("UpsertStorage: %v", err)
 	}
 	u, err := config.LoadUser()
@@ -103,7 +65,7 @@ func TestUpsertStorageRoundTrip(t *testing.T) {
 	if u.Default != "personal" {
 		t.Fatalf("first storage should be default, got %q", u.Default)
 	}
-	if u.Storage["personal"].Remote != "b2" || !u.Storage["personal"].Versioned {
+	if u.Storage["personal"].Remote != "b2" || u.Storage["personal"].Base != "p" {
 		t.Fatalf("round-trip lost fields: %+v", u.Storage["personal"])
 	}
 

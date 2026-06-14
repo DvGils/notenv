@@ -15,10 +15,11 @@
 | `notenv list` | List stored secret names with descriptions and modified times (never values). `--json` for machines; piped output is bare names; `--refresh` bypasses the local cache. |
 | `notenv run -- cmd` | Run a command with secrets injected as environment variables. |
 | `notenv run --refresh -- cmd` | Same, but bypass the local cache and pull the latest secrets first. |
+| `notenv export` | Print a namespace (or `--all` the whole vault) as `.env` to stdout, never a file. The inverse of `import`. Gated by the primary passphrase; `--json` emits a structured form. |
 | `notenv doctor` | Check a storage read-only for known problem states; exit 1 when there are findings. |
-| `notenv compact` | Force-fold a namespace's change segments into a single snapshot (also happens automatically). |
 | `notenv cache clear` | Remove all locally cached ciphertext on this machine. |
 | `notenv vault copy` | Replicate this vault to new storage (for example local to cloud) and register it. The source is untouched. |
+| `notenv vault delete <name>` | Permanently delete a configured vault's objects, this machine's trust state for it, and its config entry. Behind the primary passphrase and a type-the-name confirmation. |
 | `notenv mcp` | Serve this machine's vaults to MCP clients over stdio: discovery, masked execution, doctor; never a value. |
 | `notenv --version` | Print the version, commit, and build date. |
 
@@ -50,6 +51,7 @@ commands manage them.
 | `notenv key trust` | Re-pin after a confirmed master change that carries no signed proof (shows what changed, asks). |
 | `notenv key forget` | Forget this machine's pin and cached key for a storage (after a deliberate vault reset). |
 | `notenv key restore-backup` | Restore the header from its pre-write backup. |
+| `notenv key evict <namespace>` | Last resort for honest media loss: rewrite a namespace whose current blob is unreadable from what survives (its one-generation backup, or empty), and drop the corrupt blobs. |
 
 ## Exit codes
 

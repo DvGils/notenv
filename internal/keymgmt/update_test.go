@@ -27,21 +27,22 @@ func newRecordedVault(t *testing.T) (*memstore.Store, *crypto.MasterKey) {
 	return store, mk
 }
 
-func TestUpdateManifestRecordsDelta(t *testing.T) {
+func TestUpdateHeaderRecordsMutation(t *testing.T) {
 	ctx := context.Background()
 	store, mk := newRecordedVault(t)
 
-	h, err := keymgmt.UpdateManifest(ctx, store, mk, crypto.ManifestDelta{
-		Add: map[string]crypto.ManifestEntry{"proj/seg-m1-aa.age": {MAC: "ab"}},
+	h, err := keymgmt.UpdateHeader(ctx, store, mk, func(h *crypto.Header) error {
+		h.SetNamespace("proj", crypto.ManifestEntry{Blob: "proj/data-aa.age", MAC: "ab"})
+		return nil
 	})
 	if err != nil {
-		t.Fatalf("UpdateManifest: %v", err)
+		t.Fatalf("UpdateHeader: %v", err)
 	}
-	if h.Manifest["proj/seg-m1-aa.age"].MAC != "ab" {
+	if h.Manifest["proj"].MAC != "ab" {
 		t.Fatalf("returned header missing the entry: %v", h.Manifest)
 	}
 	stored := mustParse(t, store)
-	if stored.Manifest["proj/seg-m1-aa.age"].MAC != "ab" {
+	if stored.Manifest["proj"].MAC != "ab" {
 		t.Fatalf("stored header missing the entry: %v", stored.Manifest)
 	}
 	if stored.Revision != h.Revision || stored.Revision < 2 {
@@ -52,10 +53,10 @@ func TestUpdateManifestRecordsDelta(t *testing.T) {
 	}
 }
 
-// TestUpdateManifestEpochChange: when the header no longer wraps the caller's
+// TestUpdateHeaderEpochChange: when the header no longer wraps the caller's
 // master (a rotation landed since unlock), nothing is written and the caller
 // gets the sentinel that triggers its rollback.
-func TestUpdateManifestEpochChange(t *testing.T) {
+func TestUpdateHeaderEpochChange(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newRecordedVault(t)
 	other, err := crypto.GenerateMasterKey()
@@ -64,8 +65,9 @@ func TestUpdateManifestEpochChange(t *testing.T) {
 	}
 
 	before := store.Header()
-	_, err = keymgmt.UpdateManifest(ctx, store, other, crypto.ManifestDelta{
-		Add: map[string]crypto.ManifestEntry{"proj/seg-m1-aa.age": {MAC: "ab"}},
+	_, err = keymgmt.UpdateHeader(ctx, store, other, func(h *crypto.Header) error {
+		h.SetNamespace("proj", crypto.ManifestEntry{Blob: "proj/data-aa.age", MAC: "ab"})
+		return nil
 	})
 	if !errors.Is(err, keymgmt.ErrEpochChanged) {
 		t.Fatalf("want ErrEpochChanged, got %v", err)
@@ -75,7 +77,7 @@ func TestUpdateManifestEpochChange(t *testing.T) {
 	}
 }
 
-// racingStore lands a competing manifest write in the window between another
+// racingStore lands a competing header write in the window between another
 // writer's header read and its swap, once — the swap loses and must retry.
 type racingStore struct {
 	*memstore.Store
@@ -87,8 +89,9 @@ type racingStore struct {
 func (s *racingStore) SwapHeader(ctx context.Context, base, updated []byte) error {
 	if !s.raced {
 		s.raced = true
-		if _, err := keymgmt.UpdateManifest(ctx, s.Store, s.mk, crypto.ManifestDelta{
-			Add: map[string]crypto.ManifestEntry{"proj/seg-m2-bb.age": {MAC: "cd"}},
+		if _, err := keymgmt.UpdateHeader(ctx, s.Store, s.mk, func(h *crypto.Header) error {
+			h.SetNamespace("other", crypto.ManifestEntry{Blob: "other/data-bb.age", MAC: "cd"})
+			return nil
 		}); err != nil {
 			s.t.Fatalf("competing write: %v", err)
 		}
@@ -96,24 +99,25 @@ func (s *racingStore) SwapHeader(ctx context.Context, base, updated []byte) erro
 	return s.Store.SwapHeader(ctx, base, updated)
 }
 
-// TestUpdateManifestRetriesLostSwap: a writer that loses the swap race re-reads
-// the fresh header and re-applies its delta, so neither writer's entry is
+// TestUpdateHeaderRetriesLostSwap: a writer that loses the swap race re-reads
+// the fresh header and re-runs its mutation, so neither writer's entry is
 // clobbered.
-func TestUpdateManifestRetriesLostSwap(t *testing.T) {
+func TestUpdateHeaderRetriesLostSwap(t *testing.T) {
 	ctx := context.Background()
 	store, mk := newRecordedVault(t)
 	racing := &racingStore{Store: store, t: t, mk: mk}
 
-	h, err := keymgmt.UpdateManifest(ctx, racing, mk, crypto.ManifestDelta{
-		Add: map[string]crypto.ManifestEntry{"proj/seg-m1-aa.age": {MAC: "ab"}},
+	h, err := keymgmt.UpdateHeader(ctx, racing, mk, func(h *crypto.Header) error {
+		h.SetNamespace("proj", crypto.ManifestEntry{Blob: "proj/data-aa.age", MAC: "ab"})
+		return nil
 	})
 	if err != nil {
-		t.Fatalf("UpdateManifest losing one swap: %v", err)
+		t.Fatalf("UpdateHeader losing one swap: %v", err)
 	}
 	if !racing.raced {
 		t.Fatal("the competing write never ran")
 	}
-	if h.Manifest["proj/seg-m1-aa.age"].MAC != "ab" || h.Manifest["proj/seg-m2-bb.age"].MAC != "cd" {
+	if h.Manifest["proj"].MAC != "ab" || h.Manifest["other"].MAC != "cd" {
 		t.Fatalf("both writers' entries must survive, got %v", h.Manifest)
 	}
 }

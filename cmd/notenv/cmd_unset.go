@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/contract"
 	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
@@ -30,9 +29,10 @@ var unsetCmd = &cobra.Command{
 		}
 		ctx := cmd.Context()
 
-		// Fold fresh so we only write a tombstone for a key that is actually set,
-		// and so the removal is ordered after every write it supersedes.
-		state, view, err := a.foldState(ctx)
+		// Read fresh so we only write a removal for a key that is actually set.
+		// The write re-reads the current blob under the header swap; this read is
+		// for the presence check.
+		state, view, err := a.readState(ctx)
 		if err != nil {
 			return err
 		}
@@ -40,24 +40,17 @@ var unsetCmd = &cobra.Command{
 		if _, present := state.Secrets[storageKey]; !present {
 			return fmt.Errorf("%q is not set in namespace %q", key, a.namespace)
 		}
-		seq, err := config.NextSeq(a.cacheScope, a.namespace, state.HighWater(a.machine))
-		if err != nil {
-			return err
-		}
 
 		var updated *secrets.State
 		if err := ui.Spin("Uploading removal", func() error {
 			var aerr error
-			updated, aerr = a.appendGuarded(ctx, view, state, seq, secrets.Write{Key: storageKey, Deleted: true, TS: time.Now().Unix()})
+			updated, aerr = a.writeNamespace(ctx, view, []secrets.Write{{Key: storageKey, Deleted: true, TS: time.Now().Unix()}})
 			return aerr
 		}); err != nil {
 			return err
 		}
-		a.cacheFolded(view.mk, updated)
+		a.cacheState(view.mk, updated)
 		ui.Successf("%s removed from namespace %q", key, a.namespace)
-		// Post-write state: this tombstone settles its own key's conflict.
-		reportConflicts(updated.Conflicts)
-		a.maybeCompact(ctx, view.mk, state.SegmentCount())
 
 		// The committed contract is a separate decision from the stored value, so
 		// removal never edits it; warn if `run` will now report the key missing.

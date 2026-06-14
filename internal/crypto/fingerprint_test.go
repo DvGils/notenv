@@ -7,8 +7,8 @@ import (
 
 func TestFingerprintShape(t *testing.T) {
 	code := Fingerprint("vault-1", "abcdef")
-	if !regexp.MustCompile(`^[a-z2-7]{12}$`).MatchString(code) {
-		t.Fatalf("fingerprint %q must be 12 lowercase base32 characters", code)
+	if !regexp.MustCompile(`^[a-z2-7]{16}$`).MatchString(code) {
+		t.Fatalf("fingerprint %q must be 16 lowercase base32 characters", code)
 	}
 	if Fingerprint("vault-1", "abcdef") != code {
 		t.Fatal("fingerprint must be deterministic")

@@ -27,14 +27,16 @@ import (
 	"github.com/DvGils/notenv/internal/backend"
 )
 
-// Reserved root files: the header artifacts (reachable only through the
-// HeaderStore interface, like the in-memory fake) and the swap lock.
+// Reserved object names, sourced from the backend package so the filter cannot
+// drift between backends (the bug that let orphan cleanup delete the header on
+// remotes). These are reachable only through the HeaderStore interface; List
+// excludes them via backend.IsReserved.
 const (
-	headerObject       = ".header.json"
-	headerBackupObject = headerObject + ".prev"
-	headerLockFile     = ".header.lock"
-	probeObject        = ".notenv-probe"
-	tmpPrefix          = ".tmp-"
+	headerObject       = backend.HeaderName
+	headerBackupObject = backend.HeaderBackupName
+	headerLockFile     = backend.HeaderLockName
+	probeObject        = backend.ProbeName
+	tmpPrefix          = backend.TempPrefix
 )
 
 // Storage is a vault in a local directory. The zero value is not usable;
@@ -138,7 +140,7 @@ func (s *Storage) List(ctx context.Context, prefix string) ([]string, error) {
 			return err
 		}
 		key := filepath.ToSlash(rel)
-		if reservedRoot(key) || strings.HasPrefix(filepath.Base(path), tmpPrefix) {
+		if backend.IsReserved(key) {
 			return nil
 		}
 		if strings.HasPrefix(key, prefix) {
@@ -151,14 +153,6 @@ func (s *Storage) List(ctx context.Context, prefix string) ([]string, error) {
 	}
 	sort.Strings(keys)
 	return keys, nil
-}
-
-func reservedRoot(key string) bool {
-	switch key {
-	case headerObject, headerBackupObject, headerLockFile:
-		return true
-	}
-	return false
 }
 
 func (s *Storage) GetHeader(ctx context.Context) ([]byte, error) {
@@ -205,9 +199,9 @@ func (s *Storage) SwapHeader(ctx context.Context, base, updated []byte) error {
 }
 
 // BackupHeader copies the current header to its ".prev" sibling so a bad
-// overwrite is recoverable. A local directory keeps no native versions, so
-// unlike a versioned remote this is never skipped; with no header yet it is
-// a no-op.
+// overwrite is recoverable; with no header yet it is a no-op. Like every
+// backend, it always keeps the backup (notenv does not rely on a remote's
+// version history).
 func (s *Storage) BackupHeader(ctx context.Context) error {
 	raw, err := s.GetHeader(ctx)
 	if errors.Is(err, backend.ErrNotFound) {

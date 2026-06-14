@@ -19,24 +19,28 @@ var ErrEpochChanged = errors.New("the vault's master key changed since this oper
 // so losing this many times in a row means something is hammering the vault.
 const updateAttempts = 4
 
-// UpdateManifest records one writer's manifest delta in the vault header,
-// under the header compare-and-swap. It is the write-epoch check and the
-// manifest update in one authenticated step: every attempt re-reads the
-// header, requires it to wrap mk, and verifies its tag, so a rotation that
-// landed since the caller unlocked surfaces as ErrEpochChanged before anything
-// is written: the caller removes the object it just stored and re-runs. When
-// another writer merely lands first (backend.ErrHeaderChanged), the delta is
-// re-applied to the fresh header and the swap retried, so concurrent writers'
-// entries are never clobbered. Returns the header as written, for the caller's
-// local rollback pin.
+// UpdateHeader records a header mutation under the compare-and-swap. It is the
+// write-epoch check and the mutation in one authenticated step: every attempt
+// re-reads the header, requires it to wrap mk (else ErrEpochChanged, so a
+// rotation that landed since the caller unlocked surfaces before anything is
+// written), and verifies its tag, then calls mutate to modify the parsed header
+// in place. When another writer merely lands first (backend.ErrHeaderChanged),
+// the loop re-reads and re-runs mutate against the fresh header, so a
+// blob-and-pointer write re-reads the now-current blob and re-applies its
+// change. Returns the header as written, for the caller's local rollback pin.
+//
+// mutate runs once per attempt. A write path that creates an object inside
+// mutate must clean up the object from a superseded attempt (it is handed the
+// fresh header each time, so it writes a fresh object each time); the caller
+// tracks and deletes the orphan. On a non-retryable error from mutate or the
+// swap, the caller deletes whatever the last attempt created.
 //
 // The header's recipient field is attacker-writable in principle (it is only
 // authenticated by a tag keyed from the master it names), so a mismatch is
-// treated as "redo the unlock ceremony" (which runs the real pin and
-// authentication checks), never as a reason to trust anything new here. When
-// the recipient does match mk, the tag must verify under it, so a tampered
-// header cannot pass as "unchanged".
-func UpdateManifest(ctx context.Context, store backend.HeaderStore, mk *crypto.MasterKey, delta crypto.ManifestDelta) (*crypto.Header, error) {
+// treated as "redo the unlock ceremony" (ErrEpochChanged), never as a reason to
+// trust anything new here. When the recipient does match mk, the tag must verify
+// under it, so a tampered header cannot pass as "unchanged".
+func UpdateHeader(ctx context.Context, store backend.HeaderStore, mk *crypto.MasterKey, mutate func(*crypto.Header) error) (*crypto.Header, error) {
 	var lastErr error
 	for range updateAttempts {
 		raw, err := store.GetHeader(ctx)
@@ -56,10 +60,12 @@ func UpdateManifest(ctx context.Context, store backend.HeaderStore, mk *crypto.M
 		if err := h.Verify(mk); err != nil {
 			return nil, err
 		}
-		h.ApplyManifest(delta)
-		// The verify hook normally re-unlocks with the operator's credential;
-		// a manifest write happens mid-operation with the master already in
-		// hand and no slot material changing, so that re-proof adds nothing.
+		if err := mutate(h); err != nil {
+			return nil, err
+		}
+		// The verify hook normally re-unlocks with the operator's credential; a
+		// data write happens mid-operation with the master already in hand and no
+		// slot material changing, so that re-proof adds nothing.
 		err = SafePut(ctx, store, h, raw, mk, func(*crypto.Header) (*crypto.MasterKey, error) { return mk, nil })
 		if errors.Is(err, backend.ErrHeaderChanged) {
 			lastErr = err
@@ -70,5 +76,5 @@ func UpdateManifest(ctx context.Context, store backend.HeaderStore, mk *crypto.M
 		}
 		return h, nil
 	}
-	return nil, fmt.Errorf("could not record the write in the vault manifest after %d attempts: %w", updateAttempts, lastErr)
+	return nil, fmt.Errorf("could not record the write in the vault header after %d attempts: %w", updateAttempts, lastErr)
 }

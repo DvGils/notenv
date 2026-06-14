@@ -49,7 +49,7 @@ func withSlot(t *testing.T, base []byte, mk *crypto.MasterKey, passphrase string
 	return h
 }
 
-func TestSafePutHappyPathNonVersioned(t *testing.T) {
+func TestSafePutHappyPath(t *testing.T) {
 	ctx := context.Background()
 	store := memstore.New()
 	base, mk := seed(t, store, "owner-pass")
@@ -59,7 +59,7 @@ func TestSafePutHappyPathNonVersioned(t *testing.T) {
 		t.Fatalf("SafePut: %v", err)
 	}
 	if store.Prev() == nil {
-		t.Fatal("expected a .prev backup on a non-versioned store")
+		t.Fatal("SafePut must write a .prev backup before overwriting the header")
 	}
 	stored, err := crypto.ParseHeader(store.Header())
 	if err != nil {
@@ -70,20 +70,6 @@ func TestSafePutHappyPathNonVersioned(t *testing.T) {
 	}
 	if err := stored.Verify(mk); err != nil {
 		t.Fatalf("stored header should authenticate: %v", err)
-	}
-}
-
-func TestSafePutSkipsBackupOnVersioned(t *testing.T) {
-	ctx := context.Background()
-	store := memstore.New(memstore.Versioned())
-	base, mk := seed(t, store, "owner-pass")
-	h := withSlot(t, base, mk, "second-pass")
-
-	if err := keymgmt.SafePut(ctx, store, h, base, mk, verifyWith("owner-pass")); err != nil {
-		t.Fatalf("SafePut: %v", err)
-	}
-	if store.Prev() != nil {
-		t.Fatal("versioned store must not write a .prev backup")
 	}
 }
 

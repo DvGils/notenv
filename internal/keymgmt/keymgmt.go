@@ -52,7 +52,8 @@ func SafePut(ctx context.Context, store backend.HeaderStore, h *crypto.Header, b
 	}
 
 	// Back up before touching the live header. Refuse to overwrite a header we
-	// could not preserve. (A no-op on versioned remotes and on virgin storage.)
+	// could not preserve. (A no-op only on virgin storage, when there is no
+	// header to back up yet.)
 	if err := store.BackupHeader(ctx); err != nil {
 		return fmt.Errorf("back up header before write: %w", err)
 	}
@@ -61,30 +62,44 @@ func SafePut(ctx context.Context, store backend.HeaderStore, h *crypto.Header, b
 		if errors.Is(err, backend.ErrHeaderChanged) {
 			return fmt.Errorf("%w (another notenv run?); re-run the command", err)
 		}
-		return err
+		return err // includes backend.ErrCommitUncertain: the write may have landed
 	}
 
-	// Read back the bytes we just wrote and verify the result.
+	// Past the swap the write has committed; a failure to read it back and verify
+	// is "committed but unverified", never "rolled back". Tagging it
+	// ErrCommitUncertain stops the caller from deleting the data object it wrote
+	// for this now-live header (that would strand the committed header).
+	if err := confirmHeaderWrite(ctx, store, newRaw, mk, verify); err != nil {
+		return fmt.Errorf("%w: %v; recover with `notenv key restore-backup` if a later read fails", backend.ErrCommitUncertain, err)
+	}
+	return nil
+}
+
+// confirmHeaderWrite reads the just-written header back and checks it parses,
+// authenticates under mk, and unlocks with the caller's credential. It runs only
+// after the swap has committed, so SafePut treats any error here as "committed
+// but unverified" (backend.ErrCommitUncertain), never as a reason to roll back.
+func confirmHeaderWrite(ctx context.Context, store backend.HeaderStore, want []byte, mk *crypto.MasterKey, verify func(*crypto.Header) (*crypto.MasterKey, error)) error {
 	readBack, err := store.GetHeader(ctx)
 	if err != nil {
-		return fmt.Errorf("read header back after write (%w); recover with `notenv key restore-backup`", err)
+		return fmt.Errorf("read header back after write: %w", err)
 	}
-	if !bytes.Equal(readBack, newRaw) {
-		return errors.New("the header read back differently than written; recover with `notenv key restore-backup`")
+	if !bytes.Equal(readBack, want) {
+		return errors.New("the header read back differently than written")
 	}
 	parsed, err := crypto.ParseHeader(readBack)
 	if err != nil {
-		return fmt.Errorf("the written header does not parse (%w); recover with `notenv key restore-backup`", err)
+		return fmt.Errorf("the written header does not parse: %w", err)
 	}
 	if err := parsed.Verify(mk); err != nil {
-		return fmt.Errorf("the written header failed authentication (%w); recover with `notenv key restore-backup`", err)
+		return fmt.Errorf("the written header failed authentication: %w", err)
 	}
 	got, err := verify(parsed)
 	if err != nil {
-		return fmt.Errorf("the written header does not unlock with the expected credential (%w); recover with `notenv key restore-backup`", err)
+		return fmt.Errorf("the written header does not unlock with the expected credential: %w", err)
 	}
 	if got.String() != mk.String() {
-		return errors.New("the written header unlocked to the wrong master key; recover with `notenv key restore-backup`")
+		return errors.New("the written header unlocked to the wrong master key")
 	}
 	return nil
 }
@@ -92,12 +107,12 @@ func SafePut(ctx context.Context, store backend.HeaderStore, h *crypto.Header, b
 // RestoreBackup copies the header backup back over the header and confirms the
 // result parses, so recovery from a bad write is one command instead of a raw
 // rclone incantation. It reports a clear error when there is no backup to
-// restore, which includes versioned remotes (recover a prior object version
-// through the remote's version history there).
+// restore (none has been written yet: a vault gets its first backup on its
+// second header write).
 func RestoreBackup(ctx context.Context, store backend.HeaderStore) error {
 	if err := store.RestoreHeaderBackup(ctx); err != nil {
 		if errors.Is(err, backend.ErrNotFound) {
-			return errors.New("no header backup found to restore (on a versioned remote, recover a prior version with rclone)")
+			return errors.New("no header backup found to restore (a vault's first backup is written on its second header write); if your remote keeps object versions, recover a prior version with rclone")
 		}
 		return fmt.Errorf("restore header backup: %w", err)
 	}

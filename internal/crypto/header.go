@@ -33,9 +33,9 @@ import (
 // headerVersion is the header's on-storage format version. ParseHeader accepts
 // only exactly this version with a valid auth tag, with no lenient or
 // unversioned path, since accepting an unauthenticated or unknown-version
-// header would be a security hole. The segment/snapshot payloads
-// (internal/secrets) are versioned by the same exact-match rule. Bump only on
-// an incompatible change.
+// header would be a security hole. The namespace blob payload (internal/secrets)
+// is versioned by the same exact-match rule. Bump only on an incompatible
+// change.
 //
 // Version 2 added VaultID and SignPub; version 3 added the object manifest
 // (see manifest.go); version 4 added per-slot Provisional and TS; version 5
@@ -44,15 +44,18 @@ import (
 // two writes that can race, and made the format self-describing about its
 // algorithms (the Suite identifier and per-slot KDF tag, see suite.go) so a
 // future KDF or hybrid recipient is an additive registry change rather than a
-// version bump. The exact-match rule matters here too: a v4 reader would drop
-// Transitions and reseal the header without the chain, stranding any machine
-// pinned at an older master. This build reads only version 5; there is no
-// in-place upgrade path for older vaults.
+// version bump. Version 6 replaced the append-only log (per-write segments
+// folded by a Lamport clock) with a single blob per namespace under
+// last-write-wins, so the manifest changed from one entry per object to one
+// entry per namespace (the blob pointer and its one-generation backup, see
+// manifest.go). The exact-match rule matters here: a v5 reader would parse a v6
+// manifest's entries as objects and read nothing, so it must refuse loudly. This
+// build reads only version 6; there is no in-place upgrade path for older vaults.
 //
 // Note the two axes are distinct: this Version governs the header's structural
 // schema (exact-match, break-on-mismatch), while Suite/KDF govern the algorithm
 // selection within a schema (a registry, additive, fail-closed on the unknown).
-const headerVersion = 5
+const headerVersion = 6
 
 // Header is the parsed header object. Optional-shaped fields carry omitempty
 // so a parsed header reproduces the exact canonical bytes it was sealed over
@@ -68,9 +71,9 @@ type Header struct {
 	Revision  int    `json:"revision"`           // monotonic; bumped on every write (anti-rollback)
 	Master    []byte `json:"master"`             // master identity, age-encrypted to every slot's public key
 	Slots     []Slot `json:"slots"`
-	// Manifest binds every segment/snapshot object to this authenticated
-	// header: full object key → plaintext MAC (see manifest.go). Nil only on a
-	// vault that has never stored a secret.
+	// Manifest binds every namespace's blob to this authenticated header:
+	// namespace name → blob pointer and its plaintext MAC (see manifest.go). Nil
+	// only on a vault that has never stored a secret.
 	Manifest map[string]ManifestEntry `json:"manifest,omitempty"`
 	// Transitions is the vault's rotation history: the signed record of every
 	// master change, each authorized by the master it replaced. A machine pinned

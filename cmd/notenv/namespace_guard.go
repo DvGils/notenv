@@ -30,7 +30,7 @@ import (
 // also exactly what a malicious repository named after your project looks
 // like, so the join is confirmed once rather than pinned silently. A virgin
 // namespace (the new-project flow) pins without ceremony.
-func guardNamespace(ctx context.Context, store backend.Backend, dir string, binding config.LocalBinding, resolved string) error {
+func guardNamespace(ctx context.Context, store backend.HeaderStore, dir string, binding config.LocalBinding, resolved string) error {
 	decision, err := config.CheckNamespacePin(binding, resolved, filepath.Base(dir))
 	if err != nil {
 		return fmt.Errorf("%s: %w", filepath.Join(dir, contract.FileName), err)
@@ -69,7 +69,7 @@ func guardNamespace(ctx context.Context, store backend.Backend, dir string, bind
 // per (storage, namespace). Acceptance is recorded user-level: there is no
 // checkout to pin in. A virgin namespace is the new-project flow and pins
 // without ceremony, same as a checkout's.
-func guardFlagNamespace(ctx context.Context, store backend.Backend, scope, namespace string) error {
+func guardFlagNamespace(ctx context.Context, store backend.HeaderStore, scope, namespace string) error {
 	accepted, err := config.NamespaceAccepted(scope, namespace)
 	if err != nil {
 		return err
@@ -86,6 +86,14 @@ func guardFlagNamespace(ctx context.Context, store backend.Backend, scope, names
 			fmt.Sprintf("namespace %q already holds secrets. Expose them to commands run here?", namespace),
 			fmt.Sprintf("namespace %q declined; check the --namespace value", namespace)); err != nil {
 			return err
+		}
+		// NOTENV_ACCEPT_NAMESPACE is a per-invocation override (the operator's
+		// statement of intent for this run), not a durable grant: when the accept
+		// came from the env, do not persist it, so a later run without the env
+		// re-confirms. An interactive accept is a deliberate one-time decision and
+		// is persisted below.
+		if envAcceptedNamespace(namespace) {
+			return nil
 		}
 	}
 	if err := config.AcceptNamespace(scope, namespace); err != nil {

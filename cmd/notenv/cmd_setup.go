@@ -261,8 +261,7 @@ func addRemoteStorage(ctx context.Context, user *config.User, first bool) (bool,
 	}
 
 	// Fail here, with context, not at the first real `set` days later.
-	versioned := remoteIsVersioned(ctx, remote)
-	store := &backend.RcloneStorage{Remote: remote, Base: base, Versioned: versioned}
+	store := &backend.RcloneStorage{Remote: remote, Base: base}
 	if err := ui.Spin("Validating storage: write, read back, delete probe", func() error {
 		return store.Probe(ctx)
 	}); err != nil {
@@ -271,7 +270,7 @@ func addRemoteStorage(ctx context.Context, user *config.User, first bool) (bool,
 	}
 
 	makeDefault := setupDefault && first
-	path, err := config.UpsertStorage(name, config.StorageEntry{Remote: remote, Base: base, Versioned: versioned}, makeDefault)
+	path, err := config.UpsertStorage(name, config.StorageEntry{Remote: remote, Base: base}, makeDefault)
 	if err != nil {
 		return false, err
 	}
@@ -571,15 +570,6 @@ func requireInput(label, hint string) (string, error) {
 			return value, nil
 		}
 	}
-}
-
-// remoteIsVersioned: B2 retains every overwritten version natively, so the
-// .prev backup copy is redundant there. Conservative for everything else
-// (S3 versioning is a bucket-level opt-in that is not visible from here).
-// Local config lookup only: failure just means the safe default.
-func remoteIsVersioned(ctx context.Context, remote string) bool {
-	kind, err := backend.RemoteType(ctx, remote)
-	return err == nil && kind == "b2"
 }
 
 func installHint() string {

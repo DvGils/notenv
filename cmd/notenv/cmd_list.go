@@ -106,5 +106,5 @@ func modifiedLabel(ts int64) string {
 func init() {
 	listCmd.Flags().BoolVar(&listRefresh, "refresh", false, "bypass the local cache and pull the latest secrets")
 	listCmd.Flags().BoolVar(&listJSON, "json", false, "machine-readable output: names, descriptions, modified times (never values)")
-	listCmd.Flags().BoolVar(&listSalvage, "skip-corrupt", false, "list past recorded objects that are missing or corrupt instead of failing closed (each dropped object is reported)")
+	listCmd.Flags().BoolVar(&listSalvage, "skip-corrupt", false, "fall back to a namespace's one-generation backup when its current blob is missing or corrupt, instead of failing closed (the most recent write may be lost; it is reported)")
 }

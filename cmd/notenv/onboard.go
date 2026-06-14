@@ -18,7 +18,7 @@ import (
 // passphrases have this shape (the wordlist is pure lowercase letters), so a
 // prompt entry matching it is split; a chosen passphrase that happens to
 // match is covered by the retry in resolveUnlock.
-var onboardingStringRe = regexp.MustCompile(`^([a-z]+(?:-[a-z]+){5})/([a-z2-7]{12})$`)
+var onboardingStringRe = regexp.MustCompile(`^([a-z]+(?:-[a-z]+){5})/([a-z2-7]{16})$`)
 
 // splitOnboardingString splits a prompt entry into passphrase and
 // fingerprint; the fingerprint is empty when the entry is a plain passphrase.
@@ -68,19 +68,20 @@ func (a *app) requireHumanPassphrase(ctx context.Context, action string) error {
 	if err != nil {
 		return err
 	}
-	_, _, _, err = humanUnlock(ctx, v, action)
+	_, _, _, err = humanUnlock(ctx, v, a.cacheScope, action)
 	return err
 }
 
 // humanUnlock prompts for a freshly typed passphrase (ignoring any warm cache),
-// unlocks the header, and verifies it, returning the master, the matched slot
-// index, and the parsed header. It refuses non-interactively (the prompt reads
-// the terminal device, so it reaches a human, not an agent on a warm cache) and
-// rejects any non-passphrase unlock, so a vault that opens only by machine
-// identity cannot perform an operation gated this way. It is the shared gate for
-// deliberate plaintext egress (`run --no-mask`, `export`) and destructive
-// owner acts (`vault delete`).
-func humanUnlock(ctx context.Context, store backend.HeaderStore, action string) (*crypto.MasterKey, int, *crypto.Header, error) {
+// unlocks the header, and runs the full trust check (tag + rollback/substitution
+// continuity, keyed by scope), returning the master, the matched slot index, and
+// the parsed header. It refuses non-interactively (the prompt reads the terminal
+// device, so it reaches a human, not an agent on a warm cache) and rejects any
+// non-passphrase unlock, so a vault that opens only by machine identity cannot
+// perform an operation gated this way. It is the shared gate for deliberate
+// plaintext egress (`run --no-mask`, `export`) and destructive owner acts
+// (`vault delete`), all of which must refuse a rolled-back or replaced vault.
+func humanUnlock(ctx context.Context, store backend.HeaderStore, scope, action string) (*crypto.MasterKey, int, *crypto.Header, error) {
 	if !interactiveFn() {
 		return nil, -1, nil, fmt.Errorf("%s, so it needs a human to confirm with a passphrase, and there is no terminal to ask on", action)
 	}
@@ -106,7 +107,10 @@ func humanUnlock(ctx context.Context, store backend.HeaderStore, action string) 
 	}); err != nil {
 		return nil, -1, nil, err
 	}
-	if err := header.Verify(mk); err != nil {
+	// trustHeader verifies the tag AND runs the rollback/substitution continuity
+	// check (advancing the local pin when warranted), so plaintext egress and
+	// vault deletion can't quietly operate on a rolled-back or replaced vault.
+	if err := trustHeader(scope, header, mk); err != nil {
 		return nil, -1, nil, err
 	}
 	return mk, slot, header, nil
