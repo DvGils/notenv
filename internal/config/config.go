@@ -176,6 +176,31 @@ func UpsertStorage(name string, entry StorageEntry, makeDefault bool) (string, e
 	return writeUserConfig(u)
 }
 
+// RemoveStorage deletes a named storage from the machine config. If it was the
+// default, the default is reassigned to the sole remaining storage or cleared.
+// Reports whether the storage existed; removing an absent one is not an error
+// (idempotent teardown).
+func RemoveStorage(name string) (existed bool, err error) {
+	u, err := LoadUser()
+	if err != nil {
+		return false, err
+	}
+	if _, ok := u.Storage[name]; !ok {
+		return false, nil
+	}
+	delete(u.Storage, name)
+	if u.Default == name {
+		u.Default = ""
+		if len(u.Storage) == 1 {
+			u.Default = u.StorageNames()[0]
+		}
+	}
+	if _, err := writeUserConfig(u); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
 // writeUserConfig renders the whole config from u. It is a generated machine
 // file, so it is regenerated wholesale (deterministically, storages sorted).
 func writeUserConfig(u *User) (string, error) {

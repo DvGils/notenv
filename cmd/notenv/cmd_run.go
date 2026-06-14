@@ -35,8 +35,9 @@ too, --no-mask disables it everywhere (e.g. when a consumer needs the raw
 bytes). Because --no-mask sends raw values to a captured stream, it asks for
 your passphrase even when the session key is cached: plaintext egress needs a
 human present. Masking is accident-proofing for output, not a security
-boundary: values shorter than 6 bytes pass through, and code that holds a
-secret can always move it some other way.
+boundary: the value and its common encodings (base64, hex, url) are masked,
+but values shorter than 6 bytes pass through, and code that holds a secret can
+always move it some other way.
 
 Exit codes (docker's convention): the child's own exit code passes through;
 125 means notenv itself failed, 126 the command was found but cannot run,

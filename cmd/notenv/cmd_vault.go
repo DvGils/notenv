@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/config"
+	"github.com/DvGils/notenv/internal/keyring"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
@@ -279,11 +281,110 @@ func reservedCopyName(key string) bool {
 	return false
 }
 
+var vaultDeleteYes bool
+
+var vaultDeleteCmd = &cobra.Command{
+	Use:   "delete <name>",
+	Short: "Permanently delete a vault: its objects, this machine's trust state, and its config entry",
+	Long: `Permanently delete a configured vault.
+
+Removes the vault's encrypted objects, this machine's trust state for it (the
+rollback pin and cached key), and its entry in the machine config. Gated by the
+vault's primary passphrase, notenv only ever destroys a vault you can prove you
+own, plus a type-the-name confirmation.
+
+notenv removes the LIVE vault. A versioned remote's history and your own backups
+are the provider's to purge, so "deleted" here does not mean the ciphertext is
+gone everywhere. There is deliberately no --force: if you have lost the
+passphrase, delete the storage yourself (a local vault is its directory, a
+remote's objects are yours to delete) and run ` + "`notenv key forget`" + ` to clear the
+local trust state.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
+		name := args[0]
+		if config.ReadOnlyEnv() {
+			return errors.New("NOTENV_READONLY is set; refusing to delete a vault")
+		}
+		user, err := config.LoadUser()
+		if err != nil {
+			return err
+		}
+		eff, err := config.ResolveStorage(user, name)
+		if err != nil {
+			return err
+		}
+		store := openStorage(eff)
+		scope := eff.Scope()
+
+		_, slot, header, err := humanUnlock(ctx, store, fmt.Sprintf("permanently deleting vault %q", name))
+		if err != nil {
+			return err
+		}
+		if err := requirePrimarySlot(header, slot, "vault delete"); err != nil {
+			return err
+		}
+
+		keys, err := store.List(ctx, "")
+		if err != nil {
+			return err
+		}
+		ui.Warnf("permanently deleting vault %s on storage %q (%d objects). notenv removes the live vault; a versioned remote's history and your backups are the provider's to purge", header.VaultID, name, len(keys))
+		if !vaultDeleteYes {
+			if !ui.Interactive() {
+				return errors.New("refusing to delete non-interactively without --yes")
+			}
+			typed, err := ui.Input(fmt.Sprintf("Type the storage name %q to confirm", name), "")
+			if err != nil {
+				return err
+			}
+			if typed != name {
+				return errors.New("aborted; the name did not match")
+			}
+		}
+
+		if err := ui.Spin("Deleting vault", func() error {
+			return destroyVault(ctx, eff, store)
+		}); err != nil {
+			return err
+		}
+		if err := config.ForgetScope(scope); err != nil {
+			ui.Warnf("could not clear local trust state: %v", err)
+		}
+		keyring.DefaultCache().Drop(scope)
+		if _, err := config.RemoveStorage(name); err != nil {
+			ui.Warnf("could not remove the storage entry from config (remove %q by hand): %v", name, err)
+		}
+		ui.Successf("deleted vault %q; its trust state and config entry are gone too", name)
+		return nil
+	},
+}
+
+// destroyVault removes a vault's bytes: a local vault is its directory; a remote
+// vault is every object it holds (rclone lists the header artifacts as objects,
+// so they go too).
+func destroyVault(ctx context.Context, eff config.Effective, store vaultStorage) error {
+	if eff.Local() {
+		return os.RemoveAll(eff.Path)
+	}
+	keys, err := store.List(ctx, "")
+	if err != nil {
+		return err
+	}
+	for _, k := range keys {
+		if err := store.Delete(ctx, k); err != nil {
+			return fmt.Errorf("delete %s: %w", k, err)
+		}
+	}
+	return nil
+}
+
 func init() {
 	vaultCopyCmd.Flags().StringVar(&vaultCopyToPath, "to-path", "", "destination directory for a local copy")
 	vaultCopyCmd.Flags().StringVar(&vaultCopyToRemote, "to-remote", "", "destination rclone remote")
 	vaultCopyCmd.Flags().StringVar(&vaultCopyToBase, "to-base", "", "path within the destination remote (default \""+config.DefaultBase+"\")")
 	vaultCopyCmd.Flags().StringVar(&vaultCopyName, "name", "", "name to register the copy under")
 	vaultCopyCmd.Flags().BoolVar(&vaultCopyDefault, "make-default", false, "make the copy this machine's default storage")
-	vaultCmd.AddCommand(vaultCopyCmd)
+	vaultDeleteCmd.Flags().BoolVar(&vaultDeleteYes, "yes", false, "skip the type-the-name confirmation (the passphrase is still required)")
+	vaultCmd.AddCommand(vaultCopyCmd, vaultDeleteCmd)
 }

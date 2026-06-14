@@ -53,7 +53,12 @@ func setupFlow(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(user.Storage) > 0 {
+	// A first-ever setup adds one storage and finishes: a newcomer is never asked
+	// the confusing "add another?" right after creating their first vault.
+	// Re-running setup with storages already configured is a deliberate "add
+	// another vault", so the loop offers it only there.
+	hadStorage := len(user.Storage) > 0
+	if hadStorage {
 		ui.Notef("configured storages: %s (default: %s)", strings.Join(user.StorageNames(), ", "), user.Default)
 	}
 
@@ -69,8 +74,8 @@ func setupFlow(ctx context.Context) error {
 				return err
 			}
 		}
-		if !ui.Interactive() {
-			break // non-interactive callers add at most one and rely on flags
+		if !hadStorage || !ui.Interactive() {
+			break // first-time setup adds one; non-interactive callers rely on flags
 		}
 		more, err := ui.Confirm("Add another storage?", false)
 		if err != nil {

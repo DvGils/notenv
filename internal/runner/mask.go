@@ -2,9 +2,13 @@ package runner
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
+	"strings"
 )
 
 // Masker is a Writer that rewrites occurrences of injected secret values in a
@@ -21,9 +25,13 @@ import (
 // end-of-stream; callers must call it after the child exits or trailing
 // output is lost.
 type Masker struct {
-	dst      io.Writer
-	patterns []pattern // longest value first, so the longest match wins
-	carry    []byte
+	dst io.Writer
+	// index groups patterns by their first byte, each bucket longest-first. Most
+	// output positions start no secret, so the bucket is empty and matching is
+	// O(1) there: the cost does not scale with the number of patterns, which is
+	// what keeps masking snappy once each secret expands into several encodings.
+	index map[byte][]pattern
+	carry []byte
 }
 
 // Secret is one injected env var for masking purposes.
@@ -59,20 +67,58 @@ func NewMaskerFloor(dst io.Writer, secrets []Secret, minLen int) *Masker {
 	sorted := append([]Secret(nil), secrets...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
+	// Each secret expands into its literal value plus the common encodings a
+	// program might apply before printing it (see encodedForms); all forms of one
+	// secret share its placeholder. The floor is applied to the original value, so
+	// a short secret and its encodings are all skipped together. seen dedups
+	// forms across secrets (an alphanumeric token's percent-encoding equals its
+	// literal, and two secrets may collide), first name alphabetically winning.
 	seen := map[string]bool{}
 	var patterns []pattern
 	for _, s := range sorted {
-		if s.Value == "" || len(s.Value) < minLen || seen[s.Value] {
+		if s.Value == "" || len(s.Value) < minLen {
 			continue
 		}
-		seen[s.Value] = true
-		patterns = append(patterns, pattern{
-			value:       []byte(s.Value),
-			placeholder: fmt.Appendf(nil, "<notenv-masked:%s>", s.Name),
-		})
+		placeholder := fmt.Appendf(nil, "<notenv-masked:%s>", s.Name)
+		for _, form := range encodedForms(s.Value) {
+			if len(form) == 0 || seen[string(form)] {
+				continue
+			}
+			seen[string(form)] = true
+			patterns = append(patterns, pattern{value: form, placeholder: placeholder})
+		}
 	}
 	sort.SliceStable(patterns, func(i, j int) bool { return len(patterns[i].value) > len(patterns[j].value) })
-	return &Masker{dst: dst, patterns: patterns}
+	index := map[byte][]pattern{}
+	for _, p := range patterns { // patterns are non-empty, so value[0] is safe
+		index[p.value[0]] = append(index[p.value[0]], p)
+	}
+	return &Masker{dst: dst, index: index}
+}
+
+// encodedForms returns the distinct byte forms of a secret value worth masking:
+// the literal plus the common single-transform encodings a program is likely to
+// apply before it reaches stdout (base64 into an auth header, hex, percent into a
+// logged URL). notenv knows the exact value, so masking its encodings carries
+// none of the false-positive risk a guessing scanner would. It deliberately does
+// NOT catch a value concatenated into a larger blob and then encoded, chained
+// transforms, or any egress notenv does not wrap (network, files); masking stays
+// accident-proofing, not containment. Duplicates (common for alphanumeric tokens,
+// whose percent-encoding equals the literal) are collapsed by the caller's seen.
+func encodedForms(value string) [][]byte {
+	v := []byte(value)
+	hexLower := hex.EncodeToString(v)
+	return [][]byte{
+		v,
+		[]byte(base64.StdEncoding.EncodeToString(v)),
+		[]byte(base64.RawStdEncoding.EncodeToString(v)),
+		[]byte(base64.URLEncoding.EncodeToString(v)),
+		[]byte(base64.RawURLEncoding.EncodeToString(v)),
+		[]byte(hexLower),
+		[]byte(strings.ToUpper(hexLower)),
+		[]byte(url.QueryEscape(value)),
+		[]byte(url.PathEscape(value)),
+	}
 }
 
 // Write rewrites complete matches and holds back a tail that might still
@@ -138,8 +184,10 @@ func (m *Masker) Flush() error {
 // outranks a shorter complete match at the same position: holding is always
 // safe (the next Write or Flush resolves it), while emitting early could split
 // a longer secret in two and leak its tail.
+// rest is always non-empty here (the Write/Flush loops only call it with
+// buf[i:] for i < len(buf)), so rest[0] selects the only bucket that can match.
 func (m *Masker) partialAt(rest []byte) bool {
-	for _, p := range m.patterns {
+	for _, p := range m.index[rest[0]] {
 		if len(rest) < len(p.value) && bytes.HasPrefix(p.value, rest) {
 			return true
 		}
@@ -149,7 +197,7 @@ func (m *Masker) partialAt(rest []byte) bool {
 
 // completeAt reports the longest secret starting exactly at rest's head.
 func (m *Masker) completeAt(rest []byte) (int, []byte) {
-	for _, p := range m.patterns { // longest first
+	for _, p := range m.index[rest[0]] { // longest first within the bucket
 		if len(rest) >= len(p.value) && bytes.HasPrefix(rest, p.value) {
 			return len(p.value), p.placeholder
 		}

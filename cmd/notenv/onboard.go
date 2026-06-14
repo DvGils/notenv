@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keymgmt"
 	"github.com/DvGils/notenv/internal/keyring"
@@ -67,28 +68,48 @@ func (a *app) requireHumanPassphrase(ctx context.Context, action string) error {
 	if err != nil {
 		return err
 	}
-	raw, err := v.GetHeader(ctx)
+	_, _, _, err = humanUnlock(ctx, v, action)
+	return err
+}
+
+// humanUnlock prompts for a freshly typed passphrase (ignoring any warm cache),
+// unlocks the header, and verifies it, returning the master, the matched slot
+// index, and the parsed header. It refuses non-interactively (the prompt reads
+// the terminal device, so it reaches a human, not an agent on a warm cache) and
+// rejects any non-passphrase unlock, so a vault that opens only by machine
+// identity cannot perform an operation gated this way. It is the shared gate for
+// deliberate plaintext egress (`run --no-mask`, `export`) and destructive
+// owner acts (`vault delete`).
+func humanUnlock(ctx context.Context, store backend.HeaderStore, action string) (*crypto.MasterKey, int, *crypto.Header, error) {
+	if !interactiveFn() {
+		return nil, -1, nil, fmt.Errorf("%s, so it needs a human to confirm with a passphrase, and there is no terminal to ask on", action)
+	}
+	raw, err := store.GetHeader(ctx)
 	if err != nil {
-		return err
+		return nil, -1, nil, err
 	}
 	header, err := crypto.ParseHeader(raw)
 	if err != nil {
-		return err
+		return nil, -1, nil, err
 	}
 	ui.Infof("%s; confirm with your passphrase", action)
 	pass, err := keyring.PromptPassphrase("Passphrase: ")
 	if err != nil {
-		return err
+		return nil, -1, nil, err
 	}
 	var mk *crypto.MasterKey
+	var slot int
 	if err := ui.Spin("Unlocking key slot (scrypt)", func() error {
 		var unlockErr error
-		mk, _, _, unlockErr = header.Unlock(pass)
+		mk, slot, _, unlockErr = header.Unlock(pass)
 		return unlockErr
 	}); err != nil {
-		return err
+		return nil, -1, nil, err
 	}
-	return header.Verify(mk)
+	if err := header.Verify(mk); err != nil {
+		return nil, -1, nil, err
+	}
+	return mk, slot, header, nil
 }
 
 // enforceProvisional is the onboarding gate. A provisional slot is still

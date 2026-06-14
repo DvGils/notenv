@@ -39,6 +39,17 @@ var initCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		// Confirm before scaffolding a project somewhere that almost never is one
+		// (the home directory, a filesystem root), so a mistyped `cd` does not
+		// quietly turn $HOME into a notenv project.
+		if err := guardProjectDir(cwd); err != nil {
+			return err
+		}
+
 		// Machine not set up yet: chain into the setup flow, so the
 		// first-ever init is still one command end to end. Flags keep the
 		// non-interactive path for scripts/CI.
@@ -57,10 +68,6 @@ var initCmd = &cobra.Command{
 			}
 		}
 
-		cwd, err := os.Getwd()
-		if err != nil {
-			return err
-		}
 		if err := writeContract(cwd); err != nil {
 			return err
 		}
@@ -114,8 +121,37 @@ var initCmd = &cobra.Command{
 	},
 }
 
-// writeContract creates notenv.toml if missing, prompting for the
-// namespace when interactive (default: directory name).
+// guardProjectDir confirms before scaffolding a project in a place that almost
+// never is one: the home directory or a filesystem root. It fires only when
+// notenv.toml does not already exist (re-running init in a real project is fine)
+// and only interactively (an explicit non-interactive operator is trusted). This
+// is where the "I ran it in the wrong directory" footgun is caught, at the one
+// command that creates project state.
+func guardProjectDir(cwd string) error {
+	if _, err := os.Stat(filepath.Join(cwd, contract.FileName)); err == nil {
+		return nil // already a project here
+	}
+	home, _ := os.UserHomeDir()
+	if cwd != home && cwd != filepath.Dir(cwd) {
+		return nil // not the home dir or a filesystem root: an ordinary location
+	}
+	if !ui.Interactive() {
+		return nil // an explicit non-interactive operator knows what they are doing
+	}
+	ok, err := ui.Confirm(fmt.Sprintf("%s is not a typical project location. Make it a notenv project (writes %s here)?", cwd, contract.FileName), false)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("aborted; run `notenv init` inside your project directory")
+	}
+	return nil
+}
+
+// writeContract creates notenv.toml if missing. The namespace defaults silently
+// to the directory name; --namespace overrides it. No prompt: a first-time user
+// does not need to meet the concept to start, and the chosen namespace is shown
+// in the success line either way.
 func writeContract(cwd string) error {
 	path := filepath.Join(cwd, contract.FileName)
 	if _, err := os.Stat(path); err == nil {
@@ -124,12 +160,6 @@ func writeContract(cwd string) error {
 	}
 
 	namespace := initNamespace
-	if namespace == "" && ui.Interactive() {
-		var err error
-		if namespace, err = ui.Input("Namespace for this project", filepath.Base(cwd)); err != nil {
-			return err
-		}
-	}
 
 	nsLine := fmt.Sprintf("\n# namespace = %q   # default: this directory's name\n", filepath.Base(cwd))
 	if namespace != "" {
@@ -146,7 +176,11 @@ func writeContract(cwd string) error {
 	if err := os.WriteFile(path, fmt.Appendf(nil, contractTemplate, nsLine), 0o644); err != nil {
 		return err
 	}
-	ui.Successf("wrote ./%s. Commit this; it's the secret *contract*, no values", contract.FileName)
+	effective := namespace
+	if effective == "" {
+		effective = filepath.Base(cwd)
+	}
+	ui.Successf("wrote ./%s (namespace %q). Commit this; it's the secret *contract*, no values", contract.FileName, effective)
 	return nil
 }
 
