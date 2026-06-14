@@ -47,7 +47,7 @@ func (keychainCache) Get(scope string) (string, bool) {
 		return "", false
 	}
 	deadline, err := strconv.ParseInt(expiry, 10, 64)
-	if err != nil || time.Now().Unix() >= deadline {
+	if err != nil || time.Now().UnixNano() >= deadline {
 		keychainCache{}.Drop(scope)
 		return "", false
 	}
@@ -58,7 +58,10 @@ func (keychainCache) Store(scope, masterKey string, ttl time.Duration) error {
 	if ttl <= 0 {
 		return nil
 	}
-	payload := fmt.Sprintf("%d:%s", time.Now().Add(ttl).Unix(), masterKey)
+	// Nanosecond resolution, not seconds: a second-truncated deadline rounds a
+	// short TTL down to its sub-second remainder, so an entry stored just before
+	// a second boundary can read back already expired (now.Unix() == deadline).
+	payload := fmt.Sprintf("%d:%s", time.Now().Add(ttl).UnixNano(), masterKey)
 	// -U updates an existing entry in place instead of failing on it.
 	out, err := exec.Command("security", "add-generic-password",
 		"-U", "-s", keychainService, "-a", keychainAccount(scope), "-w", payload).CombinedOutput()

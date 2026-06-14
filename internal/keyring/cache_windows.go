@@ -54,7 +54,7 @@ func (dpapiCache) Get(scope string) (string, bool) {
 		return "", false
 	}
 	deadline, err := strconv.ParseInt(strings.TrimSpace(expiry), 10, 64)
-	if err != nil || time.Now().Unix() >= deadline {
+	if err != nil || time.Now().UnixNano() >= deadline {
 		dpapiCache{}.Drop(scope)
 		return "", false
 	}
@@ -86,7 +86,10 @@ func (dpapiCache) Store(scope, masterKey string, ttl time.Duration) error {
 	if err != nil {
 		return err
 	}
-	payload := fmt.Sprintf("%d\n%s\n", time.Now().Add(ttl).Unix(), base64.StdEncoding.EncodeToString(blob))
+	// Nanosecond resolution, not seconds: a second-truncated deadline rounds a
+	// short TTL down to its sub-second remainder, so an entry stored just before
+	// a second boundary can read back already expired (now.Unix() == deadline).
+	payload := fmt.Sprintf("%d\n%s\n", time.Now().Add(ttl).UnixNano(), base64.StdEncoding.EncodeToString(blob))
 	return os.WriteFile(path, []byte(payload), 0o600)
 }
 

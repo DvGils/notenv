@@ -4,6 +4,21 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.17.1
+
+A patch release: the session-key cache on macOS and Windows could store an entry that read back
+already expired.
+
+### Fixed
+
+- **The session-key cache on macOS (Keychain) and Windows (DPAPI) no longer expires an entry the
+  instant it is stored.** Both recorded the expiry deadline at one-second resolution, so an entry
+  written just before a second boundary rounded its deadline down and could read back as already
+  expired: the first `Get` after `Store` missed, forcing an unnecessary re-prompt (and a flaky cache
+  test). The deadline is now nanosecond-resolution, so a TTL lasts its full duration. Linux was
+  unaffected (the kernel keyring enforces the timeout natively). A cache entry written by an earlier
+  version is treated as expired and re-fetched once.
+
 ## 0.17.0
 
 The ergonomics-and-offboarding release. The first run loses its rough edges, output masking gets
