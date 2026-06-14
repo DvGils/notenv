@@ -14,8 +14,11 @@ the conversation touches next. notenv removes the file and gives the agent a ver
   (`set KEY --description "..."`), *what they are for*, so it can decide what is runnable without
   ever seeing a value. `notenv list --json` gives it a stable shape to parse.
 - **Captured output is masked.** When stdout/stderr is not a terminal (which is exactly how agents
-  and CI read output), any injected value a child prints (a server echoing its connection string on
-  boot, a debug dump) is replaced with `<notenv-masked:NAME>` before the model sees it.
+  read output), any injected value a child prints (a server echoing its connection string on boot, a
+  debug dump) is replaced with `<notenv-masked:NAME>` before the model sees it.
+- **The agent's own credential does not ride along.** When an agent unlocks with `NOTENV_IDENTITY`,
+  that identity (which is key-equivalent for the whole vault) is stripped from any child `notenv run`
+  spawns, so it cannot leak into a child's logs, an `env` dump, or a crash reporter.
 - **Exit codes say whose failure it was.** `run` follows docker's convention: the child's code
   passes through; `125` is notenv's own failure, `126` found-but-cannot-run, `127` not found. An
   agent retrying a flaky test never mistakes a vault problem for a code problem.
@@ -100,6 +103,8 @@ The server is headless, so its environment is the configuration:
     writes with their own tooling, so the flag stops accidents while the storage credential is what
     stops adversaries.
 
-A broker mode that keeps the unlocked key in a separate trust domain (so agents can *use* but
-provably not *extract*) is on the [roadmap](../project/roadmap.md). See the
-[threat model](../security/threat-model.md) for the full analysis.
+Its first slice has shipped: `NOTENV_IDENTITY` is stripped from child environments (above), so the
+credential cannot leak into a child by accident. Full containment, keeping the unlocked key in a
+separate trust domain so agents can *use* but provably not *extract*, is on the
+[roadmap](../project/roadmap.md). See the [threat model](../security/threat-model.md) for the full
+analysis.

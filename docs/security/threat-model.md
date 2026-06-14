@@ -40,9 +40,9 @@ running the command, only for as long as the command runs.**
   secrets.
 - The header is **authenticated** with an HMAC keyed from the master, and carries a **monotonic
   revision** that each machine pins locally.
-- Secret values for a namespace are stored as an **append-only set of encrypted segments** over
-  periodic **snapshots**; reads fold them, last-write-wins per key. Every write is read back and
-  verified before it is trusted.
+- Each namespace's secret values are stored as a **single encrypted blob**, replaced on each write
+  under the header compare-and-swap (last write wins); the blob it supersedes is kept as a
+  one-generation backup. Every write is read back and verified before it is trusted.
 - Storage is a local vault directory (pure-Go backend) or a remote reached through
   [rclone](https://rclone.org); notenv treats both as a dumb object store and assumes nothing about
   consistency or honesty beyond "stores and returns bytes." A **local vault changes none of the
@@ -56,7 +56,7 @@ running the command, only for as long as the command runs.**
   keyring on Linux (RAM only, reclaimed on logout/reboot), in the Keychain on macOS and DPAPI on
   Windows (ciphertext at rest under your login credentials, purged lazily on the next read).
   Ciphertext blobs are additionally cached in RAM (tmpfs) on Linux only. See
-  [Caching and performance](../guides/caching.md#what-each-platform-guarantees).
+  [Caching](../concepts/caching.md#what-each-platform-guarantees).
 
 ## Credentials at rest: passphrases for people, identities for machines
 
@@ -124,12 +124,13 @@ What holds, and against whom.
   internally consistent, is refused. **Every stored object is bound to that authenticated header**: the
   header carries a manifest (object key to keyed MAC of its plaintext; keyed so the public header is no
   guessing oracle against secret values), each payload names the object key it was written under, and
-  reads check both, so deleting a recorded object, reverting it to a different value, resurrecting a
-  compacted one, or copying a real object to another name or namespace alarms with the object named.
-  They cannot forge a secret value: a blob they cannot encrypt under the master fails to decrypt, and
-  reads **fail closed**. Because writes are append-only and verified on read-back, a botched or
-  malicious write is at worst denial-of-service, not silent data loss. :white_check_mark: (with
-  caveats; see [Known limitations](#known-limitations)).
+  reads check both, so deleting a recorded object, reverting it to a different value, replaying a
+  superseded generation, or copying a real object into another namespace alarms with the object named.
+  They cannot forge a secret value: an object they cannot encrypt under the master fails to decrypt,
+  and reads **fail closed**. Because each write lands at a fresh object name and only the header swap
+  makes it live, and every write is read back and verified, a botched or malicious write is at worst
+  denial-of-service (recoverable from the one-generation backup), not silent data loss.
+  :white_check_mark: (with caveats; see [Known limitations](#known-limitations)).
 - **Master rotations carry their own proof.** Each rotation records a transition signed by the outgoing
   master; a machine still pinned at that master verifies the chain and follows the change silently. The
   master-changed alarm therefore fires only for a change that **no holder of the pinned master
@@ -177,7 +178,7 @@ What holds, and against whom.
   gone. On Linux the RAM caches are reclaimed on logout; on macOS and Windows the cached master key
   is ciphertext in the platform store under the user's login credentials, expiring lazily on its
   next read rather than at the deadline (see
-  [Caching](../guides/caching.md#what-each-platform-guarantees)). "The process exits and no
+  [Caching](../concepts/caching.md#what-each-platform-guarantees)). "The process exits and no
   plaintext is left behind to discover later" holds on every platform; "nothing at all is left
   behind" is the Linux-only stronger form. :white_check_mark: (qualified on macOS/Windows)
 
@@ -209,10 +210,11 @@ notenv does **not** defend these, by design. Treating them as in-scope would be 
 - **Deliberate extraction by anything running as your user.** An agent (or any code) with your UID can
   run `notenv run -- sh -c 'printenv KEY | rev'` (masking covers the value and its common encodings,
   but a transform it does not anticipate walks around it) or read the session key cache; output masking
-  catches accidents, not intent. The
-  same trust model as ssh-agent. A broker that holds the unlocked key in a separate trust domain
-  (agents *use*, provably cannot *extract*) is planned, and until it exists notenv makes no
-  agent-containment claim.
+  catches accidents, not intent. The same trust model as ssh-agent. A first step has shipped:
+  `NOTENV_IDENTITY` is stripped from child environments, so the master-equivalent credential cannot
+  leak into a child by accident (accident-proofing, not containment). A broker that holds the unlocked
+  key in a separate trust domain (agents *use*, provably cannot *extract*) is planned, and until it
+  exists notenv makes no agent-containment claim.
 - **Read-only mode as containment.** `read_only = true` and `NOTENV_READONLY` make notenv refuse
   mutating commands: accident-proofing for cooperating clients, same family as masking. They do not
   constrain an adversary: with a single master key, **read capability is write capability** (the
@@ -257,7 +259,9 @@ recoverable states described here and below and names the way out of each:
 - **Warm-cache runs defer the pin checks.** With the master key cached, a run never reads the header, so
   rollback / master-change / vanished-header detection happens on cold unlocks, at most one cache TTL
   (default 1 hour) after the event, not instantly. Writes are unaffected: they re-read the header after
-  every write regardless.
+  every write regardless. The cached blob itself is bound to the master by a MAC checked before use, so
+  a tampered cache entry (the cache directory is same-user-writable) is rejected and the authenticated
+  read runs instead.
 - **A write-capable former holder can fork history, and signed transitions make the fork *quiet* for
   machines behind the fork point.** Someone who kept a previous master had full authority while they
   held it, including its signing key: they can author transitions onto their own fork that verify
@@ -265,23 +269,41 @@ recoverable states described here and below and names the way out of each:
   pinned past the fork finds no signed path and alarms. This is the fundamental limit of any scheme on
   dumb storage and the reason offboarding ends with rotating the **storage credential**: no write
   access, no fork. notenv advises this on `key rm` but, not owning the storage, cannot enforce it.
-- **A write that crashed mid-protocol and was then orphaned by a rotation.** A `set` lands its object,
-  then records it in the vault manifest; a writer that dies between the two leaves an unrecorded object.
-  Folds still include it (with a warning) and the next compaction records it durably, but a master
-  rotation deliberately leaves unrecorded objects alone, so an orphan that meets a rotation first is
-  left sealed under the replaced master. The fold then fails closed naming the object; remove it and
-  re-set that key.
-- **The manifest swap on rclone is a windowed compare-and-swap, not an atomic one.** Object stores
-  expose no conditional write through rclone, so two machines recording writes in the same sub-second
-  window can race. A detected loss retries cleanly; the one undetectable ordering leaves an
-  unrecorded-but-still-included object that the next compaction adopts, never a lost value, never an
-  alarm against an honest writer. A backend with native conditional writes can close the window for
-  real.
+- **A header write that could not be confirmed.** A write commits by swapping the header to point at
+  its new object. On a remote, if the swap's confirming read-back fails after the write may already
+  have landed, notenv reports the write as committed-but-unverified and keeps the object rather than
+  delete one the header might now reference. If a later read fails, `notenv key restore-backup`
+  recovers the header from its one-generation backup. A write that crashed *before* the swap leaves an
+  unreferenced object that is never read and that the namespace's next write reclaims, so it is
+  harmless, not a lockout.
+- **The header swap on rclone is read-compare-write-readback, not atomic.** Object stores expose no
+  conditional write through rclone, so concurrent header writers require a read-after-write-consistent
+  remote (every major provider is one): a contract, not a hope. Even there, two writers in the same
+  sub-second window can race, and one interleaving can let a writer's header update be overwritten,
+  dropping the namespace entry it added; the readback catches the common case and retries, but not
+  that one. A namespace that disappears this way is recovered with `notenv key restore-backup` or by
+  re-running the write. Native conditional writes would close the window; the local backend (a true
+  file-lock CAS) and single-machine use are unaffected.
 - **Primary-slot governance is advisory.** In shared-master team mode every slot holder has the master
   key, so "who may remove slots" is tooling-enforced, not cryptographic.
-- **Eventual-consistency reads.** On a storage backend with weak listing consistency, a fold can briefly
-  read a stale value just after a compaction (never a lost write). Strongly-consistent remotes
-  (Backblaze B2, S3) are unaffected.
+- **Eventual-consistency reads.** On a storage backend with weak read-after-write consistency, a read
+  just after another machine's write can briefly return the superseded blob (the header update or the
+  new object not yet visible), never a lost write. Strongly-consistent remotes (Backblaze B2, S3) are
+  unaffected.
+- **The first-use prompt reads an unauthenticated header.** The "this namespace already holds secrets,
+  expose them?" confirmation is decided before any unlock, so a storage attacker who strips a manifest
+  entry can suppress the prompt. It is an advisory safety prompt, not a boundary: the actual read still
+  verifies everything and fails closed, so suppressing it discloses nothing.
+- **The `edit` buffer can touch persistent disk without a RAM dir.** `notenv edit` writes the values
+  you type into a temporary buffer in `XDG_RUNTIME_DIR` (tmpfs) when it exists, and otherwise falls to
+  the OS temp dir, which on Linux is persistent disk; notenv warns when it does. Existing values never
+  reach the buffer (they render as `<keep>`), the file is mode 0600 and removed on exit, so the
+  exposure is bounded to values typed that session. Set `XDG_RUNTIME_DIR` to a RAM-backed dir to avoid
+  it.
+- **rclone provider credentials pass through argv at setup.** The convenience path that creates an
+  rclone remote passes the storage credential to rclone as command-line arguments, briefly visible to
+  same-user processes. These guard ciphertext storage, not the vault. To avoid it, create the remote
+  with `rclone config` yourself (it prompts on stdin) and point notenv at it.
 
 ## Supply chain
 

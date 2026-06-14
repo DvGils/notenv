@@ -68,9 +68,10 @@ somewhere it will outlive. notenv removes the file instead of guarding it.
   setup` is one passphrase and zero accounts.
 - **Joining and leaving are one command.** Onboard a teammate with a string over chat; their first
   run swaps it for a credential only they know. Offboarding re-encrypts everything, so leaving
-  actually revokes.
-- **Built for agents and CI.** `notenv run` lets a process *use* a secret without *seeing* it, and
-  your CI secret store holds one credential instead of thirty.
+  actually revokes, and `notenv export` hands every secret back as a `.env` whenever you want, so
+  there is no lock-in.
+- **Built for AI agents.** `notenv run` lets a process *use* a secret without *seeing* it, and
+  captured output is masked, so an agent runs your commands without a value ever entering its context.
 
 **Not this if** you want a platform: there is no web console or SSO, and access is scoped per vault,
 not per secret (everyone in a vault can read that vault). If a platform team already runs Vault, keep
@@ -104,14 +105,11 @@ notenv run -- cmd
         nothing written to disk
 ```
 
-Your secrets are encrypted with a random **master key**. The master key never exists in plaintext
-at rest: a small header object next to your secrets holds it wrapped under one or more **key slots**,
-the same approach LUKS and restic use. A slot is either a person's
-**passphrase** (escrowed in their password manager) or a machine's **age public key** (its identity
-lives in the platform's secret store). Unlocking any slot yields the master key for the session.
-
-The header is authenticated and carries a monotonic revision, so a party that can write your storage
-but holds no key cannot tamper with it or roll it back undetected.
+A random **master key** encrypts every secret and never exists in plaintext at rest: a small header
+next to your secrets holds it wrapped under one or more **key slots** (a person's passphrase or a
+machine's age public key), the way LUKS and restic do it. The header is authenticated and carries a
+monotonic revision, so a party that can write your storage but holds no key cannot tamper with it or
+roll it back undetected. The full walkthrough is in [How it works](concepts/how-it-works.md).
 
 ## License
 

@@ -56,7 +56,7 @@ notenv key add alice           # prints a one-time onboarding string; send it ov
 Alice points her machine at the same storage, runs `notenv setup`, and enters the string; her first
 command replaces it with a passphrase only she knows.
 
-→ [Teams and keys](guides/teams-and-keys.md#onboard-a-teammate)
+→ [Share a vault with your team](guides/teams-and-keys.md#add-a-teammate)
 
 ### Offboard a teammate or machine
 
@@ -69,7 +69,7 @@ notenv key rm alice            # re-keys automatically; surviving slots keep wor
 # then: rotate the bucket/SFTP credential at your provider
 ```
 
-→ [Teams and keys](guides/teams-and-keys.md#offboard-a-teammate-or-machine)
+→ [Share a vault with your team](guides/teams-and-keys.md#remove-a-teammate)
 
 ### Change a passphrase, or re-key as a precaution
 
@@ -78,50 +78,7 @@ notenv key rotate              # rewraps your slot (header only; secrets untouch
 notenv key rotate-master       # fresh master, every secret re-encrypted, all slots kept
 ```
 
-→ [Teams and keys](guides/teams-and-keys.md#other-key-operations)
-
-## CI/CD
-
-### Run a job with secrets
-
-One-time, on your machine, mint a CI identity:
-
-```sh
-notenv key add --machine ci    # paste the printed AGE-SECRET-KEY... into your CI secret store
-```
-
-In the job, define the rclone remote from the environment, point notenv at the vault, and run:
-
-```sh
-export RCLONE_CONFIG_NOTENV_TYPE=b2
-export RCLONE_CONFIG_NOTENV_ACCOUNT="$B2_KEY_ID"
-export RCLONE_CONFIG_NOTENV_KEY="$B2_APP_KEY"
-export NOTENV_IDENTITY="$CI_NOTENV_IDENTITY"
-notenv init --remote notenv --base my-bucket/notenv
-notenv run -- npm test
-```
-
-→ [Continuous integration](guides/ci.md) has complete GitHub Actions and GitLab files.
-
-### Deploy from a job with no checkout
-
-Address the namespace directly, and name it so the headless first-use is consented:
-
-```sh
-notenv init --remote notenv --base my-bucket/notenv
-export NOTENV_ACCEPT_NAMESPACE=my-service
-notenv run --namespace my-service -- ./deploy.sh
-```
-
-→ [Pin the vault from outside the repo](guides/ci.md#pin-the-vault-from-outside-the-repo)
-
-### Make a job read-only
-
-```sh
-export NOTENV_READONLY=1        # refuses every mutating command (policy; pair with a read-only storage credential)
-```
-
-→ [Refuse writes](guides/ci.md#refuse-writes)
+→ [Share a vault with your team](guides/teams-and-keys.md#everyday-key-tasks)
 
 ## AI agents
 
@@ -154,7 +111,7 @@ Read-only; names any recoverable problem state and the way out.
 notenv doctor
 ```
 
-→ [Commands](reference/commands.md)
+→ [Recover from problems](guides/recovery.md)
 
 ### Pull a change made on another machine
 
@@ -162,7 +119,7 @@ notenv doctor
 notenv run --refresh -- ...    # bypass the local cache for this run
 ```
 
-→ [Caching and performance](guides/caching.md#pulling-another-machines-changes)
+→ [Caching](concepts/caching.md#pulling-another-machines-changes)
 
 ### Recover after a lost or dead machine
 
@@ -178,4 +135,22 @@ notenv key rotate-master       # fresh master; anything captured stops decryptin
 # then: rotate the storage credential at your provider
 ```
 
-→ [Teams and keys](guides/teams-and-keys.md)
+→ [Share a vault with your team](guides/teams-and-keys.md#everyday-key-tasks)
+
+### Export your secrets, or delete a vault
+
+```sh
+notenv export > backup.env     # one namespace; --all for the whole vault
+notenv vault delete <name>     # destroy a vault you no longer want (asks the passphrase)
+```
+
+→ [Export or delete a vault](guides/export-and-delete.md)
+
+### A secret will not decrypt
+
+```sh
+notenv run --skip-corrupt -- ...   # read the one-generation backup
+notenv key evict <namespace>       # rebuild from what survives (last resort)
+```
+
+→ [Recover from problems](guides/recovery.md)

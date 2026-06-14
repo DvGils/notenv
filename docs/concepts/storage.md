@@ -1,71 +1,87 @@
 # Storage and concurrency
 
-A namespace's secrets are stored as an **append-only set of encrypted segments** over periodic
-**snapshots**. This layout is what lets multiple machines write the same vault with no server and no
-locking, and never lose each other's writes.
+A namespace's secrets live in a single encrypted blob on your storage backend.
+Every write replaces that blob and repoints the vault's header at the new one,
+under a compare-and-swap that serializes concurrent writers with no server and no
+lock you manage.
 
-## Append-only segments
+## One blob per namespace
 
-Each `notenv set` appends a new, uniquely named, encrypted segment. It never overwrites a shared
-object. A read **folds** a namespace's snapshots and segments together by a Lamport clock: last write
-per key wins.
+Each namespace is one age-encrypted object, sealed to the vault's master key.
+There is no log, no per-write segments, no snapshots, and nothing to compact: the
+blob holds the namespace's current secrets and their metadata, which is all a read
+needs.
 
-Because writes are append-only and every write is read back and verified, a botched or malicious
-write is at worst denial-of-service, never silent data loss.
+A write is read-modify-write. notenv decrypts the current blob, applies your
+change, writes a new uniquely named blob, and updates the header to point at it.
+Because the blob lands at a fresh name and the header swap is what makes it live,
+a write that crashes before the swap leaves an unreferenced blob, never a
+corrupted one. The next write to the namespace reclaims such leftovers, so there
+is no garbage-collect step to run.
 
-## Concurrent writes
+## Last write wins, serialized on the header
 
-If two people (or two machines) `set` *different* keys at the same time, both survive. No lost writes,
-no locking, on any remote.
+The vault's header is the single source of truth: it records, per namespace,
+which blob is current. A write commits by a compare-and-swap on the header. It
+re-reads the header, checks it has not moved since the write began, and swaps in
+the new pointer, retrying if another writer got there first.
 
-Setting the *same* key concurrently is a genuine conflict. One value wins deterministically; the other
-is reported and kept recoverable in its segment until the next compaction. notenv warns you, and
-re-running the `set` settles it.
+So two machines writing the same namespace serialize. The loser re-reads the
+now-current blob, re-applies its change on top, and swaps again. Writes to
+different keys both survive; only writes to the same key resolve last-writer-wins,
+and the last write is simply the one that commits last. There is no conflict to
+settle and nothing to merge by hand.
 
-## Compaction
+## A one-generation backup
 
-Segments accumulate as you write. Once enough pile up, a `set` folds them back into a single snapshot
-automatically. It is best-effort housekeeping that never fails your write, and reads are never
-affected. `notenv compact` forces it on demand.
+Each write keeps the blob it superseded, recorded in the header as that
+namespace's backup and vouched for by the same authentication as the current
+blob. If the current blob is ever unreadable (bit-rot on a disk that does not
+checksum, a truncated upload, tampering), a read fails closed by default: notenv
+refuses rather than serve something it cannot verify. Two tools recover from
+there:
 
-Compaction is safe to run while others are writing: their writes are never lost. Just do not run two
-compactions of the same namespace at once.
+- `notenv run --skip-corrupt` (and `list --skip-corrupt`) falls back to the
+  verified backup, serving the previous generation and reporting exactly what it
+  dropped. The most recent write may be lost; nothing is served unverified.
+- `notenv key evict <namespace>` rebuilds the namespace from what survives (the
+  backup, or empty if that is gone too) and drops the corrupt blobs, so ordinary
+  writes work again.
 
-## The object manifest
+A remote that keeps its own object versions is an extra backstop, not something
+notenv relies on: the one-generation backup is kept on every backend.
 
-The authenticated header carries a **manifest**: a keyed fingerprint (MAC of the plaintext) of every
-object in the vault, and every object names the key it was written under. Reads check both. This binds
-each stored object to the header, so storage-level tampering with any single secret (reverting it,
-deleting it, replaying an old one, or copying a real object into another namespace) alarms with the
-object named, instead of silently changing what `notenv run` injects.
+## Integrity: the manifest
 
-They still cannot forge a value: a substituted blob they cannot encrypt under the master fails to
-decrypt, and reads **fail closed** (a corrupt or substituted object is surfaced as an error, never
-silently skipped).
+The header carries a **manifest**: for each namespace, the current blob and its
+backup, each fingerprinted by a MAC keyed from the master key. The whole header
+is authenticated by a tag and stamped with a monotonic revision that each machine
+pins locally. A read checks all of it: the blob must exist, decrypt under the
+master, match its recorded MAC, and declare its own namespace.
 
-## Safe against a concurrent rotation
+This binds every blob to the authenticated header, so storage-level tampering with
+a secret (reverting it, deleting it, replaying an old generation, or copying a
+real blob into another namespace) is caught with the blob named, instead of
+silently changing what `notenv run` injects. A party who can write your storage
+but holds no key cannot forge a blob either: a substituted object will not decrypt
+under the master, and reads fail closed.
 
-A write is also safe against a concurrent master rotation. Every write records itself in the manifest
-through the header compare-and-swap, which re-reads and verifies the header first:
+## Local vaults and remotes
 
-- If a rotation landed since the writer unlocked, the write rolls its own object back and tells you to
-  re-run (which unlocks the new master and writes cleanly).
-- The rotation's own header flip goes through the same swap, so it aborts if a write recorded itself
-  after the rotation began, and it re-keys anything written under the old master during its run.
+A local vault stores exactly the bytes and layout a remote does, so a vault copied
+to a remote is byte-identical and the same trust machinery runs unchanged. The two
+differ only in how the header compare-and-swap is enforced:
 
-For every non-crash interleaving, no committed write ends up encrypted to a key nobody holds.
+- A **local** vault gets a true compare-and-swap through an OS file lock. It is
+  cooperative and same-machine only: a vault directory inside Dropbox, Syncthing,
+  or NFS gets no cross-machine exclusion, so concurrent multi-machine use is what
+  remotes are for.
+- A **remote** reached through rclone has no conditional write, so the swap is
+  read-compare-write-readback. That is sound on a read-after-write-consistent
+  store, which every major object store is today, so concurrent header writers
+  require such a remote: it is a contract, not a hope. A backend with native
+  conditional writes could make the swap atomic.
 
-## Local vaults
-
-A local vault stores exactly the bytes and layout a remote does, so a vault copied to a remote is
-byte-identical and the same trust machinery runs unchanged. Its header writes get a **true
-compare-and-swap** (an OS file lock), which is cooperative and same-machine only: a vault directory
-inside Dropbox, syncthing, or NFS gets no cross-machine exclusion. Concurrent multi-machine use is
-what remotes are for.
-
-On a remote reached through rclone, the manifest swap is a **windowed** compare-and-swap rather than an
-atomic one, because object stores expose no conditional write through rclone. The residual is narrow:
-a detected race retries cleanly, and the one undetectable ordering leaves an
-unrecorded-but-still-included object that the next compaction adopts, never a lost value and never an
-alarm against an honest writer. A backend with native conditional writes can close the window for
-real. See the [threat model](../security/threat-model.md#known-limitations).
+For the keys, slots, and signed rotations the header carries, see
+[Keys and slots](keys-and-slots.md). For what all this defends and what it does
+not, see the [threat model](../security/threat-model.md).

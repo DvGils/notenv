@@ -57,11 +57,14 @@ NOTENV_ACCEPT_NAMESPACE=my-service notenv run --storage prod --namespace my-serv
 
 The value is deliberately a list of names, not a yes-flag: a committed `notenv.toml` cannot write
 the runner's environment, so a match is the operator's own statement of intent, while a blanket
-yes would be satisfied by whatever namespace a malicious contract names. See the
-[threat model](../security/threat-model.md).
+yes would be satisfied by whatever namespace a malicious contract names. Acceptance through the
+variable is per-invocation: notenv does not record it, so a run without the variable confirms again.
+See the [threat model](../security/threat-model.md).
 
 ## `XDG_RUNTIME_DIR` (Linux)
 
 On Linux, notenv caches the encrypted blob under `XDG_RUNTIME_DIR` (tmpfs), and the master key in the
 kernel keyring. Both are RAM-backed and reclaimed on logout or reboot. notenv reads `XDG_RUNTIME_DIR`
-to locate the blob cache; it does not set it. See [Caching and performance](../guides/caching.md).
+to locate the blob cache; it does not set it. It also writes the `notenv edit` buffer there; without
+`XDG_RUNTIME_DIR`, `edit` falls back to the OS temp dir (persistent disk on Linux) and warns. See
+[Caching](../concepts/caching.md).

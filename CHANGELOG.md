@@ -13,7 +13,7 @@ encrypted blob per namespace under last-write-wins. Every write decrypts the cur
 its change, writes a fresh blob, and points the header at it under the same compare-and-swap that
 already guards the manifest. The hardened machinery being removed is exactly where the gnarliest
 concurrency bugs lived, so this deletes whole bug classes, not just code. See
-[design/v1-scope.md](design/v1-scope.md).
+[design/v1-scope.md](https://github.com/DvGils/notenv/blob/main/design/v1-scope.md).
 
 **Breaking, on purpose: this does not read a vault written by an earlier notenv.** The header format
 is now version 6 and an older vault fails closed with a clear message. There is no in-place upgrade
