@@ -68,8 +68,7 @@ func loadHeaderStore() (*headerTarget, error) {
 }
 
 // headerTargetFor opens a named storage (or the machine default) for header
-// operations, with no checkout in the loop: the MCP tools resolve storage
-// per call this way.
+// operations, with no checkout in the loop.
 func headerTargetFor(storageName string) (*headerTarget, error) {
 	user, err := config.LoadUser()
 	if err != nil {

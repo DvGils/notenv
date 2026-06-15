@@ -161,8 +161,8 @@ func getPATH() string {
 }
 
 // TestMaskerFloor: the default floor passes a short value through (avoiding
-// shredding ordinary output), while a floor of 1 masks it (the MCP surface,
-// where a short secret in a model's context is the worse outcome).
+// shredding ordinary output), while a floor of 1 masks it (for a consumer where
+// a short secret leaking is the worse outcome).
 func TestMaskerFloor(t *testing.T) {
 	secrets := []Secret{{Name: "PIN", Value: "123"}}
 
@@ -176,13 +176,13 @@ func TestMaskerFloor(t *testing.T) {
 		t.Fatalf("default masker must pass a sub-floor value through: %q", cli.String())
 	}
 
-	var mcp bytes.Buffer
-	m2 := NewMaskerFloor(&mcp, secrets, 1)
+	var floored bytes.Buffer
+	m2 := NewMaskerFloor(&floored, secrets, 1)
 	_, _ = m2.Write([]byte("the pin is 123"))
 	if err := m2.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(mcp.String(), "123") {
-		t.Fatalf("floor-1 masker must mask a short value: %q", mcp.String())
+	if strings.Contains(floored.String(), "123") {
+		t.Fatalf("floor-1 masker must mask a short value: %q", floored.String())
 	}
 }

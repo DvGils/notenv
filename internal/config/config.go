@@ -482,14 +482,62 @@ func storageEffective(name string, st StorageEntry) (Effective, error) {
 	return eff, nil
 }
 
+// parseStorageSpec parses a self-contained storage spec, "<scheme>:<locator>",
+// split on the FIRST colon: local:<absolute-path> or rclone:<remote>:<base>.
+// It is the env-only sibling of a configured storage name (NOTENV_STORAGE), so
+// an agent or CI can be pointed at a vault with no entry in the machine config.
+// A configured name never contains a colon (ValidStorageName), which is exactly
+// what lets the colon discriminate a spec from a name; splitting on the first
+// colon keeps rclone's own remote:base colon and a Windows drive letter intact.
+func parseStorageSpec(spec string) (Effective, error) {
+	scheme, locator, _ := strings.Cut(spec, ":")
+	switch scheme {
+	case "local":
+		if locator == "" {
+			return Effective{}, fmt.Errorf("storage spec %q: local: needs a path", spec)
+		}
+		if !filepath.IsAbs(locator) {
+			return Effective{}, fmt.Errorf("storage spec %q: local: needs an absolute path (a relative path in an env var depends on the working directory)", spec)
+		}
+		return Effective{StorageName: spec, Path: filepath.Clean(locator)}, nil
+	case "rclone":
+		remote, base, found := strings.Cut(locator, ":")
+		if !found || remote == "" {
+			return Effective{}, fmt.Errorf("storage spec %q: rclone: needs <remote>:<base>", spec)
+		}
+		base = firstOf(base, DefaultBase)
+		if err := checkRemoteTarget(remote, base); err != nil {
+			return Effective{}, fmt.Errorf("storage spec %q: %w", spec, err)
+		}
+		return Effective{StorageName: spec, Remote: remote, Base: base}, nil
+	default:
+		return Effective{}, fmt.Errorf("storage spec %q: unknown scheme %q (use local: or rclone:)", spec, scheme)
+	}
+}
+
+// storageHalf resolves the storage half of an Effective from a selector that is
+// either a configured name or a self-contained spec; the colon discriminates,
+// since a configured name can never contain one. The returned StorageEntry is
+// the config entry for a name, or a zero entry for a spec (the spec carries no
+// read_only or cache_ttl policy, so it gets the defaults).
+func storageHalf(u *User, selector string) (Effective, StorageEntry, error) {
+	if strings.ContainsRune(selector, ':') {
+		eff, err := parseStorageSpec(selector)
+		return eff, StorageEntry{}, err
+	}
+	name, st, err := u.SelectStorage(selector)
+	if err != nil {
+		return Effective{}, StorageEntry{}, err
+	}
+	eff, err := storageEffective(name, st)
+	return eff, st, err
+}
+
 // ResolveStorage selects and normalizes a storage without a project contract
 // (storage-wide commands: the key family, vault copy).
 func ResolveStorage(u *User, explicit string) (Effective, error) {
-	name, st, err := u.SelectStorage(explicit)
-	if err != nil {
-		return Effective{}, err
-	}
-	return storageEffective(name, st)
+	eff, _, err := storageHalf(u, explicit)
+	return eff, err
 }
 
 // Resolve selects a storage (storageName empty means auto: default or sole) and
@@ -497,38 +545,30 @@ func ResolveStorage(u *User, explicit string) (Effective, error) {
 // only; the contract contributes the namespace (it cannot redirect where this
 // machine reads/writes; see contract.Parse).
 func Resolve(u *User, f *contract.File, contractDir, storageName string) (Effective, error) {
-	name, st, err := u.SelectStorage(storageName)
+	eff, st, err := storageHalf(u, storageName)
 	if err != nil {
 		return Effective{}, err
-	}
-	eff, err := storageEffective(name, st)
-	if err != nil {
-		return eff, err
 	}
 	eff.Namespace = firstOf(f.Namespace, filepath.Base(contractDir))
 	if !contract.NamespaceName.MatchString(eff.Namespace) {
 		return eff, fmt.Errorf("derived namespace %q is not a valid object name; set namespace explicitly in %s", eff.Namespace, contract.FileName)
 	}
-	return cryptoEffective(u, eff, st, name)
+	return cryptoEffective(u, eff, st, eff.StorageName)
 }
 
 // ResolveNamespace is Resolve without a project: an explicitly named namespace
 // (--namespace) combined with a selected storage. The vault is addressed
 // directly: no contract, no checkout, no cwd.
 func ResolveNamespace(u *User, storageName, namespace string) (Effective, error) {
-	name, st, err := u.SelectStorage(storageName)
+	eff, st, err := storageHalf(u, storageName)
 	if err != nil {
 		return Effective{}, err
-	}
-	eff, err := storageEffective(name, st)
-	if err != nil {
-		return eff, err
 	}
 	eff.Namespace = namespace
 	if !contract.NamespaceName.MatchString(namespace) {
 		return eff, fmt.Errorf("namespace %q is not a valid object name (must match %s)", namespace, contract.NamespaceName)
 	}
-	return cryptoEffective(u, eff, st, name)
+	return cryptoEffective(u, eff, st, eff.StorageName)
 }
 
 // cryptoEffective fills the crypto half of an Effective: mode and the two

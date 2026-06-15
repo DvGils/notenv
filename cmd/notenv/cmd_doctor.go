@@ -52,8 +52,7 @@ type finding struct {
 }
 
 // checkup collects findings; with print set, each check also reports in
-// place through ui (the CLI experience). The MCP doctor tool reads the
-// collected findings instead.
+// place through ui (the CLI experience), otherwise it only accumulates them.
 type checkup struct {
 	print    bool
 	problems int

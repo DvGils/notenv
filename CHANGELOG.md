@@ -4,6 +4,38 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.19.0
+
+The agent release: a scoped, ephemeral handoff so a coding agent can use a namespace's secrets
+without ever holding the key to the rest of your vault.
+
+### Added
+
+- **`notenv handoff -- <agent>`.** Runs an agent against an ephemeral vault holding only the resolved
+  namespace (from the project `notenv.toml`, or `--namespace`), under a fresh key minted in a
+  short-lived builder subprocess that exits before the agent starts. Your master key is never in the
+  agent's reach, so a compromised or prompt-injected agent can decrypt at most the namespace you
+  handed it, never the rest of your vault. The ephemeral vault is destroyed at exit. This protects the
+  master key; it is not a sandbox (the agent still runs as you). See
+  [Agent handoff](https://dvgils.github.io/notenv/concepts/agent-handoff/) and
+  [AI agents](https://dvgils.github.io/notenv/guides/ai-agents/).
+- **`NOTENV_STORAGE`.** Point a process at a vault by configured name or a self-contained spec
+  (`local:<absolute-path>` or `rclone:<remote>:<base>`): the env-shaped sibling of `--storage`.
+
+### Changed
+
+- **A handoff holds a no-cache lease on its source vault.** While an agent session is live, the
+  source vault's master key stays out of the shared session cache, so unlocking the same vault in
+  another terminal re-prompts for the duration instead of caching. Other vaults are unaffected.
+- **The agent skill is slimmer**, pointing the agent at `notenv --help` for the full surface rather
+  than enumerating it, with guidance for working inside a handoff session.
+
+### Removed
+
+- **The MCP server (`notenv mcp`).** It added a second agent-integration surface and mental model
+  without offering much over `handoff`, the stronger, shell-first path. If you relied on it, open an
+  issue and we will reconsider re-implementing it.
+
 ## 0.18.0
 
 The storage-simplification release, and the last big break before the v1 format freeze. The

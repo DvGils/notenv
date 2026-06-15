@@ -127,8 +127,7 @@ and the credentials that unwrap it. What holds, and against whom:
   boundary**: it matches the value and its common encodings, but a transform it
   does not anticipate walks around it, and values under 6 bytes pass through.
   Turning it off for a captured stream (`--no-mask`) takes a freshly typed
-  passphrase, so it is a human's act. The MCP server holds the same line: no tool
-  returns a value. :white_check_mark: (qualified)
+  passphrase, so it is a human's act. :white_check_mark: (qualified)
 
 ### No residue
 

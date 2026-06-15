@@ -1,110 +1,60 @@
 # AI agents
 
-Coding agents read everything: files, tool output, logs. A `.env` file on disk *will* eventually
-enter the model's context (`cat`-ed while debugging, swept up by a glob, or extracted by a
-prompt-injected instruction), and anything that enters context persists in transcripts and whatever
-the conversation touches next. notenv removes the file and gives the agent a verb that separates
-*using* credentials from *knowing* them.
+Coding agents read everything they touch: files, command output, logs. A `.env` on
+disk ends up in the model's context sooner or later, and from there in transcripts.
+notenv keeps secrets off disk and lets an agent *use* them without *seeing* them,
+scoped to just what you hand it.
 
-## What the agent can and cannot do
+## Hand a scoped session to an agent
 
-- **`notenv run -- cmd`** injects secrets into the child only. The value never appears in anything
-  the model reads.
-- **`notenv list`** tells the agent *which* credentials exist, and with per-secret descriptions
-  (`set KEY --description "..."`), *what they are for*, so it can decide what is runnable without
-  ever seeing a value. `notenv list --json` gives it a stable shape to parse.
-- **Captured output is masked.** When stdout/stderr is not a terminal (which is exactly how agents
-  read output), any injected value a child prints (a server echoing its connection string on boot, a
-  debug dump) is replaced with `<notenv-masked:NAME>` before the model sees it.
-- **The agent's own credential does not ride along.** When an agent unlocks with `NOTENV_IDENTITY`,
-  that identity (which is key-equivalent for the whole vault) is stripped from any child `notenv run`
-  spawns, so it cannot leak into a child's logs, an `env` dump, or a crash reporter.
-- **Exit codes say whose failure it was.** `run` follows docker's convention: the child's code
-  passes through; `125` is notenv's own failure, `126` found-but-cannot-run, `127` not found. An
-  agent retrying a flaky test never mistakes a vault problem for a code problem.
-- **No checkout needed.** `--namespace` (with `--storage`) addresses a vault directly from anywhere.
-  An agent wired to a database needs credentials, not a git repository.
-- **Read-only by policy.** Start an agent with `NOTENV_READONLY=1` (or mark a storage
-  `read_only = true`) and every mutating command is refused.
-- **Unlock prompts reach the human, not the model.** Passphrase prompts read the terminal device
-  directly, so when an agent's command needs an unlock, the question goes to whoever is at the
-  keyboard.
-- **Unmasked output needs a human.** `run --no-mask` asks for a freshly typed passphrase even when
-  the session key is cached, so an agent cannot turn masking off by itself.
-- **First use of an existing namespace needs a human too.** Headless, notenv refuses to expose a
-  namespace that already holds secrets unless the harness's environment names it
-  (`NOTENV_ACCEPT_NAMESPACE=name`), so neither a cloned repository's contract nor a misdirected
-  `--namespace` can silently reach another project's secrets.
+```sh
+notenv handoff -- claude        # or codex, or any agent command
+```
 
-## Two ways to wire an agent up
+Run that from your project and the agent gets an ephemeral vault holding only this
+project's secrets. It works normally (`notenv run -- pytest` gets the real values); when
+it exits, the ephemeral vault is gone. Use `--namespace NAME` to hand off a different
+namespace.
 
-**A skill for agents with a shell, MCP for agents without one. Same surface either way.**
+!!! warning "This scopes what the agent can decrypt; it does not sandbox the agent"
 
-### The skill
+    The agent **cannot reach any secret outside the namespace you hand it**, because your
+    master key is never in its reach, so the worst a rogue or prompt-injected agent can
+    leak is that one namespace. But it still runs as you: it can use, store, or leak the
+    secrets it was given, and reach your files and the network. Hand off only to an agent
+    you trust, and use the OS (a sandbox, egress rules) to contain what it *does*.
 
-The notenv repository ships an [Agent Skill](https://github.com/DvGils/notenv/tree/main/skills/notenv)
-at `skills/notenv/SKILL.md`: the rules above plus the full CLI surface (discovery, exit codes, the
-environment knobs), in the installable form shell-first agents understand. Install it into your
-agent's skill location (`~/.claude/skills/` for Claude Code, `.agents/skills/` for the
-cross-agent convention, or via a skill installer pointed at the repo). For a lighter touch, this
-block in your `AGENTS.md` / `CLAUDE.md` covers the essentials:
+While a session is live, notenv keeps your real vault's key uncached, so another terminal
+working that *same* vault will re-prompt for your passphrase until the session ends.
+
+## Tell the agent how to use notenv
+
+Drop this into your project's `AGENTS.md` (or `CLAUDE.md`):
 
 ```markdown
 This project manages secrets with notenv (https://github.com/DvGils/notenv).
-- Run anything needing credentials via `notenv run -- <cmd>`; the env vars in
-  notenv.toml are injected automatically.
+- Run anything needing credentials via `notenv run -- <cmd>`; the variables in
+  notenv.toml are injected automatically. Use `notenv --help` for anything else.
 - `notenv list` shows which secret names exist and what they're for. Never
-  print, ask for, or store secret values; never create .env files.
-- If a command prompts for a passphrase, stop and let the user answer it.
+  print, ask for, or store a secret value; never create .env files.
 ```
 
-### The MCP server
+For the full rules in installable form, use the
+[notenv agent skill](https://github.com/DvGils/notenv/tree/main/skills/notenv).
 
-`notenv mcp` serves the same surface over the Model Context Protocol, for agents that are not
-shell-first (or machines with no checkout at all):
+## Without a project
 
-```sh
-claude mcp add notenv -- notenv mcp        # or any MCP client, stdio transport
-```
+An agent or job with no checkout points at a vault directly with `NOTENV_STORAGE` (or
+`--namespace` with `--storage`), and runs headless with a few environment knobs:
 
-For a client configured by a JSON file rather than a CLI, the stdio entry is:
+- **`NOTENV_ACCEPT_NAMESPACE=name`** approves a namespace's first headless use (otherwise
+  notenv refuses, since nobody is at a prompt).
+- **`NOTENV_READONLY=1`** refuses every mutating command.
+- **`NOTENV_IDENTITY`** unlocks promptlessly for an enrolled machine (`notenv key add --machine`).
 
-```json title="mcp.json"
---8<-- "examples/agents/mcp.json"
-```
+See [Environment variables](../reference/environment.md) for the rest.
 
-Four tools, none of which accepts or returns a secret value, none of which writes to a vault:
-`list_namespaces` (discovery, no unlock needed), `list_secrets` (names, descriptions, modified
-times), `run_with_secrets` (inject and execute; the agent gets the exit code and masked output),
-and `doctor` (read-only health findings). Results are typed (`structuredContent` with declared
-output schemas), and the three read tools carry `readOnlyHint` so clients can skip confirmations.
+---
 
-The server is headless, so its environment is the configuration:
-
-- **Unlock:** rely on the session-cached key (unlock once with your passphrase; the platform key
-  store carries the session on Linux, macOS, and Windows), or enroll a standalone agent as a
-  machine (`notenv key add --machine`) with `NOTENV_IDENTITY` from the harness's secret store.
-- **`NOTENV_ACCEPT_NAMESPACE=name,...`**: namespaces the server may join on first use; without it,
-  a namespace that already holds secrets is refused, since nobody is at a prompt.
-- **`NOTENV_READONLY=1`** as a belt, paired with a read-only storage credential where the agent
-  only reads.
-
-## Honest limits
-
-!!! danger "This is accident-proofing, not a security boundary"
-
-    An agent running as your user can still extract a value deliberately (masking covers the value and
-    its common encodings, but a transform it does not anticipate walks around it:
-    `notenv run -- sh -c 'printenv KEY | rev'`) or read the session key cache,
-    and a child process that legitimately holds a secret can always send it somewhere. Masking
-    catches accidents, not intent.
-
-    The same goes for read-only mode: with a single master key, anyone who can decrypt could author
-    writes with their own tooling, so the flag stops accidents while the storage credential is what
-    stops adversaries.
-
-Its first slice has shipped: `NOTENV_IDENTITY` is stripped from child environments (above), so the
-credential cannot leak into a child by accident. Full containment, keeping the unlocked key in a
-separate trust domain so agents can *use* but provably not *extract*, is on the
-[roadmap](../project/roadmap.md). See the [threat model](../security/threat-model.md) for the full
-analysis.
+**Under the hood:** [Agent handoff](../concepts/agent-handoff.md) ·
+[Threat model](../security/threat-model.md)

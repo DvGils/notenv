@@ -20,7 +20,7 @@
 | `notenv cache clear` | Remove all locally cached ciphertext on this machine. |
 | `notenv vault copy` | Replicate this vault to new storage (for example local to cloud) and register it. The source is untouched. |
 | `notenv vault delete <name>` | Permanently delete a configured vault's objects, this machine's trust state for it, and its config entry. Behind the primary passphrase and a type-the-name confirmation. |
-| `notenv mcp` | Serve this machine's vaults to MCP clients over stdio: discovery, masked execution, doctor; never a value. |
+| `notenv handoff -- cmd` | Run an agent against a scoped, ephemeral vault (only the resolved namespace), with your master key out of its reach. |
 | `notenv --version` | Print the version, commit, and build date. |
 
 ## Targeting a vault
