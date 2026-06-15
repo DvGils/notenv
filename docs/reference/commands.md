@@ -13,6 +13,9 @@
 | `notenv set KEY --description "..."` | Also record what the secret is for. Omitted, the existing note is kept; `""` clears it. |
 | `notenv unset KEY` | Remove a stored secret value. |
 | `notenv list` | List stored secret names with descriptions and modified times (never values). `--json` for machines; piped output is bare names; `--refresh` bypasses the local cache. |
+| `notenv inspect KEY` | Show a secret's metadata: whether it exists, its length, description, and modified time; exit 1 if absent. Never a value. `--json` for machines. |
+| `notenv inspect` | Summarize the current namespace: each secret's name, length, description, and modified time. `--json` for machines. |
+| `notenv inspect --all` | Summarize the whole vault: its namespaces, id, revision, and storage. Reads only the header, so no passphrase is needed. |
 | `notenv run -- cmd` | Run a command with secrets injected as environment variables. |
 | `notenv run --refresh -- cmd` | Same, but bypass the local cache and pull the latest secrets first. |
 | `notenv export` | Print a namespace (or `--all` the whole vault) as `.env` to stdout, never a file. The inverse of `import`. Gated by the primary passphrase; `--json` emits a structured form. |

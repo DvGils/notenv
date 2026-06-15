@@ -21,6 +21,10 @@ without ever holding the key to the rest of your vault.
   [AI agents](https://dvgils.github.io/notenv/guides/ai-agents/).
 - **`NOTENV_STORAGE`.** Point a process at a vault by configured name or a self-contained spec
   (`local:<absolute-path>` or `rclone:<remote>:<base>`): the env-shaped sibling of `--storage`.
+- **`notenv inspect`.** Metadata about what a vault holds, never a value: `inspect KEY` (a secret's
+  existence, length, description, and modified time, exit 1 if absent), `inspect` (the namespace's
+  secrets with lengths and a count), and `inspect --all` (the vault's namespaces, id, revision, and
+  storage, read from the header alone so it needs no passphrase). `--json` throughout.
 
 ### Changed
 

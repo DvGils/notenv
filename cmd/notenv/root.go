@@ -62,5 +62,5 @@ func init() {
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 	rootCmd.PersistentFlags().StringVar(&storageFlag, "storage", "", "named storage to use (overrides the project binding and default)")
 	rootCmd.PersistentFlags().StringVar(&namespaceFlag, "namespace", "", "address this vault namespace directly, ignoring any project contract (works from anywhere)")
-	rootCmd.AddCommand(setupCmd, initCmd, importCmd, setCmd, unsetCmd, listCmd, runCmd, handoffCmd, handoffBuildCmd, cacheCmd, keyCmd, vaultCmd)
+	rootCmd.AddCommand(setupCmd, initCmd, importCmd, setCmd, unsetCmd, listCmd, inspectCmd, runCmd, handoffCmd, handoffBuildCmd, cacheCmd, keyCmd, vaultCmd)
 }

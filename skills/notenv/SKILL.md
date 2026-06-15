@@ -25,6 +25,10 @@ values are not yours to see; your job is to run things that need them, by name.
 
 - `notenv list` shows the secret names available here and what each is for.
   `notenv list --json` is the stable shape.
+- `notenv inspect KEY` reports whether a secret exists, its length, and what it is
+  for, without revealing the value (exit 1 if it does not exist, so you can branch
+  on it). `notenv inspect` summarizes the namespace and `notenv inspect --all` the
+  vault; all take `--json`. Use this to check a secret is set before running.
 - For anything else, ask the tool: `notenv --help`, and `notenv <command> --help`
   for a specific command (`run`, `list`, `set`, `doctor`, ...). Prefer reading
   `--help` over guessing flags.
