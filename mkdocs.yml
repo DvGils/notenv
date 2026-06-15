@@ -114,6 +114,7 @@ nav:
       - Keys and slots: concepts/keys-and-slots.md
       - Storage and concurrency: concepts/storage.md
       - Caching: concepts/caching.md
+      - Agent handoff: concepts/agent-handoff.md
   - Security:
       - Threat model: security/threat-model.md
       - Reporting a vulnerability: security/reporting.md

@@ -13,6 +13,9 @@
 | `notenv set KEY --description "..."` | Also record what the secret is for. Omitted, the existing note is kept; `""` clears it. |
 | `notenv unset KEY` | Remove a stored secret value. |
 | `notenv list` | List stored secret names with descriptions and modified times (never values). `--json` for machines; piped output is bare names; `--refresh` bypasses the local cache. |
+| `notenv inspect KEY` | Show a secret's metadata: whether it exists, its length, description, and modified time; exit 1 if absent. Never a value. `--json` for machines. |
+| `notenv inspect` | Summarize the current namespace: each secret's name, length, description, and modified time. `--json` for machines. |
+| `notenv inspect --all` | Summarize the whole vault: its namespaces, id, revision, and storage. Reads only the header, so no passphrase is needed. |
 | `notenv run -- cmd` | Run a command with secrets injected as environment variables. |
 | `notenv run --refresh -- cmd` | Same, but bypass the local cache and pull the latest secrets first. |
 | `notenv export` | Print a namespace (or `--all` the whole vault) as `.env` to stdout, never a file. The inverse of `import`. Gated by the primary passphrase; `--json` emits a structured form. |
@@ -20,7 +23,7 @@
 | `notenv cache clear` | Remove all locally cached ciphertext on this machine. |
 | `notenv vault copy` | Replicate this vault to new storage (for example local to cloud) and register it. The source is untouched. |
 | `notenv vault delete <name>` | Permanently delete a configured vault's objects, this machine's trust state for it, and its config entry. Behind the primary passphrase and a type-the-name confirmation. |
-| `notenv mcp` | Serve this machine's vaults to MCP clients over stdio: discovery, masked execution, doctor; never a value. |
+| `notenv handoff -- cmd` | Run an agent against a scoped, ephemeral vault (only the resolved namespace), with your master key out of its reach. |
 | `notenv --version` | Print the version, commit, and build date. |
 
 ## Targeting a vault

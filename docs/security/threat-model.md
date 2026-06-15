@@ -50,8 +50,11 @@ Add three things:
   key and *write* access to the storage could still fork its history. Rotate the
   storage credential at your provider to close that; notenv reminds you but cannot
   do it for you.
-- **First contact with a vault is trust-on-first-use,** unless you onboarded
-  through `key add` (whose code carries a vault fingerprint that closes it).
+- **A machine's first contact with a vault is trust-on-first-use; a collaborator's
+  is not.** `key add <name>` prints an onboarding string (a one-time passphrase plus
+  a vault fingerprint) that verifies the served vault on first contact, so onboarding
+  a teammate is not trust-on-first-use. A machine unlocking by `NOTENV_IDENTITY`
+  carries no such fingerprint, so its first contact has nothing to verify against.
 
 ### Running agents (or any code you hand secrets to)
 
@@ -127,8 +130,7 @@ and the credentials that unwrap it. What holds, and against whom:
   boundary**: it matches the value and its common encodings, but a transform it
   does not anticipate walks around it, and values under 6 bytes pass through.
   Turning it off for a captured stream (`--no-mask`) takes a freshly typed
-  passphrase, so it is a human's act. The MCP server holds the same line: no tool
-  returns a value. :white_check_mark: (qualified)
+  passphrase, so it is a human's act. :white_check_mark: (qualified)
 
 ### No residue
 
@@ -203,10 +205,13 @@ remote; a solo developer on one machine meets none.** `notenv doctor` detects th
 recoverable ones and names the fix; the [recovery guide](../guides/recovery.md)
 walks through them.
 
-- **First use is trust-on-first-use**, unless onboarded via `key add` (which
-  carries a vault fingerprint that closes it). A first contact has no prior
-  revision to compare, so a substitution predating it cannot be caught; after first
-  contact, rollback and substitution are detected.
+- **A machine's first use is trust-on-first-use; a collaborator onboarded with the
+  onboarding string is not.** The string `key add <name>` prints (a one-time
+  passphrase plus a vault fingerprint) verifies the served header against that
+  fingerprint, refusing a substituted vault before the first pin. A machine unlocking
+  by identity has no fingerprint: with no prior revision to compare, a substitution
+  predating its first contact cannot be caught. After first contact, rollback and
+  substitution are detected for both.
 - **Warm-cache runs defer the rollback check** by at most one cache TTL: with the
   key cached, a run does not re-read the header (writes always do). The cached blob
   carries a MAC checked before use, so a tampered cache entry is rejected.

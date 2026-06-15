@@ -54,7 +54,7 @@ var storageFlag string
 
 // namespaceFlag addresses a vault namespace directly, with no project
 // checkout: the contract walk is skipped entirely, so it works from any
-// directory (or none, an MCP server has no meaningful cwd).
+// directory (or none, e.g. a headless agent with no checkout).
 var namespaceFlag string
 
 func init() {
@@ -62,5 +62,5 @@ func init() {
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 	rootCmd.PersistentFlags().StringVar(&storageFlag, "storage", "", "named storage to use (overrides the project binding and default)")
 	rootCmd.PersistentFlags().StringVar(&namespaceFlag, "namespace", "", "address this vault namespace directly, ignoring any project contract (works from anywhere)")
-	rootCmd.AddCommand(setupCmd, initCmd, importCmd, setCmd, unsetCmd, listCmd, runCmd, cacheCmd, keyCmd, vaultCmd)
+	rootCmd.AddCommand(setupCmd, initCmd, importCmd, setCmd, unsetCmd, listCmd, inspectCmd, runCmd, handoffCmd, handoffBuildCmd, cacheCmd, keyCmd, vaultCmd)
 }

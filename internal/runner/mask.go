@@ -58,11 +58,12 @@ func NewMasker(dst io.Writer, secrets []Secret) *Masker {
 	return NewMaskerFloor(dst, secrets, MinMaskLen)
 }
 
-// NewMaskerFloor is NewMasker with an explicit minimum value length. The MCP
-// surface passes a floor of 1 (mask every non-empty value): its output goes
-// into a model's context, where keeping secrets out of the plaintext outweighs
-// the cost of occasionally shredding a short common string. An empty value is
-// always skipped, whatever the floor, since it would match at every position.
+// NewMaskerFloor is NewMasker with an explicit minimum value length. A floor of
+// 1 masks every non-empty value, for a consumer where keeping secrets out of the
+// output outweighs occasionally shredding a short common string; the default
+// floor trades that off the other way (it does not mangle ordinary short
+// output). An empty value is always skipped, whatever the floor, since it would
+// match at every position.
 func NewMaskerFloor(dst io.Writer, secrets []Secret, minLen int) *Masker {
 	sorted := append([]Secret(nil), secrets...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })

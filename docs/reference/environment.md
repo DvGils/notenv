@@ -26,6 +26,22 @@ promptless, with that identity's recipient as the only slot.
     instead (see [Teams and keys](../guides/teams-and-keys.md)). A vault that unlocks only with an
     identity is unrecoverable if you lose it.
 
+## `NOTENV_STORAGE`
+
+Selects the vault to use: the env-shaped sibling of `--storage`. It is either a configured storage
+name, or a self-contained spec, so a process can be pointed at a vault with no machine-config entry:
+
+- `local:<absolute-path>` for a local vault directory,
+- `rclone:<remote>:<base>` for a remote vault.
+
+```sh
+NOTENV_STORAGE=local:/srv/vaults/app notenv --namespace app run -- ./serve
+NOTENV_STORAGE=rclone:b2:notenv     notenv --namespace app list
+```
+
+`--storage` on the command line wins over `NOTENV_STORAGE`, which wins over a project's local
+binding. `notenv handoff` sets this (to the ephemeral vault) on the agent it launches.
+
 ## `NOTENV_READONLY`
 
 When set to any value other than empty or `0`, notenv refuses every mutating command for the whole
@@ -60,6 +76,13 @@ the runner's environment, so a match is the operator's own statement of intent, 
 yes would be satisfied by whatever namespace a malicious contract names. Acceptance through the
 variable is per-invocation: notenv does not record it, so a run without the variable confirms again.
 See the [threat model](../security/threat-model.md).
+
+## `NOTENV_SESSION`
+
+Set by `notenv handoff` on the agent it launches; you do not set this yourself. It marks the process
+as running inside a handoff session and carries the scope of the one ephemeral vault it may unlock, so
+an attempt to unlock any other vault from inside the session fails closed instead of prompting for
+your real passphrase. See [Agent handoff](../concepts/agent-handoff.md).
 
 ## `XDG_RUNTIME_DIR` (Linux)
 

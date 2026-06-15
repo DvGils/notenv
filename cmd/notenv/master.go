@@ -34,6 +34,11 @@ import (
 // read-only storage must surface as exactly that, never as an invitation to
 // quietly write one from what was meant to be a read command.
 func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache, scope string, ttl time.Duration, readOnly string) (*crypto.MasterKey, bool, error) {
+	// Inside a handoff session, refuse to unlock anything but the ephemeral
+	// vault (covers commands that reach ensureMaster directly, not via master()).
+	if err := sessionGuard(scope); err != nil {
+		return nil, false, err
+	}
 	var raw []byte
 	var missing bool
 	if err := ui.Spin("Reading key header", func() error {
@@ -215,9 +220,12 @@ func warnShortPassphrase(pass string) {
 }
 
 // cacheMaster stores best-effort: a cache failure must never fail the
-// command, the user just gets prompted again next time.
+// command, the user just gets prompted again next time. A scope under an active
+// handoff no-cache lease is never cached: while a vault is handed off to an
+// agent, its master stays out of the shared per-uid cache, even when the user
+// unlocks the same vault in another terminal (see session.go).
 func cacheMaster(cache keyring.Cache, scope string, mk *crypto.MasterKey, ttl time.Duration) {
-	if ttl > 0 {
+	if ttl > 0 && !leaseActive(scope) {
 		_ = cache.Store(scope, mk.String(), ttl)
 	}
 }

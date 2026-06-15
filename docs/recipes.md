@@ -82,24 +82,19 @@ notenv key rotate-master       # fresh master, every secret re-encrypted, all sl
 
 ## AI agents
 
-### A shell agent (skill or AGENTS.md)
-
-Install the [agent skill](https://github.com/DvGils/notenv/tree/main/skills/notenv) into your agent's
-skill location, or drop the short block from the guide into `AGENTS.md` / `CLAUDE.md`. The agent runs
-work with `notenv run -- <cmd>` and discovers secrets with `notenv list`, never seeing a value.
-
-→ [AI agents](guides/ai-agents.md#the-skill)
-
-### An agent over MCP
+### Hand off a scoped session to an agent
 
 ```sh
-claude mcp add notenv -- notenv mcp        # or any MCP client, stdio transport
+notenv handoff -- claude        # ephemeral, scoped vault; your master key out of reach
 ```
 
-For a JSON-configured client, see the [`mcp.json`](guides/ai-agents.md#the-mcp-server) entry. Four
-read/exec tools, none of which returns a secret value.
+Runs the agent against an ephemeral vault holding only this project's namespace, so a compromised or
+prompt-injected agent can leak at most that namespace, never your whole vault. Install the
+[agent skill](https://github.com/DvGils/notenv/tree/main/skills/notenv) (once into
+`~/.claude/skills/notenv/`, or commit it to `.claude/skills/notenv/`) so the agent uses `notenv run`
+and never prints a value.
 
-→ [AI agents](guides/ai-agents.md#the-mcp-server)
+→ [AI agents](guides/ai-agents.md)
 
 ## Operations
 

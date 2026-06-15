@@ -38,6 +38,7 @@ type app struct {
 	cacheTTL     time.Duration
 	readOnly     string // non-empty: why mutating commands are refused (requireWritable)
 	salvage      bool   // read past untrustable recorded objects (--skip-corrupt); set only by read-only surfaces
+	sourceSpec   string // this storage as a NOTENV_STORAGE spec, so handoff can re-open it in the builder subprocess
 }
 
 // readOnlyReason returns why writes to a storage are refused, or "" when
@@ -62,9 +63,28 @@ func (a *app) requireWritable(action string) error {
 	return fmt.Errorf("%s; refusing to %s", a.readOnly, action)
 }
 
+// storageEnv points a process at a storage with no machine-config entry: a
+// configured name, or a self-contained spec (local:/rclone:, see
+// config.parseStorageSpec). It is how `handoff` points an agent at the
+// ephemeral vault, and is independently useful for an agent or CI.
+const storageEnv = "NOTENV_STORAGE"
+
+// storageSelector resolves which storage selector wins: the explicit --storage
+// flag, then NOTENV_STORAGE, then a caller-supplied fallback (a project's local
+// binding). Empty means "let config pick the default or sole storage".
+func storageSelector(fallback string) string {
+	if storageFlag != "" {
+		return storageFlag
+	}
+	if env := os.Getenv(storageEnv); env != "" {
+		return env
+	}
+	return fallback
+}
+
 func loadApp(ctx context.Context) (*app, error) {
 	if namespaceFlag != "" {
-		return projectlessApp(ctx, storageFlag, namespaceFlag)
+		return projectlessApp(ctx, storageSelector(""), namespaceFlag)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -82,14 +102,10 @@ func loadApp(ctx context.Context) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Storage selection: --storage flag wins, else the project's local binding,
-	// else the machine default / sole storage. The committed contract never
-	// influences this.
-	storageName := storageFlag
-	if storageName == "" {
-		storageName = binding.Storage
-	}
-	eff, err := config.Resolve(user, cf, dir, storageName)
+	// Storage selection: --storage flag wins, then NOTENV_STORAGE (the env an
+	// agent or CI is pointed at), then the project's local binding, then the
+	// machine default / sole storage. The committed contract never influences it.
+	eff, err := config.Resolve(user, cf, dir, storageSelector(binding.Storage))
 	if err != nil {
 		return nil, err
 	}
@@ -111,11 +127,12 @@ func loadApp(ctx context.Context) (*app, error) {
 		cacheScope:   eff.Scope(),
 		cacheTTL:     eff.CacheTTL,
 		readOnly:     readOnlyReason(eff.StorageName, eff.ReadOnly),
+		sourceSpec:   storageSpec(eff),
 	}, nil
 }
 
-// projectlessApp is loadApp for an explicitly named namespace (--namespace,
-// or a per-call MCP argument): the vault addressed directly. Storage selection
+// projectlessApp is loadApp for an explicitly named namespace (--namespace):
+// the vault addressed directly. Storage selection
 // is the explicit name or the machine default (there is no checkout to carry
 // a binding), and first use of a namespace that already holds secrets is
 // confirmed against the user-level acceptance record instead of a local pin.
@@ -140,6 +157,7 @@ func projectlessApp(ctx context.Context, storageName, namespace string) (*app, e
 		cacheScope: eff.Scope(),
 		cacheTTL:   eff.CacheTTL,
 		readOnly:   readOnlyReason(eff.StorageName, eff.ReadOnly),
+		sourceSpec: storageSpec(eff),
 	}, nil
 }
 
@@ -480,6 +498,9 @@ func (a *app) cacheState(mk *crypto.MasterKey, state *secrets.State) {
 // header ceremony (unlock with the escrowed passphrase, or, on virgin
 // storage, generate the key and write the header).
 func (a *app) master(ctx context.Context) (*crypto.MasterKey, error) {
+	if err := sessionGuard(a.cacheScope); err != nil {
+		return nil, err
+	}
 	if cached, ok := a.cache.Get(a.cacheScope); ok {
 		if mk, err := crypto.ParseMasterKey(cached); err == nil {
 			return mk, nil
