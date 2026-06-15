@@ -49,7 +49,7 @@ func ReadSecret(label string) (string, error) {
 	tty, err := openConsole()
 	if err != nil {
 		if !term.IsTerminal(int(os.Stdin.Fd())) {
-			return "", errors.New("no terminal available for hidden prompt")
+			return "", errors.New("no terminal available to read a passphrase (run notenv from an interactive shell, or pipe the value in)")
 		}
 		tty = os.Stdin
 	} else {
@@ -101,7 +101,7 @@ func PromptPassphrase(label string) (string, error) {
 		return "", err
 	}
 	if pass == "" {
-		return "", errors.New("empty passphrase")
+		return "", errors.New("passphrase cannot be empty")
 	}
 	return pass, nil
 }

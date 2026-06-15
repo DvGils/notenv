@@ -109,7 +109,9 @@ separates *using* a credential from *knowing* it:
   reads, and captured output is masked.
 - `notenv list` shows which secrets exist and what they are for, never their values.
 
-There is also an MCP server (`notenv mcp`) and an installable agent skill (`skills/notenv/`). See the
+For a scoped session, `notenv handoff -- <agent>` runs the agent against an ephemeral vault holding
+only one namespace, so it never holds the key to the rest of your vault. An installable agent skill
+(`skills/notenv/`) teaches it the commands. See the
 [AI agents guide](https://dvgils.github.io/notenv/guides/ai-agents/).
 
 ## How it compares

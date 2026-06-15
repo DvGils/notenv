@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -21,6 +24,88 @@ func stateOf(kv map[string]string) *secrets.State {
 		st.Meta[k] = secrets.Meta{}
 	}
 	return st
+}
+
+// TestPidFromHandoffDir pins the PID parser the sweep relies on for liveness.
+func TestPidFromHandoffDir(t *testing.T) {
+	cases := []struct {
+		name    string
+		wantPID int
+		wantOK  bool
+	}{
+		{"notenv-handoff-1234-abcDEF", 1234, true},
+		{"notenv-handoff-1-x", 1, true},
+		{"notenv-handoff-abc-x", 0, false}, // PID not a number
+		{"notenv-handoff--x", 0, false},    // empty PID
+		{"notenv-handoff-1234", 0, false},  // no random suffix (never created)
+		{"unrelated-dir", 0, false},
+	}
+	for _, c := range cases {
+		if pid, ok := pidFromHandoffDir(c.name); pid != c.wantPID || ok != c.wantOK {
+			t.Errorf("pidFromHandoffDir(%q) = %d,%v; want %d,%v", c.name, pid, ok, c.wantPID, c.wantOK)
+		}
+	}
+}
+
+// TestSweepStaleHandoffs: the sweep removes a dead session's leftover vault and
+// pin, forgets an orphan pin whose vault is already gone, and leaves a live
+// session and unrelated directories alone.
+func TestSweepStaleHandoffs(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir()) // ephemeralBase
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // pins.json location
+	base := ephemeralBase()
+	const deadPID = 999999999
+
+	mkdir := func(name string) string {
+		dir := filepath.Join(base, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	pin := func(dir string) string {
+		scope := config.Effective{Path: dir}.Scope()
+		if err := config.WritePin(scope, "vault-"+filepath.Base(dir), config.Pin{Revision: 1, MasterPub: "age1x"}); err != nil {
+			t.Fatal(err)
+		}
+		return scope
+	}
+	bound := func(scope string) bool {
+		_, b, err := config.ScopeVault(scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+
+	deadDir := mkdir(fmt.Sprintf("%s%d-aaa", handoffDirPrefix, deadPID)) // dir + pin
+	deadScope := pin(deadDir)
+	liveDir := mkdir(fmt.Sprintf("%s%d-bbb", handoffDirPrefix, os.Getpid())) // live session
+	liveScope := pin(liveDir)
+	orphanDir := filepath.Join(base, fmt.Sprintf("%s%d-ccc", handoffDirPrefix, deadPID)) // pin only, no dir
+	orphanScope := pin(orphanDir)
+	keepDir := mkdir("not-a-handoff") // unrelated
+
+	sweepStaleHandoffs()
+
+	if _, err := os.Stat(deadDir); !os.IsNotExist(err) {
+		t.Errorf("dead session directory not removed (err=%v)", err)
+	}
+	if bound(deadScope) {
+		t.Error("dead session pin not forgotten")
+	}
+	if _, err := os.Stat(liveDir); err != nil {
+		t.Errorf("live session directory was removed: %v", err)
+	}
+	if !bound(liveScope) {
+		t.Error("live session pin was forgotten")
+	}
+	if bound(orphanScope) {
+		t.Error("orphan pin (vault gone) not forgotten")
+	}
+	if _, err := os.Stat(keepDir); err != nil {
+		t.Errorf("unrelated directory was removed: %v", err)
+	}
 }
 
 // TestBuildEphemeralReadableViaIdentityOnly is the core security assertion: the

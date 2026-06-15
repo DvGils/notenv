@@ -23,7 +23,7 @@ var (
 
 var setCmd = &cobra.Command{
 	Use:   "set KEY",
-	Short: "Set a secret value (prompted hidden, encrypted, uploaded; never echoed, never on disk)",
+	Short: "Set a secret value (entered hidden, encrypted, never echoed or written to disk)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key := args[0]
@@ -31,7 +31,7 @@ var setCmd = &cobra.Command{
 		// (BuildEnv only iterates declared secrets, and Declare would reject
 		// it), so it must not reach storage as an orphan blob entry.
 		if !contract.ValidEnvName(key) {
-			return fmt.Errorf("%q is not a valid environment variable name", key)
+			return fmt.Errorf("%q is not a valid environment variable name (use letters, digits, and underscores; cannot start with a digit)", key)
 		}
 		a, err := loadApp(cmd.Context())
 		if err != nil {
@@ -101,7 +101,7 @@ func readValue(key string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		value := strings.TrimSuffix(string(raw), "\n")
+		value := trimStdinTerminator(string(raw))
 		if value == "" {
 			return "", errors.New("empty value on stdin")
 		}
@@ -115,6 +115,21 @@ func readValue(key string) (string, error) {
 		return "", errors.New("empty value")
 	}
 	return value, nil
+}
+
+// trimStdinTerminator removes exactly one trailing line terminator, an "\r\n"
+// pair or a lone "\n", from a value piped in via --stdin. Stripping the pair as
+// a unit keeps a value from a CRLF source ("secret\r\n") from storing a hidden
+// trailing "\r"; an interior "\r" in a multiline value, or a deliberate bare
+// trailing "\r", is left untouched.
+func trimStdinTerminator(s string) string {
+	switch {
+	case strings.HasSuffix(s, "\r\n"):
+		return s[:len(s)-2]
+	case strings.HasSuffix(s, "\n"):
+		return s[:len(s)-1]
+	}
+	return s
 }
 
 func init() {

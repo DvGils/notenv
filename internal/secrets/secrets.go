@@ -244,7 +244,7 @@ func (n *Namespace) decode(key string, plain []byte) (*State, error) {
 	}
 	switch {
 	case b.Version > blobVersion:
-		return nil, fmt.Errorf("namespace %q blob %s was written by a newer notenv (format v%d, this build understands v%d); upgrade notenv", n.name, key, b.Version, blobVersion)
+		return nil, fmt.Errorf("namespace %q blob %s was written by a newer notenv (format v%d, this version of notenv understands v%d); upgrade notenv", n.name, key, b.Version, blobVersion)
 	case b.Version < blobVersion:
 		return nil, fmt.Errorf("namespace %q blob %s was written in an older storage format (v%d) that this version of notenv no longer reads", n.name, key, b.Version)
 	case b.NS != n.name:
@@ -512,7 +512,7 @@ func putVerified(ctx context.Context, store backend.Backend, key string, sealed 
 	}
 	if !bytes.Equal(got, sealed) {
 		_ = store.Delete(ctx, key)
-		return fmt.Errorf("blob %s read back corrupted; write not recorded", key)
+		return fmt.Errorf("value %s read back corrupted after write; the change was not recorded", key)
 	}
 	return nil
 }

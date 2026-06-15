@@ -16,6 +16,61 @@ func editState(vals map[string]string, descs map[string]string) *secrets.State {
 	return &secrets.State{Secrets: vals, Meta: meta}
 }
 
+// TestUnrepresentableKeys guards the v0.19.1 fix: edit must refuse a namespace
+// whose values it cannot round-trip (surrounding whitespace, embedded newline),
+// rather than corrupt them; internal whitespace is fine.
+func TestUnrepresentableKeys(t *testing.T) {
+	state := editState(map[string]string{
+		"OK":       "plain",
+		"INTERNAL": "a b c",
+		"TRAILING": "secret ",
+		"LEADING":  " secret",
+		"MULTI":    "line1\nline2",
+	}, nil)
+	got := unrepresentableKeys(state)
+	want := []string{"LEADING", "MULTI", "TRAILING"} // sorted
+	if len(got) != len(want) {
+		t.Fatalf("unrepresentableKeys = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unrepresentableKeys = %v, want %v", got, want)
+		}
+	}
+	if len(unrepresentableKeys(editState(map[string]string{"A": "1"}, nil))) != 0 {
+		t.Error("a clean namespace should have no unrepresentable keys")
+	}
+}
+
+// TestWouldWipeNamespace guards the v0.19.1 fix: an emptied or truncated buffer
+// diffs to an all-delete, and runEdit must recognize that as a full wipe (and
+// confirm) rather than proceed silently.
+func TestWouldWipeNamespace(t *testing.T) {
+	before := editState(map[string]string{"A": "1", "B": "2", "C": "3"}, nil)
+
+	entries, err := parseEditBuffer(strings.NewReader("\n\n# only a comment\n"))
+	if err != nil {
+		t.Fatalf("parseEditBuffer: %v", err)
+	}
+	writes, err := diffEdit(before, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wouldWipeNamespace(before, writes) {
+		t.Fatal("an empty buffer should be detected as wiping the namespace")
+	}
+
+	if wouldWipeNamespace(before, []secrets.Write{{Key: "A", Deleted: true}, {Key: "B", Deleted: true}}) {
+		t.Error("deleting some but not all keys is not a wipe")
+	}
+	if wouldWipeNamespace(before, []secrets.Write{{Key: "A", Deleted: true}, {Key: "B", Deleted: true}, {Key: "C", Value: "x"}}) {
+		t.Error("a batch that still sets a key is not a wipe")
+	}
+	if wouldWipeNamespace(editState(nil, nil), nil) {
+		t.Error("an empty namespace is never a wipe")
+	}
+}
+
 // TestEditBufferRoundTrip: rendering a state and parsing it back unchanged
 // yields keeps for every key, descriptions intact, and an empty diff.
 func TestEditBufferRoundTrip(t *testing.T) {

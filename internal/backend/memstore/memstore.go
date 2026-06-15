@@ -11,7 +11,6 @@ package memstore
 import (
 	"bytes"
 	"context"
-	"strings"
 
 	"github.com/DvGils/notenv/internal/backend"
 )
@@ -84,11 +83,13 @@ func (s *Store) SwapHeader(ctx context.Context, base, updated []byte) error {
 	return s.PutHeader(ctx, updated)
 }
 
-// BackupHeader copies the header to ".prev", a no-op only when no header exists
-// yet, matching RcloneStorage.
+// BackupHeader copies the header to ".prev". The safe-write protocol calls it only
+// when a header exists, so a nil header here is a race, not the virgin case, and is
+// an error (matching the real backends): the write fails closed rather than
+// overwrite without a recoverable copy.
 func (s *Store) BackupHeader(_ context.Context) error {
 	if s.header == nil {
-		return nil
+		return backend.ErrNotFound
 	}
 	s.prev = clone(s.header)
 	return nil
@@ -157,7 +158,7 @@ func (s *Store) List(_ context.Context, prefix string) ([]string, error) {
 		if backend.IsReserved(key) {
 			continue
 		}
-		if strings.HasPrefix(key, prefix) {
+		if backend.WithinPrefix(key, prefix) {
 			keys = append(keys, key)
 		}
 	}

@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -150,7 +151,14 @@ func (u *User) SelectStorage(explicit string) (string, StorageEntry, error) {
 // UpsertStorage adds or replaces a named storage and writes the config. The
 // storage becomes the default if it is the first one, if no default is set, or
 // if makeDefault is true. Returns the config path.
-func UpsertStorage(name string, entry StorageEntry, makeDefault bool) (string, error) {
+//
+// Repointing an existing name at a DIFFERENT location (a different path, or a
+// different remote/base) is refused unless force is set: silently overwriting it
+// would orphan the vault that name used to address (its data is untouched, but
+// the config pointer, and the pins keyed to its old location, no longer line up).
+// Re-writing the same location (e.g. only tuning ReadOnly or CacheTTL) is always
+// allowed, so re-running setup as an "ensure" stays friction-free.
+func UpsertStorage(name string, entry StorageEntry, makeDefault, force bool) (string, error) {
 	if !ValidStorageName(name) {
 		return "", fmt.Errorf("invalid storage name %q: use letters, digits, '-' or '_' (no dots or spaces)", name)
 	}
@@ -161,6 +169,9 @@ func UpsertStorage(name string, entry StorageEntry, makeDefault bool) (string, e
 	if err != nil {
 		return "", err
 	}
+	if existing, ok := u.Storage[name]; ok && !existing.SameTarget(entry) && !force {
+		return "", fmt.Errorf("storage %q already points at %s; refusing to silently repoint it to %s (pass --force to replace it, or use a different name)", name, existing.Target(), entry.Target())
+	}
 	if u.Storage == nil {
 		u.Storage = map[string]StorageEntry{}
 	}
@@ -169,6 +180,35 @@ func UpsertStorage(name string, entry StorageEntry, makeDefault bool) (string, e
 		u.Default = name
 	}
 	return writeUserConfig(u)
+}
+
+// SameTarget reports whether two entries name the same vault location (a local
+// path, or a remote plus base), ignoring tuning fields like ReadOnly and
+// CacheTTL. Repointing a name at a different location is the destructive change
+// UpsertStorage refuses without force; changing only tuning on the same location
+// is harmless.
+func (e StorageEntry) SameTarget(other StorageEntry) bool {
+	return e.Path == other.Path && e.Remote == other.Remote && e.Base == other.Base
+}
+
+// Target renders the storage's location for a message: "path <p>" for a local
+// vault, "remote <remote>:<base>" for an rclone one.
+func (e StorageEntry) Target() string {
+	if e.Path != "" {
+		return "path " + e.Path
+	}
+	return "remote " + e.Remote + ":" + e.Base
+}
+
+// LookupStorage returns the named storage entry (have=false if there is none),
+// so a caller can check for a name collision before doing expensive work.
+func LookupStorage(name string) (entry StorageEntry, have bool, err error) {
+	u, err := LoadUser()
+	if err != nil {
+		return StorageEntry{}, false, err
+	}
+	entry, have = u.Storage[name]
+	return entry, have, nil
 }
 
 // RemoveStorage deletes a named storage from the machine config. If it was the
@@ -244,7 +284,7 @@ func writeUserConfig(u *User) (string, error) {
 	if u.Crypto.CacheTTL != "" {
 		fmt.Fprintf(&b, "cache_ttl = %q\n", u.Crypto.CacheTTL)
 	} else {
-		b.WriteString("# cache_ttl = \"1h\"   # master-key cache lifetime (Linux kernel keyring); \"0\" disables\n")
+		b.WriteString("# cache_ttl = \"1h\"   # master-key cache lifetime (OS keystore: kernel keyring / Keychain / DPAPI); \"0\" disables\n")
 	}
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
@@ -576,7 +616,7 @@ func ResolveNamespace(u *User, storageName, namespace string) (Effective, error)
 func cryptoEffective(u *User, eff Effective, st StorageEntry, name string) (Effective, error) {
 	eff.Mode = firstOf(u.Crypto.Mode, ModePass)
 	if eff.Mode != ModePass {
-		return eff, fmt.Errorf("unsupported crypto mode %q (MVP supports %q)", eff.Mode, ModePass)
+		return eff, fmt.Errorf("unsupported crypto mode %q (only %q is supported)", eff.Mode, ModePass)
 	}
 	ttl, err := u.MasterCacheTTL()
 	if err != nil {
@@ -717,6 +757,51 @@ func ScopeVault(scope string) (vaultID string, bound bool, err error) {
 	}
 	vaultID, bound = state.Scopes[scope]
 	return vaultID, bound, nil
+}
+
+// PinnedScopes returns every storage scope this machine has pinned anything at
+// (a vault binding or an accepted namespace), so a caller can find and forget
+// stale ones. Order is unspecified.
+func PinnedScopes() ([]string, error) {
+	state, err := loadTrust()
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	for scope := range state.Scopes {
+		seen[scope] = struct{}{}
+	}
+	for scope := range state.Namespaces {
+		seen[scope] = struct{}{}
+	}
+	scopes := make([]string, 0, len(seen))
+	for scope := range seen {
+		scopes = append(scopes, scope)
+	}
+	return scopes, nil
+}
+
+// LocalScopePath recovers the vault directory from a local storage scope, the
+// inverse of Effective.Scope for the local case. A scope is "<n>:<remote>:<base>"
+// with n = len(remote); a local one has remote ":local" and base the path. ok is
+// false for a remote scope or a malformed string.
+func LocalScopePath(scope string) (path string, ok bool) {
+	colon := strings.IndexByte(scope, ':')
+	if colon <= 0 {
+		return "", false
+	}
+	n, err := strconv.Atoi(scope[:colon])
+	if err != nil || n < 0 { // n is a length; a negative one is malformed (and would index out of range below)
+		return "", false
+	}
+	rest := scope[colon+1:]
+	if len(rest) < n+1 || rest[n] != ':' {
+		return "", false
+	}
+	if rest[:n] != ":local" {
+		return "", false
+	}
+	return rest[n+1:], true
 }
 
 // NamespaceAccepted reports whether this user has explicitly accepted

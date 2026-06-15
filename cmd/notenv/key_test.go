@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"testing"
 
 	"filippo.io/age"
@@ -8,6 +9,25 @@ import (
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/crypto"
 )
+
+// TestLoadHeaderStoreHonorsNotenvStorage guards the v0.19.1 fix: the header path
+// behind `key`, `export --all`, and `vault copy` must resolve storage the same way
+// the rest of the CLI does (--storage, then NOTENV_STORAGE, then binding/default),
+// so an agent or CI pointed at a vault only via NOTENV_STORAGE is not silently sent
+// to the machine default.
+func TestLoadHeaderStoreHonorsNotenvStorage(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // isolate from the real machine config
+	dir := t.TempDir()
+	t.Setenv(storageEnv, "local:"+dir)
+
+	target, err := loadHeaderStore()
+	if err != nil {
+		t.Fatalf("loadHeaderStore: %v", err)
+	}
+	if want := (config.Effective{Path: filepath.Clean(dir)}).Scope(); target.scope != want {
+		t.Fatalf("loadHeaderStore scope = %q, want %q (NOTENV_STORAGE ignored?)", target.scope, want)
+	}
+}
 
 // TestRefuseRecipientPrimary: primary may move to a human passphrase slot, but
 // not to a machine identity, which would strand governance if that machine is

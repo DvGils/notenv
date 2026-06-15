@@ -27,7 +27,7 @@ var (
 
 var exportCmd = &cobra.Command{
 	Use:   "export",
-	Short: "Print secrets as .env to stdout, for leaving notenv (never writes a file)",
+	Short: "Print secrets as .env to stdout for backup or offboarding (never writes a file)",
 	Long: `Print a namespace's secrets (or, with --all, the whole vault) as .env to
 standard output, so you can move to another tool or keep a copy. It is the
 inverse of import: ` + "`notenv export | notenv import`" + ` round-trips a namespace.
@@ -116,7 +116,7 @@ func exportWholeVault(ctx context.Context) error {
 // owner nature of bulk export and vault deletion.
 func requirePrimarySlot(header *crypto.Header, slot int, action string) error {
 	if slot != header.PrimarySlot() {
-		return fmt.Errorf("%s requires the vault's primary passphrase; the slot you unlocked is not primary", action)
+		return fmt.Errorf("%s requires the vault's primary passphrase; you unlocked a non-primary slot, so re-run and unlock with the primary passphrase", action)
 	}
 	return nil
 }
@@ -140,7 +140,7 @@ func vaultNamespaces(header *crypto.Header) []string {
 
 func warnExportScrollback() {
 	if term.IsTerminal(int(os.Stdout.Fd())) {
-		ui.Warnf("stdout is a terminal, so these values are now in your scroll-back; redirect to a file or pipe if that matters")
+		ui.Warnf("stdout is a terminal, so these values are now in your scrollback; redirect to a file or pipe if that matters")
 	}
 }
 

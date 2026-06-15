@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -36,30 +37,61 @@ func TestLeaseRoundTrip(t *testing.T) {
 }
 
 func TestLeaseStaleMarkersRemoved(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	const scope = "1::local:/srv/dead"
 
-	cases := map[string]string{
-		"1::local:/garbage": "not-a-pid", // unreadable content
-		"1::local:/deadpid": "999999999", // a PID no process holds
+	dir, err := leaseDir(scope)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for scope, content := range cases {
-		marker, err := leaseMarker(scope)
-		if err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A dead-PID marker and a stray non-PID file: neither is a live holder.
+	for _, name := range []string{"999999999", "not-a-pid"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(marker, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if leaseActive(scope) {
-			t.Fatalf("scope %q with stale marker %q reported active", scope, content)
-		}
-		if _, err := os.Stat(marker); !os.IsNotExist(err) {
-			t.Errorf("stale marker for %q was not removed (err=%v)", scope, err)
-		}
+	}
+	if leaseActive(scope) {
+		t.Fatal("a lease dir with only dead/stray markers reported active")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("stale lease dir was not cleaned up (err=%v)", err)
+	}
+}
+
+// TestLeaseRefcountSurvivesConcurrentRelease guards the v0.19.1 fix: a second
+// concurrent handoff of the same source vault must keep the lease alive when the
+// first releases. The second supervisor is stood in for by our parent process,
+// which is guaranteed to be alive.
+func TestLeaseRefcountSurvivesConcurrentRelease(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	const scope = "1::local:/srv/shared"
+
+	release, err := takeLease(scope) // this process: holder one
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := leaseDir(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, strconv.Itoa(os.Getppid())) // holder two (live)
+	if err := os.WriteFile(other, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	release() // holder one ends; holder two is still live
+	if !leaseActive(scope) {
+		t.Fatal("lease dropped after one of two concurrent holders released (refcount broken)")
+	}
+
+	if err := os.Remove(other); err != nil { // holder two ends
+		t.Fatal(err)
+	}
+	if leaseActive(scope) {
+		t.Fatal("lease still active after all holders released")
 	}
 }
 

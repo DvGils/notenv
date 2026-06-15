@@ -10,10 +10,10 @@ import (
 // reassigns the default to the sole survivor; removing an absent one is a no-op.
 func TestRemoveStorage(t *testing.T) {
 	isolateConfig(t)
-	if _, err := config.UpsertStorage("a", config.StorageEntry{Path: "/tmp/a"}, true); err != nil {
+	if _, err := config.UpsertStorage("a", config.StorageEntry{Path: "/tmp/a"}, true, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := config.UpsertStorage("b", config.StorageEntry{Path: "/tmp/b"}, false); err != nil {
+	if _, err := config.UpsertStorage("b", config.StorageEntry{Path: "/tmp/b"}, false, false); err != nil {
 		t.Fatal(err)
 	}
 

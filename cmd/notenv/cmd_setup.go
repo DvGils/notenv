@@ -86,7 +86,7 @@ func setupFlow(ctx context.Context) error {
 		}
 	}
 
-	ui.Infof("next: `notenv init` inside a project (it will let you pick which storage to use)")
+	ui.Infof("next: run `notenv init` inside a project to start using this storage")
 	return nil
 }
 
@@ -146,7 +146,7 @@ func localStorageTarget(user *config.User, first bool) (name, path string, ok bo
 			return name, target, true, nil
 		}
 		if !ui.Interactive() {
-			return "", "", false, fmt.Errorf("storage %q already exists (%s); pass --name for a second vault", name, describeEntry(existing))
+			return "", "", false, fmt.Errorf("storage %q already exists (%s); pass --name to add a separate vault", name, describeEntry(existing))
 		}
 		if name, ok, err = chooseStorageName(user, first); err != nil || !ok {
 			return "", "", ok, err
@@ -197,7 +197,9 @@ func addLocalStorage(ctx context.Context, user *config.User, first bool) (bool, 
 		return false, err
 	}
 
-	confPath, err := config.UpsertStorage(name, config.StorageEntry{Path: path}, setupDefault && first)
+	// force: localStorageTarget already resolved a fresh name, the same target, or
+	// a replacement the user confirmed, so the collision is decided by here.
+	confPath, err := config.UpsertStorage(name, config.StorageEntry{Path: path}, setupDefault && first, true)
 	if err != nil {
 		return false, err
 	}
@@ -213,12 +215,12 @@ func addLocalStorage(ctx context.Context, user *config.User, first bool) (bool, 
 	if err := store.Preflight(ctx); err != nil {
 		return false, err
 	}
-	if err := ui.Spin("Validating vault directory: write, read back, delete probe", func() error {
+	if err := ui.Spin("Validating vault directory (write, read back, delete probe)", func() error {
 		return store.Probe(ctx)
 	}); err != nil {
 		return false, err
 	}
-	ui.Successf("wrote storage %q to %s", name, confPath)
+	ui.Successf("saved storage %q to config (%s)", name, confPath)
 
 	_, created, err := ensureMaster(ctx, store, keyring.DefaultCache(), eff.Scope(), config.DefaultCacheTTL, readOnlyReason(name, false))
 	if err != nil {
@@ -229,7 +231,7 @@ func addLocalStorage(ctx context.Context, user *config.User, first bool) (bool, 
 	} else {
 		ui.Successf("existing vault at %s: credential verified; this machine can decrypt its secrets", path)
 	}
-	ui.Notef("this vault is encrypted at rest but exists on this machine only. Back up the directory, or attach a cloud remote later with `notenv vault copy`")
+	ui.Notef("this vault is encrypted at rest but lives on this machine only; back up the directory or attach a cloud remote later with `notenv vault copy`")
 
 	if err := offerPromoteDefault(name); err != nil {
 		return false, err
@@ -255,7 +257,7 @@ func addRemoteStorage(ctx context.Context, user *config.User, first bool) (bool,
 	if err != nil {
 		return false, err
 	}
-	base, err := requireInput("Bucket/path for encrypted blobs", "e.g. my-bucket/notenv")
+	base, err := requireInput("Bucket/path for encrypted secrets", "e.g. my-bucket/notenv")
 	if err != nil {
 		return false, err
 	}
@@ -270,11 +272,12 @@ func addRemoteStorage(ctx context.Context, user *config.User, first bool) (bool,
 	}
 
 	makeDefault := setupDefault && first
-	path, err := config.UpsertStorage(name, config.StorageEntry{Remote: remote, Base: base}, makeDefault)
+	// force: chooseStorageName already confirmed any replacement above.
+	path, err := config.UpsertStorage(name, config.StorageEntry{Remote: remote, Base: base}, makeDefault, true)
 	if err != nil {
 		return false, err
 	}
-	ui.Successf("wrote storage %q to %s", name, path)
+	ui.Successf("saved storage %q to config (%s)", name, path)
 
 	// Key ceremony (LUKS2-style header): virgin storage gets a master key
 	// wrapped under a newly chosen passphrase; existing storage verifies the
@@ -343,7 +346,7 @@ func chooseStorageName(user *config.User, first bool) (name string, ok bool, err
 			continue
 		}
 		if !config.ValidStorageName(n) {
-			ui.Warnf("storage name %q must be letters, digits, '-' or '_' (no dots or spaces)", n)
+			ui.Warnf("storage name %q may use only letters, digits, '-' or '_' (no dots or spaces)", n)
 			continue
 		}
 		if existing, exists := user.Storage[n]; exists {

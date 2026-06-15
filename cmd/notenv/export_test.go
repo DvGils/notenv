@@ -97,6 +97,21 @@ func TestHumanUnlockNonInteractive(t *testing.T) {
 	}
 }
 
+// TestHumanUnlockRefusesForeignSessionVault: inside a handoff session the gate
+// fails closed against any vault but the session's ephemeral one, even with a
+// terminal present, rather than prompting and re-authenticating elsewhere.
+func TestHumanUnlockRefusesForeignSessionVault(t *testing.T) {
+	prev := interactiveFn
+	interactiveFn = func() bool { return true } // a terminal is present
+	t.Cleanup(func() { interactiveFn = prev })
+	t.Setenv(sessionEnv, "1::local:/tmp/ephemeral")
+
+	_, _, _, err := humanUnlock(context.Background(), memstore.New(), "2:b2:notenv", "exporting plaintext")
+	if err == nil || !strings.Contains(err.Error(), "handoff session") {
+		t.Fatalf("humanUnlock must fail closed for a non-session vault, got %v", err)
+	}
+}
+
 // TestDestroyVaultLocal: a local vault is removed by deleting its directory.
 func TestDestroyVaultLocal(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "vault")

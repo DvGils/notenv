@@ -53,7 +53,7 @@ func Parse(r io.Reader) ([]Pair, error) {
 			return nil, fmt.Errorf("line %d: not a KEY=VALUE assignment", line)
 		}
 		start := line
-		value, consumed, err := parseValue(strings.TrimSpace(rest), scanner)
+		value, consumed, err := parseValue(rest, scanner)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", start, err)
 		}
@@ -74,24 +74,35 @@ func validKeyShape(key string) bool {
 }
 
 // parseValue interprets one value, pulling further lines from the scanner when
-// a quoted value spans them. Returns the value and how many extra lines were
-// consumed.
+// a quoted value spans them. rest is the raw text after '=', untrimmed, so the
+// whitespace before a trailing comment is still visible (Parse must not trim it
+// away first, or `KEY= # later` would store the comment as the value). Returns
+// the value and how many extra lines were consumed.
 func parseValue(rest string, scanner *bufio.Scanner) (string, int, error) {
-	if rest == "" {
+	trimmed := strings.TrimLeft(rest, " \t")
+	if trimmed == "" {
 		return "", 0, nil
 	}
-	quote := rest[0]
+	// An empty value followed by a comment: whitespace separated '=' from '#', so
+	// the value proper is empty and the rest is a comment. Without that separating
+	// whitespace (`KEY=#x`) the '#' is part of the value, the same "whitespace
+	// precedes the comment" rule the unquoted branch below applies.
+	if trimmed[0] == '#' && len(trimmed) < len(rest) {
+		return "", 0, nil
+	}
+	quote := trimmed[0]
 	if quote != '\'' && quote != '"' {
-		// Unquoted: cut a trailing comment (whitespace before '#'), trim.
-		if i := strings.Index(rest, " #"); i >= 0 {
-			rest = rest[:i]
-		} else if i := strings.Index(rest, "\t#"); i >= 0 {
-			rest = rest[:i]
+		// Unquoted: cut a trailing comment (whitespace before '#'), then trim.
+		v := rest
+		if i := strings.Index(v, " #"); i >= 0 {
+			v = v[:i]
+		} else if i := strings.Index(v, "\t#"); i >= 0 {
+			v = v[:i]
 		}
-		return strings.TrimSpace(rest), 0, nil
+		return strings.TrimSpace(v), 0, nil
 	}
 
-	body, consumed, err := collectQuoted(rest[1:], quote, scanner)
+	body, consumed, err := collectQuoted(trimmed[1:], quote, scanner)
 	if err != nil {
 		return "", consumed, err
 	}

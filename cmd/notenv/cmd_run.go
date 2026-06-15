@@ -24,20 +24,21 @@ var (
 var runCmd = &cobra.Command{
 	Use:   "run -- command [args...]",
 	Short: "Run a command with secrets injected as environment variables",
-	Long: `Run a command with the contract's secrets injected as environment variables.
+	Long: `Run a command with this project's secrets injected as environment variables.
 
 Captured output is masked: when stdout or stderr is not a terminal (a pipe, a
 file, an agent or CI harness reading the output), any injected secret value
 appearing in that stream is replaced with <notenv-masked:NAME> before it can
 land in a log or an LLM context. A live terminal is wired through untouched,
-so colors and interactive programs keep working; --mask forces masking there
-too, --no-mask disables it everywhere (e.g. when a consumer needs the raw
-bytes). Because --no-mask sends raw values to a captured stream, it asks for
-your passphrase even when the session key is cached: plaintext egress needs a
-human present. Masking is accident-proofing for output, not a security
-boundary: the value and its common encodings (base64, hex, url) are masked,
-but values shorter than 6 bytes pass through, and code that holds a secret can
-always move it some other way.
+so colors and interactive programs keep working.
+
+--mask forces masking on a live terminal too; --no-mask disables it everywhere
+(e.g. when a consumer needs the raw bytes). Because --no-mask sends raw values
+to a captured stream, it asks for your passphrase even when the session key is
+cached: plaintext egress needs a human present. Masking is accident-proofing
+for output, not a security boundary: the value and its common encodings
+(base64, hex, url) are masked, but values shorter than 6 bytes pass through,
+and code that holds a secret can always move it some other way.
 
 Exit codes (docker's convention): the child's own exit code passes through;
 125 means notenv itself failed, 126 the command was found but cannot run,
@@ -128,7 +129,7 @@ func flushMasker(m *runner.Masker) {
 		return
 	}
 	if err := m.Flush(); err != nil {
-		ui.Warnf("flush masked output: %v", err)
+		ui.Warnf("could not finish writing masked output: %v", err)
 	}
 }
 
@@ -139,5 +140,5 @@ func init() {
 	runCmd.Flags().BoolVar(&runRefresh, "refresh", false, "bypass the local cache and pull the latest secrets (e.g. after a change on another machine)")
 	runCmd.Flags().BoolVar(&runMask, "mask", false, "mask secret values in output even on a live terminal")
 	runCmd.Flags().BoolVar(&runNoMask, "no-mask", false, "never mask output (asks for your passphrase: raw values may reach a captured stream)")
-	runCmd.Flags().BoolVar(&runSalvage, "skip-corrupt", false, "fall back to a namespace's one-generation backup when its current blob is missing or corrupt, instead of failing closed (the most recent write may be lost; it is reported)")
+	runCmd.Flags().BoolVar(&runSalvage, "skip-corrupt", false, "use the previous backup when the current data is missing or corrupt, instead of stopping (the most recent change may be lost; notenv will tell you if so)")
 }

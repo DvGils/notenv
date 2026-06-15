@@ -194,7 +194,7 @@ func inspectVault(ctx context.Context) error {
 	store := openStorage(eff)
 	raw, err := store.GetHeader(ctx)
 	if errors.Is(err, backend.ErrNotFound) {
-		return fmt.Errorf("no vault found at storage %q", eff.StorageName)
+		return fmt.Errorf("no vault found at storage %q; create one with `notenv init`", eff.StorageName)
 	}
 	if err != nil {
 		return err

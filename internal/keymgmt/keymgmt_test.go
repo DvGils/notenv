@@ -2,6 +2,7 @@ package keymgmt_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -9,6 +10,45 @@ import (
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keymgmt"
 )
+
+// backupFailStore is a memstore whose BackupHeader always fails, to assert the
+// safe-write protocol's backup gating: skipped on virgin storage, fatal otherwise.
+type backupFailStore struct{ *memstore.Store }
+
+func (backupFailStore) BackupHeader(context.Context) error { return errors.New("backup unavailable") }
+
+// TestSafePutSkipsBackupOnVirgin: a virgin write (nil base) must not call
+// BackupHeader, so a backend whose backup always fails still succeeds on the first
+// write. This is what lets SafePut avoid probing "is there a header?" through a copy
+// that fails ambiguously.
+func TestSafePutSkipsBackupOnVirgin(t *testing.T) {
+	ctx := context.Background()
+	store := backupFailStore{memstore.New()}
+	h, mk, err := crypto.NewHeader("owner-pass", "owner@laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Revision = 0
+	if err := keymgmt.SafePut(ctx, store, h, nil, mk, verifyWith("owner-pass")); err != nil {
+		t.Fatalf("virgin SafePut should skip the backup and succeed, got: %v", err)
+	}
+}
+
+// TestSafePutFailsClosedOnBackupError: when a header exists, a backup failure must
+// abort the write rather than overwrite the live header without a recoverable copy.
+func TestSafePutFailsClosedOnBackupError(t *testing.T) {
+	ctx := context.Background()
+	mem := memstore.New()
+	base, mk := seed(t, mem, "owner-pass") // a header now exists
+	h := withSlot(t, base, mk, "second-pass")
+
+	if err := keymgmt.SafePut(ctx, backupFailStore{mem}, h, base, mk, verifyWith("owner-pass")); err == nil {
+		t.Fatal("SafePut must fail closed when the backup fails for an existing header")
+	}
+	if string(mem.Header()) != string(base) {
+		t.Fatal("SafePut overwrote the header despite a backup failure")
+	}
+}
 
 // verifyWith returns a SafePut verify closure that unlocks with a passphrase.
 func verifyWith(passphrase string) func(*crypto.Header) (*crypto.MasterKey, error) {

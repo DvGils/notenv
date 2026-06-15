@@ -27,18 +27,22 @@ func one(t *testing.T, in string) dotenv.Pair {
 
 func TestParseValues(t *testing.T) {
 	cases := map[string]struct{ in, key, value string }{
-		"unquoted":              {"A=hello", "A", "hello"},
-		"unquoted trimmed":      {"A=  hello  ", "A", "hello"},
-		"unquoted with comment": {"A=hello # the api key", "A", "hello"},
-		"hash inside value":     {"A=pa#ss", "A", "pa#ss"},
-		"export prefix":         {"export A=hello", "A", "hello"},
-		"empty":                 {"A=", "A", ""},
-		"single quoted":         {`A='  $literal \n  '`, "A", `  $literal \n  `},
-		"double quoted":         {`A="line1\nline2\t\"x\"\\"`, "A", "line1\nline2\t\"x\"\\"},
-		"double keeps dollar":   {`A="$HOME stays"`, "A", "$HOME stays"},
-		"quoted then comment":   {`A="v" # note`, "A", "v"},
-		"key space around":      {"  A = hello", "A", "hello"},
-		"value with equals":     {"A=k=v", "A", "k=v"},
+		"unquoted":               {"A=hello", "A", "hello"},
+		"unquoted trimmed":       {"A=  hello  ", "A", "hello"},
+		"unquoted with comment":  {"A=hello # the api key", "A", "hello"},
+		"hash inside value":      {"A=pa#ss", "A", "pa#ss"},
+		"hash starts value":      {"A=#literal", "A", "#literal"},
+		"empty then comment":     {"A= # set me later", "A", ""},
+		"empty then comment tab": {"A=\t# later", "A", ""},
+		"quoted leading space":   {`A= "v"`, "A", "v"},
+		"export prefix":          {"export A=hello", "A", "hello"},
+		"empty":                  {"A=", "A", ""},
+		"single quoted":          {`A='  $literal \n  '`, "A", `  $literal \n  `},
+		"double quoted":          {`A="line1\nline2\t\"x\"\\"`, "A", "line1\nline2\t\"x\"\\"},
+		"double keeps dollar":    {`A="$HOME stays"`, "A", "$HOME stays"},
+		"quoted then comment":    {`A="v" # note`, "A", "v"},
+		"key space around":       {"  A = hello", "A", "hello"},
+		"value with equals":      {"A=k=v", "A", "k=v"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -85,7 +85,7 @@ func TestManifestSurvivesSeal(t *testing.T) {
 		t.Fatalf("sealed manifest must verify: %v", err)
 	}
 	parsed.Manifest["proj"] = ManifestEntry{Blob: "proj/data-a.age", MAC: "ee"}
-	if err := parsed.Verify(mk); err == nil || !strings.Contains(err.Error(), "authentication failed") {
+	if err := parsed.Verify(mk); err == nil || !strings.Contains(err.Error(), "failed verification") {
 		t.Fatalf("a tampered manifest entry must break the tag, got %v", err)
 	}
 }

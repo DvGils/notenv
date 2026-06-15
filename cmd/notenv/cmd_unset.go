@@ -18,7 +18,7 @@ var unsetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key := args[0]
 		if !contract.ValidEnvName(key) {
-			return fmt.Errorf("%q is not a valid environment variable name", key)
+			return fmt.Errorf("%q is not a valid environment variable name (use letters, digits, and underscores; cannot start with a digit)", key)
 		}
 		a, err := loadApp(cmd.Context())
 		if err != nil {
