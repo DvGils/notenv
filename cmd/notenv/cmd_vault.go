@@ -21,6 +21,7 @@ var (
 	vaultCopyToBase   string
 	vaultCopyName     string
 	vaultCopyDefault  bool
+	vaultCopyForce    bool
 )
 
 var vaultCmd = &cobra.Command{
@@ -56,6 +57,14 @@ not already hold a vault (copies never merge).`,
 		if err != nil {
 			return err
 		}
+		// Refuse a name that already points elsewhere BEFORE copying, so a large
+		// copy is never spent only to fail at registration (or to silently repoint
+		// the name). UpsertStorage re-checks at write time; this is the early exit.
+		if existing, have, err := config.LookupStorage(name); err != nil {
+			return err
+		} else if have && !entry.SameTarget(existing) && !vaultCopyForce {
+			return fmt.Errorf("storage %q already points at %s; choose another --name, or pass --force to repoint it to %s", name, existing.Target(), entry.Target())
+		}
 		eff, err := destinationEffective(name, entry, src.scope)
 		if err != nil {
 			return err
@@ -72,7 +81,7 @@ not already hold a vault (copies never merge).`,
 		if err := copyVault(ctx, src, dst); err != nil {
 			return err
 		}
-		confPath, err := config.UpsertStorage(name, entry, vaultCopyDefault)
+		confPath, err := config.UpsertStorage(name, entry, vaultCopyDefault, vaultCopyForce)
 		if err != nil {
 			return err
 		}
@@ -382,6 +391,7 @@ func init() {
 	vaultCopyCmd.Flags().StringVar(&vaultCopyToBase, "to-base", "", "path within the destination remote (default \""+config.DefaultBase+"\")")
 	vaultCopyCmd.Flags().StringVar(&vaultCopyName, "name", "", "name to register the copy under")
 	vaultCopyCmd.Flags().BoolVar(&vaultCopyDefault, "make-default", false, "make the copy this machine's default storage")
+	vaultCopyCmd.Flags().BoolVar(&vaultCopyForce, "force", false, "repoint --name even if it already names a different storage")
 	vaultDeleteCmd.Flags().BoolVar(&vaultDeleteYes, "yes", false, "skip the type-the-name confirmation (the passphrase is still required)")
 	vaultCmd.AddCommand(vaultCopyCmd, vaultDeleteCmd)
 }

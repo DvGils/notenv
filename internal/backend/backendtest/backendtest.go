@@ -69,25 +69,32 @@ func testPutOverwrites(t *testing.T, newStore func(t *testing.T) backend.Backend
 func testListByPrefix(t *testing.T, newStore func(t *testing.T) backend.Backend) {
 	ctx := context.Background()
 	s := newStore(t)
-	for _, key := range []string{"ns/snap-1.age", "ns/seg-a-1.age", "other/snap-1.age"} {
+	// "ns2/..." shares the byte-prefix "ns" with the "ns/" namespace: a List that
+	// matched a raw byte prefix instead of a directory boundary would leak it in.
+	for _, key := range []string{"ns/snap-1.age", "ns/seg-a-1.age", "ns2/snap-1.age", "other/snap-1.age"} {
 		if err := s.Put(ctx, key, []byte("x")); err != nil {
 			t.Fatalf("Put %s: %v", key, err)
 		}
 	}
-	scoped, err := s.List(ctx, "ns/")
-	if err != nil {
-		t.Fatalf("List ns/: %v", err)
-	}
-	slices.Sort(scoped)
-	if want := []string{"ns/seg-a-1.age", "ns/snap-1.age"}; !slices.Equal(scoped, want) {
-		t.Fatalf("List ns/: got %v want %v", scoped, want)
+	want := []string{"ns/seg-a-1.age", "ns/snap-1.age"}
+	// "ns/" and the bare "ns" must scope identically (a directory boundary), and
+	// neither may pull in the sibling "ns2/...". Every backend must agree.
+	for _, prefix := range []string{"ns/", "ns"} {
+		scoped, err := s.List(ctx, prefix)
+		if err != nil {
+			t.Fatalf("List %q: %v", prefix, err)
+		}
+		slices.Sort(scoped)
+		if !slices.Equal(scoped, want) {
+			t.Fatalf("List %q: got %v want %v", prefix, scoped, want)
+		}
 	}
 	all, err := s.List(ctx, "")
 	if err != nil {
 		t.Fatalf("List all: %v", err)
 	}
-	if len(all) != 3 {
-		t.Fatalf("List all: got %d keys, want 3 (%v)", len(all), all)
+	if len(all) != 4 {
+		t.Fatalf("List all: got %d keys, want 4 (%v)", len(all), all)
 	}
 }
 
@@ -119,7 +126,7 @@ func HeaderStoreContract(t *testing.T, newStore func(t *testing.T) backend.Heade
 	t.Run("SwapHeaderCreatesWhenAbsent", func(t *testing.T) { testSwapCreate(t, newStore) })
 	t.Run("SwapHeaderReplacesOnMatch", func(t *testing.T) { testSwapReplace(t, newStore) })
 	t.Run("SwapHeaderRefusesOnMismatch", func(t *testing.T) { testSwapMismatch(t, newStore) })
-	t.Run("BackupNoHeaderIsNoop", func(t *testing.T) { testBackupNoHeader(t, newStore) })
+	t.Run("BackupNoHeaderFailsClosed", func(t *testing.T) { testBackupNoHeader(t, newStore) })
 	t.Run("RestoreWithoutBackupIsNotFound", func(t *testing.T) { testRestoreWithoutBackup(t, newStore) })
 	t.Run("BackupThenRestoreRecoversPriorHeader", func(t *testing.T) { testBackupThenRestore(t, newStore) })
 }
@@ -193,8 +200,12 @@ func testSwapMismatch(t *testing.T, newStore func(t *testing.T) backend.HeaderSt
 func testBackupNoHeader(t *testing.T, newStore func(t *testing.T) backend.HeaderStore) {
 	ctx := context.Background()
 	s := newStore(t)
-	if err := s.BackupHeader(ctx); err != nil {
-		t.Fatalf("BackupHeader with no header: want nil, got %v", err)
+	// The safe-write protocol calls BackupHeader only when a header exists (it
+	// skips the backup on virgin storage), so backing up with no header must fail
+	// rather than be a silent no-op: that no-op was how an ambiguous "not found"
+	// could let a write overwrite the header without a recoverable copy.
+	if err := s.BackupHeader(ctx); err == nil {
+		t.Fatal("BackupHeader with no header: want an error, got nil")
 	}
 	if err := s.RestoreHeaderBackup(ctx); !errors.Is(err, backend.ErrNotFound) {
 		t.Fatalf("RestoreHeaderBackup with no backup: want ErrNotFound, got %v", err)

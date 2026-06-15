@@ -197,7 +197,9 @@ func addLocalStorage(ctx context.Context, user *config.User, first bool) (bool, 
 		return false, err
 	}
 
-	confPath, err := config.UpsertStorage(name, config.StorageEntry{Path: path}, setupDefault && first)
+	// force: localStorageTarget already resolved a fresh name, the same target, or
+	// a replacement the user confirmed, so the collision is decided by here.
+	confPath, err := config.UpsertStorage(name, config.StorageEntry{Path: path}, setupDefault && first, true)
 	if err != nil {
 		return false, err
 	}
@@ -270,7 +272,8 @@ func addRemoteStorage(ctx context.Context, user *config.User, first bool) (bool,
 	}
 
 	makeDefault := setupDefault && first
-	path, err := config.UpsertStorage(name, config.StorageEntry{Remote: remote, Base: base}, makeDefault)
+	// force: chooseStorageName already confirmed any replacement above.
+	path, err := config.UpsertStorage(name, config.StorageEntry{Remote: remote, Base: base}, makeDefault, true)
 	if err != nil {
 		return false, err
 	}

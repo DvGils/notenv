@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 )
 
 // sessionEnv marks a process as running inside a handoff session and carries the
@@ -57,56 +56,67 @@ func sessionDir() (string, error) {
 	return filepath.Join(base, "notenv", "sessions"), nil
 }
 
-// leaseMarker is the marker path for a storage scope. The scope is hashed so the
-// filename is filesystem-safe and does not spell out the storage location.
-func leaseMarker(scope string) (string, error) {
+// leaseDir is the per-scope directory holding one marker file per live handoff
+// supervisor (each filename is its PID). Refcounting via separate files lets
+// concurrent handoffs of the same source vault coexist: the lease is active while
+// ANY supervisor's marker is live, and each session removes only its own, so the
+// first to finish cannot cancel the lease the others still rely on. The scope is
+// hashed so the directory name is filesystem-safe and does not spell out the
+// storage location.
+func leaseDir(scope string) (string, error) {
 	dir, err := sessionDir()
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(scope))
-	return filepath.Join(dir, hex.EncodeToString(sum[:16])+".lease"), nil
+	return filepath.Join(dir, hex.EncodeToString(sum[:16])+".lease.d"), nil
 }
 
-// takeLease writes a no-cache lease on scope owned by this process and returns a
-// release func that removes it. A missing lease only means caching is not
-// suppressed, never a loss of the master guarantee (the builder drops the cache
-// and cannot refill it regardless), so callers may proceed on error.
+// takeLease registers this process as a no-cache-lease holder on scope and returns
+// a release func that removes only this holder's marker (and the directory once it
+// empties). A missing lease only means caching is not suppressed, never a loss of
+// the master guarantee (the builder drops the cache and cannot refill it), so
+// callers may proceed on error.
 func takeLease(scope string) (func(), error) {
-	marker, err := leaseMarker(scope)
+	dir, err := leaseDir(scope)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(marker, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+	marker := filepath.Join(dir, strconv.Itoa(os.Getpid()))
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
 		return nil, err
 	}
-	return func() { _ = os.Remove(marker) }, nil
+	return func() {
+		_ = os.Remove(marker)
+		_ = os.Remove(dir) // succeeds only when this was the last holder
+	}, nil
 }
 
-// leaseActive reports whether a live no-cache lease covers scope. A marker whose
-// owning process is gone (or whose contents are unreadable) is stale: it is
-// removed and reported inactive, so a crashed session cannot suppress caching
-// forever.
+// leaseActive reports whether any live no-cache lease covers scope. A marker whose
+// owning process is gone, or whose name is not a PID, is reaped, so a crashed
+// session cannot suppress caching forever; an emptied directory is removed too.
 func leaseActive(scope string) bool {
-	marker, err := leaseMarker(scope)
+	dir, err := leaseDir(scope)
 	if err != nil {
 		return false
 	}
-	data, err := os.ReadFile(marker)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
-		_ = os.Remove(marker)
-		return false
+	active := false
+	for _, e := range entries {
+		if pid, err := strconv.Atoi(e.Name()); err == nil && pid > 0 && pidAlive(pid) {
+			active = true
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, e.Name())) // dead PID or stray file
 	}
-	if !pidAlive(pid) {
-		_ = os.Remove(marker)
-		return false
+	if !active {
+		_ = os.Remove(dir)
 	}
-	return true
+	return active
 }

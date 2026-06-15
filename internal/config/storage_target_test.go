@@ -19,11 +19,11 @@ func TestUpsertStorageRejectsBadRemoteTarget(t *testing.T) {
 		"dashbase":      {Remote: "b2", Base: "-x"},
 	}
 	for name, e := range bad {
-		if _, err := config.UpsertStorage(name, e, false); err == nil {
+		if _, err := config.UpsertStorage(name, e, false, false); err == nil {
 			t.Errorf("%s: UpsertStorage accepted a bad target %+v", name, e)
 		}
 	}
-	if _, err := config.UpsertStorage("good", config.StorageEntry{Remote: "b2", Base: "bucket/sub"}, false); err != nil {
+	if _, err := config.UpsertStorage("good", config.StorageEntry{Remote: "b2", Base: "bucket/sub"}, false, false); err != nil {
 		t.Errorf("clean remote/base rejected: %v", err)
 	}
 }

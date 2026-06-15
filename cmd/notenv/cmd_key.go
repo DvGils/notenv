@@ -46,11 +46,15 @@ type headerTarget struct {
 // target, not a project contract. Storage selection honors --storage, else the
 // machine default / sole storage.
 func loadHeaderStore() (*headerTarget, error) {
-	// --storage wins; otherwise honor the project's local binding if we're
-	// inside one. Outside any project, fall through to default / sole storage. A
-	// corrupt binding is a hard error: these commands are destructive, so we
-	// must never silently retarget the default vault.
-	storageName := storageFlag
+	// --storage wins, then NOTENV_STORAGE (the env an agent / CI / handoff is
+	// pointed at), then the project's local binding if we are inside one, then the
+	// machine default / sole storage. This must match the rest of the CLI's
+	// selection (storageSelector); resolving headers by a different rule is how
+	// `key`, `export --all`, and `vault copy` ended up ignoring NOTENV_STORAGE and
+	// silently targeting the default vault. A corrupt binding is a hard error only
+	// when we fall through to it (no flag, no env): these commands are destructive,
+	// so we must never silently retarget the default vault.
+	storageName := storageSelector("")
 	if storageName == "" {
 		cwd, err := os.Getwd()
 		if err != nil {

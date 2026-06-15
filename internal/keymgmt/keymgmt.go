@@ -51,11 +51,16 @@ func SafePut(ctx context.Context, store backend.HeaderStore, h *crypto.Header, b
 		return err
 	}
 
-	// Back up before touching the live header. Refuse to overwrite a header we
-	// could not preserve. (A no-op only on virgin storage, when there is no
-	// header to back up yet.)
-	if err := store.BackupHeader(ctx); err != nil {
-		return fmt.Errorf("back up header before write: %w", err)
+	// Back up before touching the live header, but only when one exists (base is
+	// the header read at the start, nil on virgin storage). Skipping the backup on
+	// virgin avoids asking the backend "is there a header?" through a copy that
+	// fails ambiguously; when a header does exist, a backup failure aborts the
+	// write, since overwriting without a recoverable copy is the one outcome this
+	// protocol must prevent.
+	if base != nil {
+		if err := store.BackupHeader(ctx); err != nil {
+			return fmt.Errorf("back up header before write: %w", err)
+		}
 	}
 
 	if err := store.SwapHeader(ctx, base, newRaw); err != nil {

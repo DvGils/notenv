@@ -4,6 +4,70 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.19.1
+
+A correctness and footgun pass after 0.19.0, plus internal cleanup. No storage-format
+or surface change.
+
+### Fixed
+
+- **`import` no longer stores an empty value's trailing comment as the secret.** A
+  hand-written line like `PASSWORD= # set me later` parsed to the value
+  `# set me later` (the whitespace before `#` was trimmed away before the comment was
+  detected), which was then encrypted and injected as the secret. It now reads as an
+  empty value, as documented.
+- **`key`, `export --all`, and `vault copy` now honor `NOTENV_STORAGE`.** Their header
+  path resolved storage by `--storage` / project binding / machine default only, so a
+  process pointed at a vault solely via `NOTENV_STORAGE` (an agent, CI, or `handoff`)
+  silently operated on the machine default instead, and `export <ns>` and `export --all`
+  could resolve to two different vaults in one environment. They now use the same
+  selection as the rest of the CLI.
+- **`notenv edit` confirms before wiping a whole namespace.** A truncated or emptied
+  buffer (an editor that wrote nothing, a stray select-all-delete) used to delete
+  every secret without asking. An all-delete now requires confirmation, and aborts
+  where there is no terminal to confirm on.
+- **`edit`/`set`/`import` no longer corrupt a contract whose `[secrets]` header has
+  inner spaces.** `Declare` matched only the exact string `[secrets]`, so a
+  hand-written `[ secrets ]` made it append a second `[secrets]` table that the next
+  parse rejected. The header is now matched structurally, and re-declaring an
+  existing key is a no-op.
+- **A sub-second `crypto.cache_ttl` no longer disables expiry on Linux.** A value
+  like `500ms` truncated to 0 seconds, which clears the kernel-keyring timeout (the
+  key never expires); it is now floored to 1 second.
+- **Concurrent handoffs of the same vault keep the no-cache lease.** The lease is now
+  refcounted (one marker per supervisor), so the first session to end no longer drops
+  the protection while another handed-off agent is still running.
+- **`notenv edit` refuses values it cannot represent instead of corrupting them.** Its
+  single-line, no-quoting buffer cannot round-trip a value with surrounding whitespace
+  or an embedded newline; editing such a namespace used to silently trim or mangle the
+  value on save. `edit` now refuses up front, naming the keys and pointing to
+  `notenv set --stdin`.
+- **A header is never overwritten without a recoverable backup (rclone).** The backup
+  step treated any "not found" in rclone's output as "no header yet" and skipped the
+  backup, but rclone emits that text for non-absent failures too, so a transient
+  failure could let a write overwrite the live header with no `.prev`. The safe-write
+  protocol now backs up only when a header exists and fails closed if the backup
+  fails, and skips it entirely on virgin storage (one fewer request on the first
+  write).
+- **`set --stdin` no longer keeps a trailing `\r` from CRLF input.** A value piped from
+  a Windows-style source (`secret\r\n`) stored a hidden trailing carriage return; the
+  trailing line terminator (`\r\n` or `\n`) is now stripped as a unit.
+- **A handoff session refuses `export` / `run --no-mask` / `vault delete` against a
+  vault other than its own.** These re-authenticate through a path that did not check
+  the handoff-session guard, so they prompted instead of failing closed when pointed at
+  a different vault inside a session; they now fail closed like the rest of the unlock
+  surface. (Defense-in-depth: that path never caches the master.)
+- **Registering a storage no longer silently repoints an existing name.** Reusing a name
+  for a different location overwrote the old entry without asking, orphaning the vault that
+  name addressed. The exposed path was `vault copy` (which also did it *after* a full copy);
+  it now refuses unless you pass `--force`, and checks before copying so a large copy is
+  never spent only to be rejected. Re-registering the same location stays a no-op.
+- **`handoff` cleans up after a session that was killed before teardown.** A `SIGKILL`,
+  power loss, or Ctrl-C during the vault-build phase could leave the ephemeral vault's
+  trust pin (and, off tmpfs, its directory) behind. The build phase now tears down on
+  Ctrl-C, and each `handoff` sweeps leftovers from earlier dead sessions (live sessions are
+  left untouched).
+
 ## 0.19.0
 
 The agent release: a scoped, ephemeral handoff so a coding agent can use a namespace's secrets
@@ -48,8 +112,7 @@ compaction, per-machine sequence counters, and replay detection) is gone, replac
 encrypted blob per namespace under last-write-wins. Every write decrypts the current blob, applies
 its change, writes a fresh blob, and points the header at it under the same compare-and-swap that
 already guards the manifest. The hardened machinery being removed is exactly where the gnarliest
-concurrency bugs lived, so this deletes whole bug classes, not just code. See
-[design/v1-scope.md](https://github.com/DvGils/notenv/blob/main/design/v1-scope.md).
+concurrency bugs lived, so this deletes whole bug classes, not just code.
 
 **Breaking, on purpose: this does not read a vault written by an earlier notenv.** The header format
 is now version 6 and an older vault fails closed with a clear message. There is no in-place upgrade

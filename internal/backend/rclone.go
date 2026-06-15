@@ -156,8 +156,11 @@ func (s *RcloneStorage) Put(ctx context.Context, key string, data []byte) error 
 
 func (s *RcloneStorage) Delete(ctx context.Context, key string) error {
 	if _, err := runRclone(ctx, nil, []string{"deletefile"}, s.objectPath(key)); err != nil {
-		if isNotFoundLoose(err) {
-			return nil // already gone
+		// Only a true not-found exit (4) counts as "already gone". Matching rclone's
+		// stderr text here could read a real failure (whose message merely contains
+		// "not found") as success and report a delete that never happened.
+		if isNotFoundExit(err) {
+			return nil
 		}
 		return err
 	}
@@ -259,37 +262,36 @@ func (s *RcloneStorage) SwapHeader(ctx context.Context, base, updated []byte) er
 	return nil
 }
 
-// BackupHeader copies the current header to its ".prev" sibling so a bad
-// overwrite is recoverable. It is kept on every remote (the copy is a
-// server-side operation that moves no bytes through the client); a remote's own
-// version history, if any, is an additional backstop, not a substitute notenv
-// relies on. A no-op when no header exists yet (nothing to preserve). Any other
-// copy failure is returned so the caller can refuse to overwrite a header it
-// couldn't back up.
+// BackupHeader copies the current header to its ".prev" sibling so a bad overwrite
+// is recoverable (a server-side copy that moves no bytes through the client; a
+// remote's own version history, if any, is an extra backstop, not a substitute).
+// The safe-write protocol calls this ONLY when a header exists, so every copy
+// failure is returned and the write is refused: a missing source here is a race,
+// not the virgin case, and must not be read as "nothing to back up". Swallowing a
+// "not found" was unsafe because rclone emits that text for non-absent failures
+// too (e.g. "Source doesn't exist or is a directory and destination is a file").
 func (s *RcloneStorage) BackupHeader(ctx context.Context) error {
 	src := s.basePath() + "/" + headerObject
 	dst := s.basePath() + "/" + headerBackupObject
-	if _, err := runRclone(ctx, nil, []string{"copyto"}, src, dst); err != nil {
-		if isNotFoundLoose(err) {
-			return nil // no header yet, nothing to back up
-		}
-		return err
-	}
-	return nil
+	_, err := runRclone(ctx, nil, []string{"copyto"}, src, dst)
+	return err
 }
 
-// RestoreHeaderBackup copies the ".prev" backup back over the header. Returns
+// RestoreHeaderBackup restores the ".prev" backup over the header. Returns
 // ErrNotFound when there is no backup to restore (none has been written yet).
 func (s *RcloneStorage) RestoreHeaderBackup(ctx context.Context) error {
-	src := s.basePath() + "/" + headerBackupObject
-	dst := s.basePath() + "/" + headerObject
-	if _, err := runRclone(ctx, nil, []string{"copyto"}, src, dst); err != nil {
-		if isNotFoundLoose(err) {
-			return ErrNotFound
-		}
+	// Read the backup through cat (whose not-found is the trustworthy exit 3/4,
+	// mapped to ErrNotFound by catObject) and write it back as the header, rather
+	// than letting copyto decide: copyto reports a missing source over an existing
+	// header as a generic exit 1, indistinguishable from a real copy failure, so it
+	// cannot tell "no backup yet" from "restore failed". Reading then writing keeps
+	// those apart; headers are tiny, so the extra round-trip is negligible on this
+	// rare recovery path.
+	prev, err := s.catObject(ctx, s.basePath()+"/"+headerBackupObject)
+	if err != nil {
 		return err
 	}
-	return nil
+	return s.PutHeader(ctx, prev)
 }
 
 func (s *RcloneStorage) basePath() string {
@@ -343,10 +345,13 @@ func (e *rcloneError) Error() string {
 func (e *rcloneError) Unwrap() error { return e.err }
 
 // isNotFoundExit reports rclone's dedicated not-found exit codes (3: directory,
-// 4: file). This is the only not-found signal reads (cat, lsf) trust: a
-// GetHeader not-found drives the virgin-storage decision in the key ceremony,
-// and stderr text (which shifts across rclone versions and locales) must never
-// be able to fake that.
+// 4: file). It is the ONLY not-found signal notenv trusts, never stderr text
+// (which shifts across rclone versions and locales and could let a real failure
+// masquerade as not-found, masking it). cat (reads, GetHeader, catObject) and
+// deletefile (Delete) both return 3/4 for a genuinely missing object, so the exit
+// code is sufficient and exact there. copyto is the exception: it reports a missing
+// source over an existing destination as a generic exit 1, so the restore path does
+// not classify copyto at all, it reads the backup through catObject instead.
 func isNotFoundExit(err error) bool {
 	re, ok := errors.AsType[*rcloneError](err)
 	if !ok {
@@ -361,20 +366,4 @@ func isNotFoundExit(err error) bool {
 		return true
 	}
 	return false
-}
-
-// isNotFoundLoose additionally matches rclone's stderr text, for the
-// subcommands that report a missing source with only a generic exit 1
-// (`copyto`, `deletefile`). The looseness is acceptable there: a false match
-// skips backing up a header that most likely doesn't exist, or re-deletes an
-// already-missing object: housekeeping, never a trust decision.
-func isNotFoundLoose(err error) bool {
-	if isNotFoundExit(err) {
-		return true
-	}
-	re, ok := errors.AsType[*rcloneError](err)
-	if !ok {
-		return false
-	}
-	return strings.Contains(re.stderr, "not found") || strings.Contains(re.stderr, "doesn't exist")
 }

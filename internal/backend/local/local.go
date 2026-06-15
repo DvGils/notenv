@@ -143,7 +143,7 @@ func (s *Storage) List(ctx context.Context, prefix string) ([]string, error) {
 		if backend.IsReserved(key) {
 			return nil
 		}
-		if strings.HasPrefix(key, prefix) {
+		if backend.WithinPrefix(key, prefix) {
 			keys = append(keys, key)
 		}
 		return nil
@@ -198,15 +198,13 @@ func (s *Storage) SwapHeader(ctx context.Context, base, updated []byte) error {
 	return s.PutHeader(ctx, updated)
 }
 
-// BackupHeader copies the current header to its ".prev" sibling so a bad
-// overwrite is recoverable; with no header yet it is a no-op. Like every
-// backend, it always keeps the backup (notenv does not rely on a remote's
-// version history).
+// BackupHeader copies the current header to its ".prev" sibling so a bad overwrite
+// is recoverable. Like every backend it keeps its own backup. The safe-write
+// protocol calls it ONLY when a header exists, so a missing header here is a race,
+// not the virgin case, and is returned as an error: the write fails closed rather
+// than overwrite without a recoverable copy.
 func (s *Storage) BackupHeader(ctx context.Context) error {
 	raw, err := s.GetHeader(ctx)
-	if errors.Is(err, backend.ErrNotFound) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}

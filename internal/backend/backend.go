@@ -57,6 +57,18 @@ func IsReserved(key string) bool {
 	return strings.HasPrefix(path.Base(key), TempPrefix)
 }
 
+// WithinPrefix reports whether key falls under the directory named by prefix:
+// everything when prefix is empty, the object exactly at prefix, or anything
+// beneath "prefix/". It matches on the slash boundary, not a raw byte prefix, so
+// a prefix of "ns" never also matches a sibling "ns2/...". This is the single
+// source of truth for what a List prefix means, so the directory backends select
+// the same set rclone's directory-scoped listing does (the same divergence risk
+// IsReserved guards). Surrounding slashes are insignificant.
+func WithinPrefix(key, prefix string) bool {
+	clean := strings.Trim(prefix, "/")
+	return clean == "" || key == clean || strings.HasPrefix(key, clean+"/")
+}
+
 // Backend is a flat object store. Keys are base-relative paths (for example
 // "myapp/data-9f3a.age"); the store prepends its own base and moves bytes,
 // nothing more.
@@ -95,12 +107,15 @@ type HeaderStore interface {
 	// Implementations make this as atomic as their storage allows; see each
 	// implementation for the guarantee it actually provides.
 	SwapHeader(ctx context.Context, base, updated []byte) error
-	// BackupHeader preserves the current header before an overwrite, so a
-	// clobbered header doesn't lock the user out of every blob. It is a no-op
-	// only when no header exists yet; otherwise it copies the header to a
-	// sibling backup object, on every backend (notenv keeps its own backup
-	// rather than relying on a remote's version history). The safe-write
-	// protocol calls it before PutHeader and refuses to proceed if it errors.
+	// BackupHeader copies the current header to a sibling backup object so a
+	// clobbered header doesn't lock the user out of every blob (on every backend;
+	// notenv keeps its own backup rather than relying on a remote's version
+	// history). The safe-write protocol calls it ONLY when a header exists (it
+	// skips the backup on virgin storage) and refuses to proceed if it errors, so
+	// an absent header here is a race or a real failure, never the virgin case: it
+	// returns an error and the write fails closed rather than overwrite without a
+	// recoverable copy. (Treating a missing header as a no-op is exactly how an
+	// ambiguous "not found" could let a write proceed unprotected.)
 	BackupHeader(ctx context.Context) error
 	// RestoreHeaderBackup copies the sibling backup object back over the
 	// header, the recovery counterpart to BackupHeader. It returns ErrNotFound

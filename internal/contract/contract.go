@@ -113,14 +113,26 @@ func Declare(path, key string) error {
 
 	lines := strings.SplitAfter(string(data), "\n")
 	for i, line := range lines {
-		if strings.TrimSpace(line) == "[secrets]" {
-			// Insert directly under the header: TOML keys belong to the
-			// table whose header precedes them, so this is safe no matter
-			// what follows.
-			rest := strings.Join(lines[i+1:], "")
-			updated := strings.Join(lines[:i+1], "") + declaration + rest
-			return os.WriteFile(path, []byte(updated), 0o644)
+		if !isTableHeader(line, "secrets") {
+			continue
 		}
+		// Already declared in this table? A textual append would duplicate the
+		// key, which the next Parse rejects ("key already defined"). Callers also
+		// guard in memory, but a hand-edited contract can disagree, so check here
+		// too: scan from the header to the next table header.
+		for _, l := range lines[i+1:] {
+			if isTableHeader(l, "") {
+				break
+			}
+			if declaresKey(l, key) {
+				return nil
+			}
+		}
+		// Insert directly under the header: TOML keys belong to the table whose
+		// header precedes them, so this is safe no matter what follows.
+		rest := strings.Join(lines[i+1:], "")
+		updated := strings.Join(lines[:i+1], "") + declaration + rest
+		return os.WriteFile(path, []byte(updated), 0o644)
 	}
 
 	updated := string(data)
@@ -129,6 +141,38 @@ func Declare(path, key string) error {
 	}
 	updated += "\n[secrets]\n" + declaration
 	return os.WriteFile(path, []byte(updated), 0o644)
+}
+
+// isTableHeader reports whether a line is a TOML table header. With name set, it
+// must be that table (tolerating surrounding and inner whitespace and a quoted
+// name: `[secrets]`, `[ secrets ]`, `["secrets"]`); with name empty, it matches
+// any table header (used to find where the current table ends). Array-of-tables
+// (`[[x]]`) is treated as a header boundary but never as the named table.
+func isTableHeader(line, name string) bool {
+	t := strings.TrimSpace(line)
+	if !strings.HasPrefix(t, "[") || !strings.HasSuffix(t, "]") {
+		return false
+	}
+	if name == "" {
+		return true
+	}
+	if strings.HasPrefix(t, "[[") {
+		return false
+	}
+	inner := strings.TrimSpace(t[1 : len(t)-1])
+	inner = strings.Trim(inner, `"'`)
+	return inner == name
+}
+
+// declaresKey reports whether a contract line declares key (`key = ...` or
+// `key=...`), ignoring leading whitespace and avoiding a prefix false match
+// (`KEYS` for `KEY`).
+func declaresKey(line, key string) bool {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(line), key)
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimLeft(rest, " \t"), "=")
 }
 
 // StorageKey maps an env var name to the key it is stored under.

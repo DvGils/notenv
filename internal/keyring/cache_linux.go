@@ -20,6 +20,17 @@ func newCache() Cache { return kernelCache{} }
 
 func keyDesc(scope string) string { return "notenv:" + scope }
 
+// keyTimeoutSeconds floors a positive TTL to at least 1 second. int truncation of
+// a sub-second TTL yields 0, and keyctl_set_timeout(..., 0) CLEARS the timeout (the
+// key never expires), which would silently invert a shortened cache lifetime into a
+// permanent one.
+func keyTimeoutSeconds(ttl time.Duration) int {
+	if secs := int(ttl.Seconds()); secs >= 1 {
+		return secs
+	}
+	return 1
+}
+
 func (kernelCache) Get(scope string) (string, bool) {
 	id, err := unix.KeyctlSearch(unix.KEY_SPEC_USER_KEYRING, "user", keyDesc(scope), 0)
 	if err != nil {
@@ -45,7 +56,7 @@ func (kernelCache) Store(scope, masterKey string, ttl time.Duration) error {
 	if err != nil {
 		return err
 	}
-	_, err = unix.KeyctlInt(unix.KEYCTL_SET_TIMEOUT, id, int(ttl.Seconds()), 0, 0)
+	_, err = unix.KeyctlInt(unix.KEYCTL_SET_TIMEOUT, id, keyTimeoutSeconds(ttl), 0, 0)
 	if err != nil {
 		// A key that cannot be expired must not linger: drop it and skip caching.
 		_, _ = unix.KeyctlInt(unix.KEYCTL_INVALIDATE, id, 0, 0, 0)

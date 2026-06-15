@@ -299,7 +299,10 @@ func writeUserConfigFromFlags(ctx context.Context) error {
 		name = config.DefaultStorage
 	}
 	entry := config.StorageEntry{Remote: initRemote, Base: base}
-	path, err := config.UpsertStorage(name, entry, false)
+	// This path only runs when no machine config exists yet (see the caller's
+	// config.Exists guard), so there is never a name to collide with: force is
+	// irrelevant here, pass false.
+	path, err := config.UpsertStorage(name, entry, false, false)
 	if err != nil {
 		return err
 	}

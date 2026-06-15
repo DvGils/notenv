@@ -82,6 +82,13 @@ func (a *app) requireHumanPassphrase(ctx context.Context, action string) error {
 // plaintext egress (`run --no-mask`, `export`) and destructive owner acts
 // (`vault delete`), all of which must refuse a rolled-back or replaced vault.
 func humanUnlock(ctx context.Context, store backend.HeaderStore, scope, action string) (*crypto.MasterKey, int, *crypto.Header, error) {
+	// Inside a handoff session, refuse any vault but the session's ephemeral one:
+	// fail closed rather than prompt for a passphrase against a different vault.
+	// humanUnlock never caches, so this is a defense-in-depth layer over the
+	// master-protection guarantee, not the thing that provides it.
+	if err := sessionGuard(scope); err != nil {
+		return nil, -1, nil, err
+	}
 	if !interactiveFn() {
 		return nil, -1, nil, fmt.Errorf("%s, so it needs a human to confirm with a passphrase, and there is no terminal to ask on", action)
 	}

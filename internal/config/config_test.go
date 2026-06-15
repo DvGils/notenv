@@ -55,7 +55,7 @@ func TestUpsertStorageRoundTrip(t *testing.T) {
 	isolateConfig(t)
 
 	// First storage becomes the default.
-	if _, err := config.UpsertStorage("personal", config.StorageEntry{Remote: "b2", Base: "p"}, false); err != nil {
+	if _, err := config.UpsertStorage("personal", config.StorageEntry{Remote: "b2", Base: "p"}, false, false); err != nil {
 		t.Fatalf("UpsertStorage: %v", err)
 	}
 	u, err := config.LoadUser()
@@ -70,7 +70,7 @@ func TestUpsertStorageRoundTrip(t *testing.T) {
 	}
 
 	// Second storage does not steal default unless asked.
-	if _, err := config.UpsertStorage("acme", config.StorageEntry{Remote: "s3", Base: "a"}, false); err != nil {
+	if _, err := config.UpsertStorage("acme", config.StorageEntry{Remote: "s3", Base: "a"}, false, false); err != nil {
 		t.Fatal(err)
 	}
 	u, _ = config.LoadUser()
@@ -82,7 +82,7 @@ func TestUpsertStorageRoundTrip(t *testing.T) {
 	}
 
 	// makeDefault switches it.
-	if _, err := config.UpsertStorage("acme", config.StorageEntry{Remote: "s3", Base: "a"}, true); err != nil {
+	if _, err := config.UpsertStorage("acme", config.StorageEntry{Remote: "s3", Base: "a"}, true, false); err != nil {
 		t.Fatal(err)
 	}
 	u, _ = config.LoadUser()
@@ -91,15 +91,71 @@ func TestUpsertStorageRoundTrip(t *testing.T) {
 	}
 }
 
+// TestUpsertStorageRefusesDifferentTarget: reusing a name for a different vault
+// location is refused unless forced, so a name is never silently repointed; the
+// same target (even with different tuning) is always allowed.
+func TestUpsertStorageRefusesDifferentTarget(t *testing.T) {
+	isolateConfig(t)
+	if _, err := config.UpsertStorage("vault", config.StorageEntry{Remote: "b2", Base: "a"}, false, false); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+
+	// Same target, different tuning: allowed (an "ensure" re-run).
+	if _, err := config.UpsertStorage("vault", config.StorageEntry{Remote: "b2", Base: "a", ReadOnly: true}, false, false); err != nil {
+		t.Fatalf("same-target re-write should be allowed, got: %v", err)
+	}
+
+	// Different target without force: refused, and the entry is left intact.
+	_, err := config.UpsertStorage("vault", config.StorageEntry{Remote: "b2", Base: "b"}, false, false)
+	if err == nil {
+		t.Fatal("repointing a name at a different target must be refused without force")
+	}
+	if u, _ := config.LoadUser(); u.Storage["vault"].Base != "a" {
+		t.Fatalf("refused write must not change the entry, got base %q", u.Storage["vault"].Base)
+	}
+
+	// With force: the repoint goes through.
+	if _, err := config.UpsertStorage("vault", config.StorageEntry{Remote: "b2", Base: "b"}, false, true); err != nil {
+		t.Fatalf("forced repoint should succeed, got: %v", err)
+	}
+	if u, _ := config.LoadUser(); u.Storage["vault"].Base != "b" {
+		t.Fatalf("forced repoint did not take effect, got base %q", u.Storage["vault"].Base)
+	}
+}
+
+// TestLocalScopePath: a local scope round-trips back to its path, and a remote
+// scope (or junk) is reported as not-local.
+func TestLocalScopePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notenv-handoff-123-abc")
+	scope := config.Effective{Path: path}.Scope()
+	got, ok := config.LocalScopePath(scope)
+	if !ok || got != path {
+		t.Fatalf("LocalScopePath(%q) = %q,%v; want %q,true", scope, got, ok, path)
+	}
+
+	remote := config.Effective{Remote: "b2", Base: "bucket"}.Scope()
+	if _, ok := config.LocalScopePath(remote); ok {
+		t.Fatal("a remote scope must not parse as a local path")
+	}
+	// Malformed input must report not-local, never panic (a negative length-prefix
+	// would otherwise index out of range; these scopes can appear as stray keys in
+	// a hand-edited pins.json that the handoff sweep iterates).
+	for _, junk := range []string{"", "nope", "5:short:x", "x::local:/p", "-1:foo", "-6::local:/p"} {
+		if _, ok := config.LocalScopePath(junk); ok {
+			t.Fatalf("malformed scope %q parsed as local", junk)
+		}
+	}
+}
+
 func TestUpsertStorageRejectsBadNames(t *testing.T) {
 	isolateConfig(t)
 	for _, bad := range []string{"vault.prod", "has space", "a/b", "", ".x", "-x"} {
-		if _, err := config.UpsertStorage(bad, config.StorageEntry{Remote: "r"}, false); err == nil {
+		if _, err := config.UpsertStorage(bad, config.StorageEntry{Remote: "r"}, false, false); err == nil {
 			t.Errorf("UpsertStorage(%q) should be rejected", bad)
 		}
 	}
 	// A valid name round-trips (the TOML key is quoted, so it parses back intact).
-	if _, err := config.UpsertStorage("acme-prod_2", config.StorageEntry{Remote: "b2", Base: "x"}, false); err != nil {
+	if _, err := config.UpsertStorage("acme-prod_2", config.StorageEntry{Remote: "b2", Base: "x"}, false, false); err != nil {
 		t.Fatalf("valid name rejected: %v", err)
 	}
 	u, err := config.LoadUser()
@@ -302,7 +358,7 @@ func TestResolveSelectsStorage(t *testing.T) {
 func TestLocalStorageEntry(t *testing.T) {
 	isolateConfig(t)
 	vaultDir := t.TempDir()
-	if _, err := config.UpsertStorage("local", config.StorageEntry{Path: vaultDir}, false); err != nil {
+	if _, err := config.UpsertStorage("local", config.StorageEntry{Path: vaultDir}, false, false); err != nil {
 		t.Fatal(err)
 	}
 	u, err := config.LoadUser()
@@ -335,7 +391,7 @@ func TestStorageEntryValidation(t *testing.T) {
 		"both":    {Path: "/somewhere", Remote: "b2", Base: "bucket/x"},
 		"neither": {},
 	} {
-		if _, err := config.UpsertStorage(name, entry, false); err == nil {
+		if _, err := config.UpsertStorage(name, entry, false, false); err == nil {
 			t.Errorf("UpsertStorage must refuse entry %q", name)
 		}
 	}
@@ -448,7 +504,7 @@ func TestNamespaceAcceptance(t *testing.T) {
 // and lands on the Effective for both resolution paths.
 func TestReadOnlyStorageEntry(t *testing.T) {
 	isolateConfig(t)
-	if _, err := config.UpsertStorage("ro", config.StorageEntry{Remote: "b2", Base: "x", ReadOnly: true}, false); err != nil {
+	if _, err := config.UpsertStorage("ro", config.StorageEntry{Remote: "b2", Base: "x", ReadOnly: true}, false, false); err != nil {
 		t.Fatal(err)
 	}
 	u, err := config.LoadUser()

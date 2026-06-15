@@ -114,6 +114,42 @@ func TestFindWalksUp(t *testing.T) {
 	}
 }
 
+// TestDeclareSpacedHeader: a hand-written `[ secrets ]` header (valid TOML) must be
+// matched, not duplicated. The old exact-string match appended a second [secrets]
+// table, which Parse then rejected as "table already defined".
+func TestDeclareSpacedHeader(t *testing.T) {
+	path := writeContract(t, t.TempDir(), "namespace = \"x\"\n[ secrets ]\nA = { required = true }\n")
+	if err := Declare(path, "B"); err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	f, err := Parse(path)
+	if err != nil {
+		t.Fatalf("Parse after Declare (duplicate [secrets] table?): %v", err)
+	}
+	if _, ok := f.Secrets["A"]; !ok {
+		t.Error("existing A declaration lost")
+	}
+	if _, ok := f.Secrets["B"]; !ok {
+		t.Error("B was not declared under the spaced header")
+	}
+}
+
+// TestDeclareSkipsDuplicateKey: declaring an already-present key is a no-op, not a
+// second key line (which Parse rejects as "key already defined").
+func TestDeclareSkipsDuplicateKey(t *testing.T) {
+	path := writeContract(t, t.TempDir(), "namespace = \"x\"\n[secrets]\nA = { required = true }\n")
+	if err := Declare(path, "A"); err != nil {
+		t.Fatalf("Declare existing key: %v", err)
+	}
+	if _, err := Parse(path); err != nil {
+		t.Fatalf("Parse after re-Declare (duplicate key?): %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if n := strings.Count(string(raw), "A = "); n != 1 {
+		t.Errorf("A declared %d times, want 1", n)
+	}
+}
+
 func TestDeclare(t *testing.T) {
 	dir := t.TempDir()
 	path := writeContract(t, dir, sample)

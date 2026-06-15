@@ -4,7 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"filippo.io/age"
@@ -15,6 +16,10 @@ import (
 	"github.com/DvGils/notenv/internal/runner"
 	"github.com/DvGils/notenv/internal/ui"
 )
+
+// handoffDirPrefix names every ephemeral vault directory; the supervisor PID
+// follows it ("notenv-handoff-<pid>-<random>") so a sweep can check liveness.
+const handoffDirPrefix = "notenv-handoff-"
 
 var handoffCmd = &cobra.Command{
 	Use:   "handoff -- command [args...]",
@@ -63,6 +68,11 @@ func runHandoff(cmd *cobra.Command, agentArgv []string) error {
 	}
 	namespace, srcSpec, srcScope := a.namespace, a.sourceSpec, a.cacheScope
 
+	// Clean up after any earlier handoff that died without running its teardown
+	// (SIGKILL, power loss): remove its leftover ephemeral vault and forget its
+	// trust pin. A session whose supervisor is still alive is left untouched.
+	sweepStaleHandoffs()
+
 	// Generate the fresh ephemeral identity Me. The parent keeps the private half
 	// (it becomes the agent's credential) and passes only the public recipient to
 	// the builder, so the builder never holds or returns your master (R2/R3).
@@ -71,15 +81,30 @@ func runHandoff(cmd *cobra.Command, agentArgv []string) error {
 		return fmt.Errorf("generate ephemeral key: %w", err)
 	}
 
-	// Create the ephemeral vault directory, RAM-backed where available.
-	eDir, err := os.MkdirTemp(ephemeralBase(), "notenv-handoff-")
+	// Create the ephemeral vault directory, RAM-backed where available. Its name
+	// carries this process's PID so a later sweep can tell a dead session's
+	// leftovers from a concurrent live one.
+	eDir, err := os.MkdirTemp(ephemeralBase(), fmt.Sprintf("%s%d-", handoffDirPrefix, os.Getpid()))
 	if err != nil {
 		return fmt.Errorf("create ephemeral vault directory: %w", err)
 	}
-	defer os.RemoveAll(eDir)
 	eScope := config.Effective{Path: eDir}.Scope()
-	defer config.ForgetScope(eScope)          // drop E's local trust pin
-	defer keyring.DefaultCache().Drop(eScope) // drop E's master from the cache
+
+	// Teardown for this session: release the source no-cache lease, drop E's
+	// master from the cache, forget E's local trust pin, and remove E's vault. It
+	// runs on every return path. Both the builder and the agent run through
+	// runner.Run, which catches termination signals and returns rather than letting
+	// the default handler kill us, so a Ctrl-C still unwinds through here; the
+	// startup sweep is the backstop for an uncatchable kill (SIGKILL, power loss).
+	var releaseLease func()
+	defer func() {
+		if releaseLease != nil {
+			releaseLease()
+		}
+		keyring.DefaultCache().Drop(eScope)
+		_ = config.ForgetScope(eScope)
+		_ = os.RemoveAll(eDir)
+	}()
 
 	// Take the no-cache lease on the source for the session's lifetime: while the
 	// agent runs, the source master stays out of the shared cache even if you
@@ -87,7 +112,7 @@ func runHandoff(cmd *cobra.Command, agentArgv []string) error {
 	if release, err := takeLease(srcScope); err != nil {
 		ui.Warnf("could not take a no-cache lease on the source vault (%v); avoid unlocking it elsewhere during this session", err)
 	} else {
-		defer release()
+		releaseLease = release
 	}
 
 	// Build E in a subprocess that unlocks the source and exits before the agent
@@ -119,23 +144,24 @@ func runBuilder(srcSpec, namespace, eDir, recipient string) error {
 	if err != nil {
 		return err
 	}
-	build := exec.Command(exe, "__handoff-build",
+	// Run through runner.Run so the builder gets the same signal handling as the
+	// agent: a Ctrl-C at its passphrase prompt is forwarded to it and we get its
+	// exit code back, rather than the default handler killing us and skipping the
+	// caller's teardown. Its output goes to stderr, keeping the agent's stdout
+	// clean. stdin is wired, though the passphrase prompt reads /dev/tty directly.
+	argv := []string{exe, "__handoff-build",
 		"--source", srcSpec,
 		"--namespaces", namespace,
 		"--vault", eDir,
 		"--recipient", recipient,
-	)
-	build.Env = os.Environ()
-	build.Stdin = os.Stdin
-	build.Stdout = os.Stderr
-	build.Stderr = os.Stderr
-	if err := build.Run(); err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			// The builder already printed why; do not double-report.
-			return errors.New("could not build the ephemeral vault (see the error above)")
-		}
+	}
+	code, err := runner.Run(argv, os.Environ(), os.Stdin, os.Stderr, os.Stderr)
+	if err != nil {
 		return fmt.Errorf("could not run the ephemeral vault builder: %w", err)
+	}
+	if code != 0 {
+		// The builder already printed why; do not double-report.
+		return errors.New("could not build the ephemeral vault (see the error above)")
 	}
 	return nil
 }
@@ -184,6 +210,66 @@ func ephemeralBase() string {
 		return rt
 	}
 	return os.TempDir()
+}
+
+// sweepStaleHandoffs removes the residue of handoff sessions that exited without
+// running their teardown (an uncatchable SIGKILL or a power loss): leftover
+// ephemeral vault directories and the trust pins they left in pins.json. A
+// directory or pin whose supervisor PID is still alive belongs to a running
+// session and is left alone, so concurrent handoffs are safe. Best-effort: any
+// error just means the residue is swept on a later run.
+func sweepStaleHandoffs() {
+	base := ephemeralBase()
+	// Leftover directories (clutter on non-tmpfs; also covers a kill before any
+	// pin was written). Forget the matching pin here too, by recomputing its scope.
+	if entries, err := os.ReadDir(base); err == nil {
+		for _, e := range entries {
+			name := e.Name()
+			if !e.IsDir() || !strings.HasPrefix(name, handoffDirPrefix) {
+				continue
+			}
+			if pid, ok := pidFromHandoffDir(name); ok && pidAlive(pid) {
+				continue // a live session owns it
+			}
+			dir := filepath.Join(base, name)
+			_ = config.ForgetScope(config.Effective{Path: dir}.Scope())
+			_ = os.RemoveAll(dir)
+		}
+	}
+	// Orphan pins whose ephemeral vault is already gone (the tmpfs case: the
+	// directory vanished on logout/reboot, but pins.json persists).
+	scopes, err := config.PinnedScopes()
+	if err != nil {
+		return
+	}
+	for _, scope := range scopes {
+		path, ok := config.LocalScopePath(scope)
+		if !ok || filepath.Dir(path) != base || !strings.HasPrefix(filepath.Base(path), handoffDirPrefix) {
+			continue
+		}
+		if pid, ok := pidFromHandoffDir(filepath.Base(path)); ok && pidAlive(pid) {
+			continue
+		}
+		if _, err := os.Stat(path); err == nil {
+			continue // still on disk: handled by the directory pass above
+		}
+		_ = config.ForgetScope(scope)
+	}
+}
+
+// pidFromHandoffDir extracts the supervisor PID from an ephemeral vault directory
+// name ("notenv-handoff-<pid>-<random>").
+func pidFromHandoffDir(name string) (int, bool) {
+	rest := strings.TrimPrefix(name, handoffDirPrefix)
+	dash := strings.IndexByte(rest, '-')
+	if dash <= 0 {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(rest[:dash])
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
 }
 
 func init() {

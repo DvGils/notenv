@@ -35,9 +35,11 @@ var editCmd = &cobra.Command{
 	Long: `Open the namespace in $VISUAL/$EDITOR as a dotenv-shaped buffer in which
 every existing value reads ` + keepSentinel + `: replace it to set a new value, delete
 the line to unset the key, add KEY=value lines to create keys, and edit the
-comment line above a key to change its description. Values are taken
-literally (no quoting), and a value is never shown: the buffer can leak at
-most what you type into it.
+comment line above a key to change its description. A value is single-line and
+trimmed of surrounding whitespace; to store one with surrounding whitespace or
+newlines, use "notenv set --stdin" (edit refuses a namespace whose values it cannot
+represent that way, rather than corrupt them). A value is never shown: the buffer
+can leak at most what you type into it.
 
 Saving applies the difference as one recorded write. A key that also changed
 on another machine while the buffer was open is detected and stops the save
@@ -60,6 +62,12 @@ func runEdit(cmd *cobra.Command, a *app) error {
 	before, _, err := a.readState(ctx)
 	if err != nil {
 		return err
+	}
+	// The line-oriented, no-quoting buffer cannot round-trip a value with
+	// surrounding whitespace or an embedded newline, so refuse rather than render
+	// it and silently corrupt it on save. `set --stdin` handles such values.
+	if bad := unrepresentableKeys(before); len(bad) > 0 {
+		return fmt.Errorf("namespace %q has secret(s) %s whose value has surrounding whitespace or spans multiple lines, which edit cannot represent; change them with `notenv set <KEY> --stdin` (or `notenv unset <KEY>`), then edit the rest", a.namespace, strings.Join(bad, ", "))
 	}
 
 	path, cleanup, err := writeEditBuffer(a, before)
@@ -111,6 +119,12 @@ func runEdit(cmd *cobra.Command, a *app) error {
 		} else {
 			sets++
 		}
+	}
+	// Deleting every secret with nothing added (a truncated or emptied buffer, an
+	// editor that wrote 0 bytes, a stray select-all-delete) is the crontab -r
+	// footgun: confirm before wiping a whole namespace.
+	if err := confirmWipe(before, writes, a.namespace); err != nil {
+		return err
 	}
 	var updated *secrets.State
 	if err := ui.Spin(fmt.Sprintf("Encrypting and recording %d change(s)", len(writes)), func() error {
@@ -312,6 +326,55 @@ func diffEdit(before *secrets.State, entries map[string]editEntry) ([]secrets.Wr
 	}
 	sort.Slice(writes, func(i, j int) bool { return writes[i].Key < writes[j].Key })
 	return writes, nil
+}
+
+// wouldWipeNamespace reports whether a write batch deletes every existing secret
+// and adds none, i.e. empties the namespace. runEdit confirms before doing this, so
+// a truncated or emptied buffer cannot silently delete everything.
+func wouldWipeNamespace(before *secrets.State, writes []secrets.Write) bool {
+	if len(before.Secrets) == 0 {
+		return false
+	}
+	dels := 0
+	for _, w := range writes {
+		if !w.Deleted {
+			return false
+		}
+		dels++
+	}
+	return dels == len(before.Secrets)
+}
+
+// unrepresentableKeys lists secrets whose value the line-oriented, no-quoting edit
+// buffer cannot round-trip faithfully: surrounding whitespace (invisible in the
+// buffer and trimmed on re-parse) or an embedded newline (which would break the
+// one-line-per-key format). edit refuses such a namespace; `set --stdin` stores
+// these values. Internal whitespace is fine.
+func unrepresentableKeys(before *secrets.State) []string {
+	var bad []string
+	for k, v := range before.Secrets {
+		if v != strings.TrimSpace(v) || strings.ContainsRune(v, '\n') {
+			bad = append(bad, k)
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
+// confirmWipe asks before an edit that would empty the namespace; it returns an
+// error when the user declines or there is no terminal to ask on.
+func confirmWipe(before *secrets.State, writes []secrets.Write, namespace string) error {
+	if !wouldWipeNamespace(before, writes) {
+		return nil
+	}
+	ok, err := ui.Confirm(fmt.Sprintf("delete all %d secret(s) in namespace %q?", len(before.Secrets), namespace), false)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("aborted; nothing was written")
+	}
+	return nil
 }
 
 // refuseConcurrentEdits stops the save when a key this edit touches also
