@@ -17,6 +17,9 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# rclone conformance scratch, when the opt-in suite is pointed at a relative base
+/internal/backend/tmp/
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
@@ -44,3 +47,6 @@ go.work.sum
 # MkDocs build output and local docs toolchain (the docs/ source IS tracked).
 /site/
 /.venv/
+
+# Local scratch helper for wiping notenv state between manual test runs.
+/cleanup-notenv.py
