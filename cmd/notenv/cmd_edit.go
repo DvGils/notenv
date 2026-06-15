@@ -324,6 +324,14 @@ func diffEdit(before *secrets.State, entries map[string]editEntry) ([]secrets.Wr
 			writes = append(writes, secrets.Write{Key: key, Deleted: true})
 		}
 	}
+	for _, w := range writes {
+		if w.Deleted {
+			continue
+		}
+		if err := secrets.ValidateValue(w.Value); err != nil {
+			return nil, fmt.Errorf("%s: %w", w.Key, err)
+		}
+	}
 	sort.Slice(writes, func(i, j int) bool { return writes[i].Key < writes[j].Key })
 	return writes, nil
 }

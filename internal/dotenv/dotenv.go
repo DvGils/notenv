@@ -7,7 +7,7 @@
 //   - an optional `export ` prefix is dropped
 //   - unquoted values are trimmed of surrounding whitespace
 //   - single-quoted values are literal, double-quoted values understand the
-//     \n, \t, \", \\ escapes; both may span multiple lines
+//     \n, \r, \t, \", \\ escapes; both may span multiple lines
 //   - there is no variable expansion of any kind: a secrets file is not a
 //     shell script, and silently expanding `$X` would corrupt real values
 //
@@ -162,6 +162,8 @@ func unescape(s string) (string, error) {
 		switch s[i] {
 		case 'n':
 			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
 		case 't':
 			b.WriteByte('\t')
 		case '"':
@@ -169,7 +171,7 @@ func unescape(s string) (string, error) {
 		case '\\':
 			b.WriteByte('\\')
 		default:
-			return "", fmt.Errorf("unsupported escape \\%c (only \\n, \\t, \\\", \\\\)", s[i])
+			return "", fmt.Errorf("unsupported escape \\%c (only \\n, \\r, \\t, \\\", \\\\)", s[i])
 		}
 	}
 	return b.String(), nil

@@ -26,11 +26,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/crypto"
@@ -42,7 +45,14 @@ import (
 // a newer notenv wrote it; lower: an older layout this build no longer reads).
 // The key header (internal/crypto) is versioned separately by the same
 // exact-match rule. Bump only on an incompatible change to this payload.
-const blobVersion = 1
+//
+// Version 2 base64-encodes each entry's value and description (see encodeField):
+// v1 stored them as raw JSON strings, where Go's json encoder silently coerces
+// invalid UTF-8 to U+FFFD, so a value that was never given back exactly was
+// effectively lost. Encoding makes the blob hold opaque bytes, so any stored
+// byte is recoverable verbatim; ValidateValue independently gates what may be
+// stored, leaving the encoding as the integrity backstop rather than the gate.
+const blobVersion = 2
 
 // blob is a namespace's whole state: every live key with its advisory metadata.
 // NS records the namespace it belongs to, checked on read so a blob copied from
@@ -252,8 +262,16 @@ func (n *Namespace) decode(key string, plain []byte) (*State, error) {
 	}
 	state := emptyState(true)
 	for k, r := range b.Entries {
-		state.Secrets[k] = r.Value
-		state.Meta[k] = Meta{Description: r.Description, TS: r.TS}
+		value, err := decodeField(r.Value)
+		if err != nil {
+			return nil, corruptBlobf("namespace %q blob %s: secret %q: %v", n.name, key, k, err)
+		}
+		desc, err := decodeField(r.Description)
+		if err != nil {
+			return nil, corruptBlobf("namespace %q blob %s: secret %q description: %v", n.name, key, k, err)
+		}
+		state.Secrets[k] = value
+		state.Meta[k] = Meta{Description: desc, TS: r.TS}
 	}
 	return state, nil
 }
@@ -285,6 +303,49 @@ func (s *State) Apply(writes []Write) *State {
 	return next
 }
 
+// ValidateValue reports why a secret value cannot be stored. A value becomes an
+// environment variable (passed to a child by execve) and may be written back out
+// as a .env file, so it has to be text that survives both: valid UTF-8 with no
+// control characters other than the newline family (\n, \t, \r). A NUL cannot
+// ride in an environment variable at all, an ESC and friends cannot be
+// represented in a .env, and invalid UTF-8 is silently coerced to U+FFFD by the
+// blob's JSON encoder, so all of them are refused here, early, rather than stored
+// as data notenv could not later hand back intact. Binary belongs base64-encoded,
+// which is itself valid text and passes. The newline family is allowed because
+// real secrets carry it (PEM keys, JSON blobs, CRLF certs) and a .env can
+// represent it. This is the single definition of what may enter the vault;
+// callers (set, import, edit) reuse it for friendly errors, WriteBlob enforces it.
+func ValidateValue(value string) error {
+	if !utf8.ValidString(value) {
+		return errors.New("value is not valid UTF-8 text; an environment variable holds text. If this is binary (a key, a cert bundle), base64-encode it first, e.g. `base64 -w0 file | notenv set KEY --stdin`")
+	}
+	for _, r := range value {
+		if r == '\n' || r == '\t' || r == '\r' {
+			continue
+		}
+		if unicode.IsControl(r) {
+			return fmt.Errorf("value contains a control character (U+%04X) that can't be used as an environment variable or written to a .env file; if this is binary, base64-encode it first", r)
+		}
+	}
+	return nil
+}
+
+// encodeField and decodeField are the blob's value/description encoding (since
+// blobVersion 2): base64, so a field carries any byte sequence through the JSON
+// blob verbatim, with no U+FFFD coercion of invalid UTF-8. An empty field encodes
+// to the empty string and back, so omitempty on a description still elides it.
+func encodeField(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
+}
+
+func decodeField(s string) (string, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return "", fmt.Errorf("field is not valid base64: %w", err)
+	}
+	return string(b), nil
+}
+
 // WriteBlob seals state into a fresh, uniquely named blob and returns its object
 // key and the manifest entry that records it, carrying prev forward as the
 // one-generation backup. It is the low-level primitive Commit and Rewrite build
@@ -294,8 +355,14 @@ func (s *State) Apply(writes []Write) *State {
 func (n *Namespace) WriteBlob(ctx context.Context, state *State, prev crypto.ManifestEntry) (string, crypto.ManifestEntry, error) {
 	b := blob{Version: blobVersion, NS: n.name, Entries: make(map[string]record, len(state.Secrets))}
 	for k, v := range state.Secrets {
+		// The authoritative gate: no value the command layer missed reaches
+		// storage. Commands validate earlier for a friendlier error; this is the
+		// chokepoint every write path (including the handoff copy) funnels through.
+		if err := ValidateValue(v); err != nil {
+			return "", crypto.ManifestEntry{}, fmt.Errorf("secret %q: %w", k, err)
+		}
 		m := state.Meta[k]
-		b.Entries[k] = record{Value: v, Description: m.Description, TS: m.TS}
+		b.Entries[k] = record{Value: encodeField(v), Description: encodeField(m.Description), TS: m.TS}
 	}
 	plain := mustMarshal(b)
 	mac, err := n.master.BlobMAC(plain)

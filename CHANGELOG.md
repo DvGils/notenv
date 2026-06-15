@@ -4,6 +4,47 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.20.0
+
+An input-integrity pass: notenv now defines exactly what a secret value may contain
+and stores it byte-for-byte, so a value is always handed back exactly as it went in
+and can never leak control characters into a `.env` file or a terminal.
+
+**Breaking, on purpose: the namespace blob format is now version 2 and an older (v1)
+vault is not read by this version.** Each blob now stores its values and descriptions
+base64-encoded, so any stored byte round-trips exactly; the previous format kept them
+as raw JSON strings, where Go's JSON encoder silently rewrites invalid UTF-8 to the
+replacement character (a value you could never get back intact). There is no in-place
+upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
+`notenv import` into a fresh 0.20.0 vault.
+
+### Changed
+
+- **A secret value must be valid UTF-8 with no control characters other than newline,
+  tab, and carriage return.** A value becomes an environment variable and may be
+  written back out as a `.env`, so it has to survive both: a NUL cannot ride in an
+  environment variable at all, an ESC and friends cannot be represented in a `.env`,
+  and invalid UTF-8 was silently corrupted at rest. notenv now refuses these on `set`,
+  `import`, and `edit`, early and with a clear message, and enforces it at the storage
+  layer that every write funnels through. Binary belongs base64-encoded, which is
+  itself valid text and passes; the error says so. The newline family is allowed
+  because real secrets carry it (PEM keys, JSON blobs, CRLF certs).
+
+### Hardened
+
+- **`export` never writes a raw control byte into the `.env`.** Carriage return now
+  joins newline and tab as an escaped sequence (`\r`), and because values are
+  validated no other control byte can occur, so an exported value can no longer break
+  a third-party dotenv parser's line splitting or inject a terminal escape sequence
+  when the file is viewed. The dotenv reader decodes `\r`, so the `export | import`
+  round-trip stays exact.
+- **Secret descriptions are escaped when displayed.** A control character in a
+  description (shown by `list` and `inspect`, and written as a comment by `export`) is
+  rendered as a visible escape, so a description can no longer break the table layout
+  or inject a terminal escape sequence (for instance a teammate's booby-trapped
+  description shown by `notenv list`). Descriptions are still stored faithfully and
+  `--json` output is left exact; only the human-facing rendering is sanitized.
+
 ## 0.19.1
 
 A correctness and footgun pass after 0.19.0, plus internal cleanup. No storage-format

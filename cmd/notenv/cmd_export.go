@@ -174,8 +174,12 @@ func writeExport(w io.Writer, byNS map[string]*secrets.State, asJSON, all bool) 
 		sort.Strings(keys)
 		for _, k := range keys {
 			if d := state.Meta[k].Description; d != "" {
+				// Descriptions are not gated like values, so escape any control byte
+				// before it lands in the .env as a comment (the same line-/terminal-
+				// injection concern values are escaped for). The \n that separates
+				// comment lines is consumed by the split, so each line is single-line.
 				for line := range strings.SplitSeq(d, "\n") {
-					fmt.Fprintf(w, "# %s\n", line)
+					fmt.Fprintf(w, "# %s\n", sanitizeDisplay(line))
 				}
 			}
 			fmt.Fprintf(w, "%s=%s\n", k, formatEnvValue(state.Secrets[k]))
@@ -209,7 +213,10 @@ func formatEnvValue(v string) string {
 	if bareEnvValue.MatchString(v) {
 		return v
 	}
-	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\t", `\t`)
+	// Values are validated (internal/secrets) to hold no control bytes beyond the
+	// newline family, so escaping \n \r \t (plus the quote and backslash) covers
+	// everything: no raw control byte is ever written into the .env artifact.
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`, "\t", `\t`)
 	return `"` + r.Replace(v) + `"`
 }
 

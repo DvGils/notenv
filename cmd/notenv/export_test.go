@@ -22,6 +22,7 @@ func TestFormatEnvValueRoundTrips(t *testing.T) {
 		"token123", "with space", `has"quote`, "with\nnewline", "",
 		"a=b", "trailing ", " leading", "tab\there", `back\slash`,
 		"hash#inside", "p@ss/w0rd:x+y,z", "unikøde",
+		"carriage\rreturn", "crlf\r\npair", "all\r\n\tmix",
 	}
 	for _, v := range values {
 		line := "K=" + formatEnvValue(v) + "\n"
@@ -31,6 +32,41 @@ func TestFormatEnvValueRoundTrips(t *testing.T) {
 		}
 		if len(pairs) != 1 || pairs[0].Value != v {
 			t.Fatalf("round-trip of %q via %q gave %+v", v, line, pairs)
+		}
+	}
+}
+
+// TestFormatEnvValueNoRawControlBytes: no matter what (validated) value is
+// exported, the .env line carries no raw control byte that a third-party parser
+// could read as a line break or that could inject a terminal escape sequence.
+func TestFormatEnvValueNoRawControlBytes(t *testing.T) {
+	for _, v := range []string{"a\rb", "x\ny", "t\tb", "\r\n\t", "mix\r\n\tend", "plain"} {
+		out := formatEnvValue(v)
+		for i := 0; i < len(out); i++ {
+			if c := out[i]; c < 0x20 || c == 0x7f {
+				t.Errorf("formatEnvValue(%q) emitted raw control byte 0x%02x in %q", v, c, out)
+			}
+		}
+	}
+}
+
+// TestSanitizeDisplay: descriptions render with every control byte as a visible
+// escape, so a description cannot break the list/inspect columns or inject a
+// terminal escape sequence; ordinary text (including multibyte UTF-8) is untouched.
+func TestSanitizeDisplay(t *testing.T) {
+	cases := map[string]string{
+		"plain text": "plain text",
+		"unikøde 世界": "unikøde 世界",
+		"new\nline":  `new\nline`,
+		"tab\tsep":   `tab\tsep`,
+		"cr\rret":    `cr\rret`,
+		"esc\x1bseq": `esc\x1bseq`,
+		"bell\x07":   `bell\x07`,
+		"del\x7f":    `del\x7f`,
+	}
+	for in, want := range cases {
+		if got := sanitizeDisplay(in); got != want {
+			t.Errorf("sanitizeDisplay(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

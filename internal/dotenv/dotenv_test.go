@@ -39,6 +39,8 @@ func TestParseValues(t *testing.T) {
 		"empty":                  {"A=", "A", ""},
 		"single quoted":          {`A='  $literal \n  '`, "A", `  $literal \n  `},
 		"double quoted":          {`A="line1\nline2\t\"x\"\\"`, "A", "line1\nline2\t\"x\"\\"},
+		"carriage return":        {`A="a\rb"`, "A", "a\rb"},
+		"crlf in value":          {`A="x\r\ny"`, "A", "x\r\ny"},
 		"double keeps dollar":    {`A="$HOME stays"`, "A", "$HOME stays"},
 		"quoted then comment":    {`A="v" # note`, "A", "v"},
 		"key space around":       {"  A = hello", "A", "hello"},

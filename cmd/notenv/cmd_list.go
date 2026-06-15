@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -89,9 +91,42 @@ func printSecretsTable(names []string, meta map[string]secrets.Meta) {
 	fmt.Fprintln(w, "NAME\tDESCRIPTION\tMODIFIED")
 	for _, name := range names {
 		m := meta[name]
-		fmt.Fprintf(w, "%s\t%s\t%s\n", name, dashIfEmpty(m.Description), modifiedLabel(m.TS))
+		fmt.Fprintf(w, "%s\t%s\t%s\n", name, dashIfEmpty(sanitizeDisplay(m.Description)), modifiedLabel(m.TS))
 	}
 	_ = w.Flush()
+}
+
+// sanitizeDisplay renders user-authored text (a description) safe for a terminal
+// and for the tab-separated list/inspect output. Descriptions are stored
+// faithfully (see internal/secrets) and are not gated like values, so they may
+// carry control bytes; rendering each as a visible escape stops a description
+// from breaking the column layout or injecting a terminal escape sequence when
+// printed (e.g. a teammate's booby-trapped description shown by `notenv list`).
+// Structured (--json) output is left faithful: encoding/json escapes control
+// bytes in its own text, and a machine consumer should receive the real value.
+func sanitizeDisplay(s string) string {
+	if !strings.ContainsFunc(s, unicode.IsControl) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if unicode.IsControl(r) {
+				fmt.Fprintf(&b, `\x%02x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
 }
 
 // modifiedLabel renders a write's advisory wall-clock timestamp for humans; a

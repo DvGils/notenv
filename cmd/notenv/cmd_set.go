@@ -56,6 +56,10 @@ var setCmd = &cobra.Command{
 			return err
 		}
 
+		if err := secrets.ValidateValue(value); err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+
 		storageKey := a.storageKey(key)
 		// A set without --description re-states the value, not what the key means:
 		// the existing description rides along (KeepDescription carries the live

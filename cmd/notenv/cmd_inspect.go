@@ -99,7 +99,7 @@ func inspectKey(ctx context.Context, name string) error {
 		fmt.Fprintf(w, "exists:\t%s\n", yesNo(info.Exists))
 		if info.Exists {
 			fmt.Fprintf(w, "length:\t%d bytes\n", info.Length)
-			fmt.Fprintf(w, "description:\t%s\n", dashIfEmpty(info.Description))
+			fmt.Fprintf(w, "description:\t%s\n", dashIfEmpty(sanitizeDisplay(info.Description)))
 			fmt.Fprintf(w, "modified:\t%s\n", modifiedLabel(state.Meta[a.storageKey(name)].TS))
 		}
 		_ = w.Flush()
@@ -165,7 +165,7 @@ func inspectNamespace(ctx context.Context) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tBYTES\tDESCRIPTION\tMODIFIED")
 	for _, s := range out.Secrets {
-		fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", s.Name, s.Length, dashIfEmpty(s.Description), modifiedLabel(state.Meta[s.Name].TS))
+		fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", s.Name, s.Length, dashIfEmpty(sanitizeDisplay(s.Description)), modifiedLabel(state.Meta[s.Name].TS))
 	}
 	_ = w.Flush()
 	fmt.Printf("\n%d secret(s) in namespace %q\n", out.Count, a.namespace)
