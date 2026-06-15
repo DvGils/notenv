@@ -1,6 +1,6 @@
 name: nightly-fuzz
 
-# Long-budget fuzzing of the three simulation targets, nightly. Unlike the PR
+# Long-budget fuzzing of every fuzz target in internal/secrets, nightly. Unlike the PR
 # smokes (30s, minimization bounded to one run), these runs keep Go's default
 # minimization: the goal is a corpus that improves overnight, not breadth in a
 # fixed window. The harnesses run against the in-memory store, so this is pure
@@ -40,18 +40,32 @@ jobs:
           path: ~/.cache/go-build/fuzz
           key: fuzz-corpus-${{ github.run_id }}
           restore-keys: fuzz-corpus-
-      - name: fuzz the secret log
-        id: secret
-        continue-on-error: true
-        run: go test -run='^$' -fuzz='^FuzzSecretLog$' -fuzztime=20m ./internal/secrets/
-      - name: fuzz rotation interleavings
-        id: rotation
-        continue-on-error: true
-        run: go test -run='^$' -fuzz='^FuzzRotationLog$' -fuzztime=20m ./internal/secrets/
-      - name: fuzz storage-level attacks
-        id: adversary
-        continue-on-error: true
-        run: go test -run='^$' -fuzz='^FuzzAdversaryLog$' -fuzztime=20m ./internal/secrets/
+      # Every fuzz target gets its own long budget. The loop runs them all even
+      # when one finds a crash (so the corpus save and crasher upload below still
+      # capture everything), then fails the job at the end. A name that matches no
+      # target also fails: `go test -fuzz` exits 0 with "no fuzz tests to fuzz",
+      # which is how the old log-era targets silently stopped fuzzing after 0.18.
+      - name: fuzz
+        run: |
+          set -uo pipefail
+          failed=""
+          for tgt in FuzzWriteReadRoundTrip FuzzReadDecodeNeverPanics FuzzCommitSequence; do
+            echo "::group::$tgt"
+            out=$(go test -run='^$' -fuzz="^${tgt}\$" -fuzztime=20m ./internal/secrets/ 2>&1)
+            status=$?
+            echo "$out"
+            echo "::endgroup::"
+            if printf '%s\n' "$out" | grep -q "no fuzz tests to fuzz"; then
+              echo "::error::$tgt matched no fuzz target (renamed or removed?)"
+              failed="$failed $tgt(missing)"
+            elif [ "$status" -ne 0 ]; then
+              failed="$failed $tgt"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "fuzzing found failures in:$failed (crashing inputs in the run artifacts)"
+            exit 1
+          fi
       - name: save the working corpus
         if: always()
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -73,13 +87,3 @@ jobs:
           name: crashers
           path: /tmp/crashers
           if-no-files-found: ignore
-      - name: report
-        run: |
-          failed=""
-          [ "${{ steps.secret.outcome }}" = "failure" ] && failed="$failed FuzzSecretLog"
-          [ "${{ steps.rotation.outcome }}" = "failure" ] && failed="$failed FuzzRotationLog"
-          [ "${{ steps.adversary.outcome }}" = "failure" ] && failed="$failed FuzzAdversaryLog"
-          if [ -n "$failed" ]; then
-            echo "fuzzing found failures in:$failed (crashing inputs in the run artifacts)"
-            exit 1
-          fi

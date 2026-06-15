@@ -75,18 +75,28 @@ jobs:
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go.mod
-      # Short mutation smokes. minimizetime is bounded to one run: the default
-      # (60s per new interesting input) makes the workers spend the entire
-      # budget minimizing their first finds instead of fuzzing — observed as
-      # the exec counter freezing single-digit. The curated corpus under
-      # testdata/fuzz/ replays deterministically in the regular test job; these
-      # steps only add mutation on top.
-      - name: fuzz the secret log (short smoke)
-        run: go test -run='^$' -fuzz='^FuzzSecretLog$' -fuzztime=30s -fuzzminimizetime=1x ./internal/secrets/
-      - name: fuzz rotation interleavings (short smoke)
-        run: go test -run='^$' -fuzz='^FuzzRotationLog$' -fuzztime=30s -fuzzminimizetime=1x ./internal/secrets/
-      - name: fuzz storage-level attacks (short smoke)
-        run: go test -run='^$' -fuzz='^FuzzAdversaryLog$' -fuzztime=30s -fuzzminimizetime=1x ./internal/secrets/
+      # Short mutation smokes over every fuzz target in internal/secrets.
+      # minimizetime is bounded to one run: the default (60s per new interesting
+      # input) makes the workers spend the whole budget minimizing their first
+      # finds instead of fuzzing. The curated corpus under testdata/fuzz/ replays
+      # deterministically in the regular test job; these steps add live mutation
+      # on top. A name matching no target FAILS the job: `go test -fuzz` exits 0
+      # with "no fuzz tests to fuzz", so without this guard a renamed or removed
+      # target would rot silently into a vacuous pass (it did, after 0.18).
+      - name: fuzz (short smoke)
+        run: |
+          set -uo pipefail
+          for tgt in FuzzWriteReadRoundTrip FuzzReadDecodeNeverPanics FuzzCommitSequence; do
+            echo "::group::$tgt"
+            out=$(go test -run='^$' -fuzz="^${tgt}\$" -fuzztime=30s -fuzzminimizetime=1x ./internal/secrets/ 2>&1)
+            status=$?
+            echo "$out"
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ] || printf '%s\n' "$out" | grep -q "no fuzz tests to fuzz"; then
+              echo "::error::fuzz smoke failed or matched no target: $tgt"
+              exit 1
+            fi
+          done
 
   cross-build:
     runs-on: ubuntu-latest

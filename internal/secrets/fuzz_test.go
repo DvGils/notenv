@@ -2,12 +2,41 @@ package secrets_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"unicode/utf8"
 
+	"filippo.io/age"
+
+	"github.com/DvGils/notenv/internal/backend/memstore"
 	"github.com/DvGils/notenv/internal/crypto"
+	"github.com/DvGils/notenv/internal/keymgmt"
 	"github.com/DvGils/notenv/internal/secrets"
 )
+
+// seededFast is seeded() without scrypt: a header sealed under the master via an
+// X25519 recipient instead of a passphrase slot. Commit only needs a header it
+// can verify and re-seal under the master (it never unlocks a passphrase), so
+// this is equivalent for the write path and orders of magnitude cheaper, which
+// matters when it runs once per fuzz exec.
+func seededFast(t *testing.T) (*memstore.Store, *crypto.MasterKey) {
+	t.Helper()
+	ctx := context.Background()
+	mem := memstore.New()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, mk, err := crypto.NewRecipientHeader(id.Recipient(), "fuzz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, e := h.UnlockIdentity(id); return m, e }
+	if err := keymgmt.SafePut(ctx, mem, header, nil, mk, verify); err != nil {
+		t.Fatal(err)
+	}
+	return mem, mk
+}
 
 // FuzzWriteReadRoundTrip: anything written through Apply + WriteBlob reads back
 // byte-for-byte. Inputs with invalid UTF-8 are skipped because encoding/json
@@ -75,6 +104,88 @@ func FuzzReadDecodeNeverPanics(f *testing.F) {
 		state, err := v.ns().Read(ctx, crypto.ManifestEntry{Blob: key, MAC: mac})
 		if err == nil && state == nil {
 			t.Fatal("Read returned nil state with a nil error")
+		}
+	})
+}
+
+// FuzzCommitSequence drives a fuzzed sequence of sets and deletes through the
+// real Commit path (the header compare-and-swap, read-modify-write, last-write-
+// wins merge, orphan reclaim, and one-generation backup) and checks two
+// invariants against a plain in-memory model: the namespace reads back exactly
+// the model's last-write-wins state, and no blob is left in storage that the
+// manifest does not reference. Keys are drawn from a small set so the same key is
+// overwritten and deleted repeatedly, which is what exercises the merge and the
+// reclaim. Arbitrary key/value/description content is FuzzWriteReadRoundTrip's
+// axis; this target fuzzes the order of operations instead.
+func FuzzCommitSequence(f *testing.F) {
+	f.Add([]byte{0x01, 0x00, 0x11, 0x02, 0x00, 0x00}) // two sets, then delete k0
+	f.Add([]byte{0x01, 0x00, 0x05, 0x00})             // overwrite the same key
+	f.Add([]byte{})                                   // no ops: namespace stays empty
+	f.Fuzz(func(t *testing.T, script []byte) {
+		ctx := context.Background()
+		mem, mk := seededFast(t)
+		ns := secrets.For(mem, "proj", mk)
+
+		const numKeys = 4
+		model := map[string]string{}
+		var header *crypto.Header
+
+		// Each op is two bytes: the operation (a delete one time in four) and the
+		// key index. The same key recurs, so overwrites and deletes pile up.
+		for i := 0; i+1 < len(script); i += 2 {
+			op, arg := script[i], script[i+1]
+			key := fmt.Sprintf("k%d", int(arg)%numKeys)
+			w := secrets.Write{Key: key, Value: fmt.Sprintf("v%d", op)}
+			if op%4 == 0 {
+				w = secrets.Write{Key: key, Deleted: true}
+				delete(model, key)
+			} else {
+				model[key] = w.Value
+			}
+			_, h, err := ns.Commit(ctx, func(cur *secrets.State) (*secrets.State, error) {
+				return cur.Apply([]secrets.Write{w}), nil
+			}, nil)
+			if err != nil {
+				t.Fatalf("commit %+v: %v", w, err)
+			}
+			header = h
+		}
+
+		// Invariant 1: the namespace reads back exactly the model's LWW state.
+		var entry crypto.ManifestEntry
+		if header != nil {
+			entry, _ = header.NamespaceEntry("proj")
+		}
+		got, err := ns.Read(ctx, entry)
+		if err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if len(got.Secrets) != len(model) {
+			t.Fatalf("read %d secrets, model has %d: %v vs %v", len(got.Secrets), len(model), got.Secrets, model)
+		}
+		for k, v := range model {
+			if got.Secrets[k] != v {
+				t.Fatalf("key %q: read %q, model %q", k, got.Secrets[k], v)
+			}
+		}
+
+		// Invariant 2: every blob in storage is referenced by the manifest entry
+		// (the current blob or its one-generation backup); reclaim leaks nothing.
+		blobs, err := mem.List(ctx, "proj/")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		referenced := map[string]bool{}
+		if entry.Blob != "" {
+			referenced[entry.Blob] = true
+		}
+		if entry.Prev != "" {
+			referenced[entry.Prev] = true
+		}
+		for _, b := range blobs {
+			if !referenced[b] {
+				t.Fatalf("orphan blob %q in storage but not referenced by the manifest (entry %+v)", b, entry)
+			}
 		}
 	})
 }
