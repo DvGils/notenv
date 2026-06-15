@@ -9,6 +9,9 @@ on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 A correctness and footgun pass after 0.19.0, plus internal cleanup. No storage-format
 or surface change.
 
+### Changed
+- **Full CLI message sweep**: A full pass of the user-facing CLI messages was done and many were updated for consistency and UX.
+
 ### Fixed
 
 - **`import` no longer stores an empty value's trailing comment as the secret.** A

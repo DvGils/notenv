@@ -67,7 +67,7 @@ func runEdit(cmd *cobra.Command, a *app) error {
 	// surrounding whitespace or an embedded newline, so refuse rather than render
 	// it and silently corrupt it on save. `set --stdin` handles such values.
 	if bad := unrepresentableKeys(before); len(bad) > 0 {
-		return fmt.Errorf("namespace %q has secret(s) %s whose value has surrounding whitespace or spans multiple lines, which edit cannot represent; change them with `notenv set <KEY> --stdin` (or `notenv unset <KEY>`), then edit the rest", a.namespace, strings.Join(bad, ", "))
+		return fmt.Errorf("edit cannot represent these secrets in namespace %q (their values have surrounding whitespace or span multiple lines): %s. Set them with `notenv set <KEY> --stdin` (or remove with `notenv unset <KEY>`), then edit the rest", a.namespace, strings.Join(bad, ", "))
 	}
 
 	path, cleanup, err := writeEditBuffer(a, before)
@@ -302,7 +302,7 @@ func diffEdit(before *secrets.State, entries map[string]editEntry) ([]secrets.Wr
 
 		if e.keep {
 			if !exists {
-				return nil, fmt.Errorf("%s is %s but holds no value yet; give it one (a literal %s value is not storable)", key, keepSentinel, keepSentinel)
+				return nil, fmt.Errorf("%s is new but its value is still %s; replace %s with the value you want to store", key, keepSentinel, keepSentinel)
 			}
 			if setDesc {
 				writes = append(writes, secrets.Write{Key: key, Value: prev, Description: e.description})
@@ -391,7 +391,7 @@ func refuseConcurrentEdits(before, fresh *secrets.State, writes []secrets.Write)
 		}
 	}
 	if len(clashed) > 0 {
-		return fmt.Errorf("%s changed on another machine while you were editing; nothing was written. Re-run `notenv edit` to pick up the new state", strings.Join(clashed, ", "))
+		return fmt.Errorf("these keys changed on another machine while you were editing: %s. Nothing was written; re-run `notenv edit` to pick up the new state", strings.Join(clashed, ", "))
 	}
 	return nil
 }

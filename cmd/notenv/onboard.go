@@ -62,7 +62,7 @@ func verifyOnboardingFingerprint(h *crypto.Header, mk *crypto.MasterKey, code st
 // read the cache and decrypt with their own tooling.
 func (a *app) requireHumanPassphrase(ctx context.Context, action string) error {
 	if !interactiveFn() {
-		return fmt.Errorf("%s, so it needs a human to confirm with a passphrase, and there is no terminal to ask on", action)
+		return fmt.Errorf("%s, so it needs a human to confirm with a passphrase, but no terminal is available; run this command interactively", action)
 	}
 	v, err := a.vault()
 	if err != nil {
@@ -90,7 +90,7 @@ func humanUnlock(ctx context.Context, store backend.HeaderStore, scope, action s
 		return nil, -1, nil, err
 	}
 	if !interactiveFn() {
-		return nil, -1, nil, fmt.Errorf("%s, so it needs a human to confirm with a passphrase, and there is no terminal to ask on", action)
+		return nil, -1, nil, fmt.Errorf("%s, so it needs a human to confirm with a passphrase, but no terminal is available; run this command interactively", action)
 	}
 	raw, err := store.GetHeader(ctx)
 	if err != nil {
@@ -143,7 +143,7 @@ func enforceProvisional(ctx context.Context, store keymgmt.Vault, scope, readOnl
 		return false, errors.New("provisional slot unlocked without its slot key")
 	}
 	if readOnly != "" {
-		return false, fmt.Errorf("your key slot still holds the temporary onboarding passphrase, and replacing it is a header write, but %s. Onboard once with a write-capable storage credential, then switch back", readOnly)
+		return false, fmt.Errorf("your key slot still holds the temporary onboarding passphrase; replacing it requires writing to storage, but %s. Onboard once with a write-capable credential, then switch back", readOnly)
 	}
 	if !interactiveFn() {
 		return false, errors.New("your key slot still holds the temporary onboarding passphrase; run any notenv command interactively once to replace it with your own")

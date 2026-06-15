@@ -23,7 +23,7 @@ var (
 
 var setCmd = &cobra.Command{
 	Use:   "set KEY",
-	Short: "Set a secret value (prompted hidden, encrypted, uploaded; never echoed, never on disk)",
+	Short: "Set a secret value (entered hidden, encrypted, never echoed or written to disk)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key := args[0]
@@ -31,7 +31,7 @@ var setCmd = &cobra.Command{
 		// (BuildEnv only iterates declared secrets, and Declare would reject
 		// it), so it must not reach storage as an orphan blob entry.
 		if !contract.ValidEnvName(key) {
-			return fmt.Errorf("%q is not a valid environment variable name", key)
+			return fmt.Errorf("%q is not a valid environment variable name (use letters, digits, and underscores; cannot start with a digit)", key)
 		}
 		a, err := loadApp(cmd.Context())
 		if err != nil {

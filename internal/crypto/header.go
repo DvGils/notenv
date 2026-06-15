@@ -364,7 +364,7 @@ func (h *Header) Unlock(passphrase string) (*MasterKey, int, *age.X25519Identity
 		return mk, i, slotKey, nil
 	}
 	if matched {
-		return nil, -1, nil, fmt.Errorf("%w: a slot's passphrase matched but its key does not open the vault master (a tampered or half-rotated header)", ErrWrongPassphrase)
+		return nil, -1, nil, fmt.Errorf("this passphrase opened a key slot but its key cannot unlock the vault, so notenv treats it as a %w; the header may be tampered with or only partly rotated. Recover with `notenv key restore-backup`", ErrWrongPassphrase)
 	}
 	return nil, -1, nil, ErrWrongPassphrase
 }
@@ -485,14 +485,14 @@ func EncryptToMasters(plaintext []byte, masters ...*MasterKey) ([]byte, error) {
 // ErrNotRecipient reports that a ciphertext is valid age but was not encrypted
 // to the key that tried to open it: the key is wrong, not the data. Callers
 // (rotation's fallback read, the stale-cache retry) branch on it with errors.Is.
-var ErrNotRecipient = errors.New("blob was not encrypted under the current master key")
+var ErrNotRecipient = errors.New("this secret was encrypted under a different key")
 
 func (m *MasterKey) Decrypt(ciphertext []byte) ([]byte, error) {
 	plaintext, err := decryptWith(ciphertext, m.identity)
 	if err != nil {
 		var noMatch *age.NoIdentityMatchError
 		if errors.As(err, &noMatch) {
-			return nil, fmt.Errorf("%w. Was this storage re-initialized or re-keyed? Re-create the value with `notenv set`", ErrNotRecipient)
+			return nil, fmt.Errorf("%w. Was the storage re-initialized or re-keyed? Re-create the value with `notenv set`", ErrNotRecipient)
 		}
 		return nil, err
 	}

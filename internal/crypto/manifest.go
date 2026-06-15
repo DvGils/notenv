@@ -89,7 +89,7 @@ func (m *MasterKey) CheckBlobMAC(plaintext []byte, want string) error {
 		return err
 	}
 	if !hmac.Equal([]byte(got), []byte(want)) {
-		return errors.New("blob does not match the vault manifest (reverted or substituted?)")
+		return errors.New("stored secret does not match the vault manifest: it may have been reverted or substituted")
 	}
 	return nil
 }

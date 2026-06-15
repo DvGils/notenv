@@ -51,7 +51,7 @@ func (h *Header) Verify(mk *MasterKey) error {
 		return err
 	}
 	if !hmac.Equal(want, h.Auth) {
-		return errors.New("header authentication failed (tampered, or wrong master key)")
+		return errors.New("vault header failed verification: it was tampered with, or unlocked with the wrong key")
 	}
 	return nil
 }

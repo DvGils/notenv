@@ -31,7 +31,7 @@ var vaultCmd = &cobra.Command{
 
 var vaultCopyCmd = &cobra.Command{
 	Use:   "copy",
-	Short: "Replicate this vault to new storage (the local→cloud ramp) and register it",
+	Short: "Copy this vault to new storage (e.g. local to cloud) and register it",
 	Long: `Copy the selected vault (header, every encrypted object) to a new storage
 location, verify the copy byte for byte, and register it as a named storage on
 this machine. The typical move: a vault that started on this machine, copied
@@ -47,7 +47,7 @@ not already hold a vault (copies never merge).`,
 		// The destination is always a freshly named storage (never one with a
 		// read_only entry), so only the process-wide switch applies here.
 		if config.ReadOnlyEnv() {
-			return errors.New("NOTENV_READONLY is set; refusing to copy: a vault copy writes a full vault to the destination")
+			return errors.New("NOTENV_READONLY is set, which blocks all writes; copy writes a full vault to the destination, so unset NOTENV_READONLY to proceed")
 		}
 		src, err := loadHeaderStore()
 		if err != nil {
@@ -73,7 +73,7 @@ not already hold a vault (copies never merge).`,
 		if err := dst.Preflight(ctx); err != nil {
 			return err
 		}
-		if err := ui.Spin("Validating destination: write, read back, delete probe", func() error {
+		if err := ui.Spin("Validating destination (write, read back, delete probe)", func() error {
 			return dst.Probe(ctx)
 		}); err != nil {
 			return err
@@ -163,7 +163,7 @@ func promptDestination(ctx context.Context) (config.StorageEntry, error) {
 	if err != nil {
 		return config.StorageEntry{}, err
 	}
-	base, err := requireInput("Bucket/path for encrypted blobs", "e.g. my-bucket/notenv")
+	base, err := requireInput("Bucket/path for encrypted secrets", "e.g. my-bucket/notenv")
 	if err != nil {
 		return config.StorageEntry{}, err
 	}
@@ -291,13 +291,13 @@ var vaultDeleteYes bool
 
 var vaultDeleteCmd = &cobra.Command{
 	Use:   "delete <name>",
-	Short: "Permanently delete a vault: its objects, this machine's trust state, and its config entry",
+	Short: "Permanently delete a vault, its data, and this machine's record of it",
 	Long: `Permanently delete a configured vault.
 
 Removes the vault's encrypted objects, this machine's trust state for it (the
 rollback pin and cached key), and its entry in the machine config. Gated by the
-vault's primary passphrase, notenv only ever destroys a vault you can prove you
-own, plus a type-the-name confirmation.
+Deletion requires the vault's primary passphrase plus typing the name to
+confirm, so notenv only destroys a vault you can prove you own.
 
 notenv removes the LIVE vault. A versioned remote's history and your own backups
 are the provider's to purge, so "deleted" here does not mean the ciphertext is
@@ -331,11 +331,7 @@ local trust state.`,
 			return err
 		}
 
-		keys, err := store.List(ctx, "")
-		if err != nil {
-			return err
-		}
-		ui.Warnf("permanently deleting vault %s on storage %q (%d objects). notenv removes the live vault; a versioned remote's history and your backups are the provider's to purge", header.VaultID, name, len(keys))
+		ui.Warnf("about to permanently delete vault %s on storage %q. This removes the live vault only; a versioned remote's history and your own backups are yours to purge separately", header.VaultID, name)
 		if !vaultDeleteYes {
 			if !ui.Interactive() {
 				return errors.New("refusing to delete non-interactively without --yes")

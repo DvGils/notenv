@@ -110,7 +110,7 @@ func runHandoff(cmd *cobra.Command, agentArgv []string) error {
 	// agent runs, the source master stays out of the shared cache even if you
 	// unlock the same vault in another terminal.
 	if release, err := takeLease(srcScope); err != nil {
-		ui.Warnf("could not take a no-cache lease on the source vault (%v); avoid unlocking it elsewhere during this session", err)
+		ui.Warnf("couldn't fully isolate this session (%v); to be safe, don't unlock your main vault in another terminal while the agent is running", err)
 	} else {
 		releaseLease = release
 	}

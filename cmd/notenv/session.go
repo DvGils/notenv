@@ -38,7 +38,7 @@ func sessionGuard(scope string) error {
 	if want == "" || want == scope {
 		return nil
 	}
-	return fmt.Errorf("this is a notenv handoff session scoped to one ephemeral vault; refusing to unlock a different vault (point NOTENV_STORAGE at the handed-off vault, or run this outside the session)")
+	return fmt.Errorf("you're inside a notenv handoff session, which can only open the vault it was handed; refusing to unlock a different one (point NOTENV_STORAGE at the handed-off vault, or run this command outside the handoff)")
 }
 
 // sessionDir is the per-user directory holding session lease markers. It prefers

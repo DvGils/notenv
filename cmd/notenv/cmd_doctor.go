@@ -17,7 +17,7 @@ import (
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Check a storage for known problem states and say how to fix them",
+	Short: "Check storage for known problems and how to fix them",
 	Long: `Inspect a storage read-only and report anything in a known problem state,
 with the way out for each: a vanished or unreadable header, a pending
 rollback alarm, unfinished onboarding, a namespace blob that is missing or
@@ -39,7 +39,7 @@ the header unverified. Exit code 0 means no findings, 1 means look above.`,
 			ui.Successf("no findings")
 			return nil
 		}
-		ui.Warnf("%d finding(s); the lines above say how to proceed", c.problems)
+		ui.Warnf("%d finding(s) above; each says how to fix it", c.problems)
 		return &exitCodeError{code: 1}
 	},
 }
@@ -95,7 +95,7 @@ func runDoctor(cmd *cobra.Command, store *headerTarget, c *checkup) {
 	raw, err := store.GetHeader(ctx)
 	if errors.Is(err, backend.ErrNotFound) {
 		if vaultID, bound, _ := config.ScopeVault(store.scope); bound {
-			c.problem("no key header, but this machine pinned vault %s at this storage: the vault may have been wiped or replaced. Restore it (`notenv key restore-backup`, or the remote's version history), or, ONLY if you deliberately reset this storage, `notenv key forget`", vaultID)
+			c.problem("no key header, but this machine pinned vault %s at this storage: the vault may have been wiped or replaced. Restore it with `notenv key restore-backup` (or the remote's version history). If you reset this storage on purpose, run `notenv key forget`", vaultID)
 		} else {
 			c.note("no vault on this storage yet; `notenv setup` creates one")
 		}
@@ -125,16 +125,16 @@ func runDoctor(cmd *cobra.Command, store *headerTarget, c *checkup) {
 func verifyWithSessionKey(c *checkup, scope string, header *crypto.Header) (*crypto.MasterKey, bool) {
 	cached, hit := keyring.DefaultCache().Get(scope)
 	if !hit {
-		c.note("header not verified: no session key cached (any unlock verifies it); the object checks below check presence against the unverified manifest, not content")
+		c.note("header not verified: no session key cached (any unlock verifies it). The object checks below confirm presence only, against the unverified manifest, not content")
 		return nil, false
 	}
 	mk, err := crypto.ParseMasterKey(cached)
 	if err != nil {
-		c.note("header not verified: the cached session key is unreadable; the object checks below check presence against the unverified manifest, not content")
+		c.note("header not verified: the cached session key is unreadable (try `notenv cache clear` then unlock again). The object checks below confirm presence only, against the unverified manifest, not content")
 		return nil, false
 	}
 	if err := header.Verify(mk); err != nil {
-		c.problem("header FAILED authentication under the session key: %v. If the vault was re-keyed elsewhere this is a stale cache (`notenv cache clear`, then unlock again); otherwise treat the storage as tampered", err)
+		c.problem("header failed authentication under the session key: %v. If the vault was re-keyed elsewhere this is a stale cache (`notenv cache clear`, then unlock again); otherwise treat the storage as tampered", err)
 		return nil, false
 	}
 	c.ok("header authenticates under the cached session key")

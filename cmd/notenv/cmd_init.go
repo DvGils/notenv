@@ -34,7 +34,7 @@ const contractTemplate = `# notenv contract (committed). Declares which env vars
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Set up notenv for this project (chains into machine setup on first run)",
+	Short: "Set up notenv for this project (also runs machine setup the first time)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -98,7 +98,7 @@ var initCmd = &cobra.Command{
 		}
 		if binding.Namespace != eff.Namespace {
 			if binding.Namespace != "" {
-				ui.Notef("re-pinning this checkout from namespace %q to %q", binding.Namespace, eff.Namespace)
+				ui.Notef("switching this project from namespace %q to %q", binding.Namespace, eff.Namespace)
 			}
 			pinNamespace(dir, binding, eff.Namespace)
 		}
@@ -112,7 +112,7 @@ var initCmd = &cobra.Command{
 			return err
 		}
 		if joined {
-			ui.Successf("found existing secrets for namespace %q; you're ready: `notenv run -- <cmd>` (it will ask for your escrowed passphrase)", eff.Namespace)
+			ui.Successf("found existing secrets for namespace %q; you're ready: `notenv run -- <cmd>` (it will ask for your vault passphrase)", eff.Namespace)
 			return nil
 		}
 
@@ -164,7 +164,7 @@ func writeContract(cwd string) error {
 	nsLine := fmt.Sprintf("\n# namespace = %q   # default: this directory's name\n", filepath.Base(cwd))
 	if namespace != "" {
 		if !contract.NamespaceName.MatchString(namespace) {
-			return fmt.Errorf("namespace %q must match %s", namespace, contract.NamespaceName)
+			return fmt.Errorf("namespace %q may use only letters, digits, '.', '-' or '_', and must start with a letter, digit or '_'", namespace)
 		}
 		// Only write an explicit namespace line when it differs from the
 		// directory-name default; otherwise leave the default commented out.
@@ -180,7 +180,7 @@ func writeContract(cwd string) error {
 	if effective == "" {
 		effective = filepath.Base(cwd)
 	}
-	ui.Successf("wrote ./%s (namespace %q). Commit this; it's the secret *contract*, no values", contract.FileName, effective)
+	ui.Successf("wrote ./%s (namespace %q). Commit it: it declares the contract, with no secret values", contract.FileName, effective)
 	return nil
 }
 
@@ -306,7 +306,7 @@ func writeUserConfigFromFlags(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	ui.Successf("wrote storage %q to %s", name, path)
+	ui.Successf("saved storage %q to config (%s)", name, path)
 	return nil
 }
 

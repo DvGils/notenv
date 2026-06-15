@@ -94,14 +94,14 @@ func headerTargetFor(storageName string) (*headerTarget, error) {
 // `notenv key trust` after out-of-band verification.
 func trustHeader(scope string, h *crypto.Header, mk *crypto.MasterKey) error {
 	if err := h.Verify(mk); err != nil {
-		return fmt.Errorf("%w; refusing to use this vault", err)
+		return fmt.Errorf("%w; refusing to use this vault. If a teammate changed it legitimately, run `notenv key trust`; otherwise treat the storage as compromised", err)
 	}
 	boundVault, bound, err := config.ScopeVault(scope)
 	if err != nil {
 		return err
 	}
 	if bound && boundVault != h.VaultID {
-		return fmt.Errorf("this storage previously held vault %s but now presents vault %s: the vault was replaced wholesale. If you deliberately re-initialized it, run `notenv key forget` and connect again; otherwise treat the storage as compromised", boundVault, h.VaultID)
+		return fmt.Errorf("this storage previously held vault %s but now presents vault %s: the vault was replaced wholesale. If you deliberately re-initialized it, run `notenv key forget` and set up again; otherwise treat the storage as compromised", boundVault, h.VaultID)
 	}
 	stored, have, err := config.ReadPin(h.VaultID)
 	if err != nil {
@@ -603,7 +603,7 @@ private key stays wherever it was made).`,
 		ui.Successf("added slot %q with a one-time onboarding string", name)
 		ui.Infof("send this string to them over a private channel:")
 		fmt.Println(temp + "/" + crypto.Fingerprint(u.header.VaultID, u.header.SignPub))
-		ui.Infof("it is their first passphrase plus a code that proves they reached this vault and not a substitute; their first notenv command makes them replace the passphrase with one only they know. Until then `notenv key list` shows the slot as provisional")
+		ui.Infof("it bundles their first passphrase with a code proving they reached the real vault. Their first notenv command replaces the passphrase with one only they know; until then `notenv key list` shows the slot as provisional")
 		return nil
 	},
 }
@@ -784,7 +784,7 @@ func resolveSlot(h *crypto.Header, sel string) (int, error) {
 		recipientMatch := slot.Type == crypto.SlotRecipient && slot.PublicKey == sel
 		if slot.Name == sel || recipientMatch {
 			if match != -1 {
-				return -1, fmt.Errorf("more than one slot matches %q; remove it by index instead", sel)
+				return -1, fmt.Errorf("more than one slot matches %q; select it by index instead", sel)
 			}
 			match = i
 		}
@@ -936,7 +936,7 @@ authentication tag must still verify.`,
 
 var keyEvictCmd = &cobra.Command{
 	Use:   "evict <namespace>",
-	Short: "Rewrite a namespace whose current blob is unreadable from what survives (acknowledged data loss)",
+	Short: "Repair a namespace with an unreadable blob by rewriting it from what survives (accepts data loss)",
 	Long: `Repair a namespace a normal read refuses because its current blob is missing or
 corrupt (bit-rot, a truncated upload, an unrecoverable remote). notenv rewrites
 the namespace from what survives: its one-generation backup if that is intact
@@ -970,7 +970,7 @@ what survives without changing anything.`,
 			return fmt.Errorf("namespace %q reads cleanly; nothing to evict", ns)
 		}
 		for _, c := range state.Corrupt {
-			ui.Warnf("untrustable blob %s: %s", c.Blob, c.Reason)
+			ui.Warnf("unreadable blob %s: %s", c.Blob, c.Reason)
 		}
 		survivors := len(state.Secrets)
 		if survivors > 0 {

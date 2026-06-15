@@ -84,7 +84,7 @@ func runHandoffBuild(ctx context.Context) error {
 		total += len(st.Secrets)
 	}
 	if total == 0 {
-		return fmt.Errorf("none of the handed-off namespaces (%s) hold any secrets", strings.Join(namespaces, ", "))
+		return fmt.Errorf("the namespace(s) you handed off (%s) hold no secrets, so there's nothing to give the agent; add secrets with `notenv set` first", strings.Join(namespaces, ", "))
 	}
 
 	if err := buildEphemeral(ctx, buildVault, recipient, states); err != nil {
@@ -115,7 +115,7 @@ func unlockSource(ctx context.Context, vault keymgmt.Vault, eff config.Effective
 		return nil, nil, err
 	}
 	if identityUnlocks(header) {
-		return nil, nil, fmt.Errorf("handoff needs a passphrase-gated source, but the %s identity unlocks this vault: the agent runs as you and could replay it to reach your real vault. Unset %s for the handoff, or hand off from a passphrase-gated vault", identityEnv, identityEnv)
+		return nil, nil, fmt.Errorf("handoff won't use a vault that your %s identity can unlock, because the agent runs as you and could reuse that identity to open your real vault. Either unset %s before handing off, or hand off from a passphrase-protected vault", identityEnv, identityEnv)
 	}
 	cache := keyring.DefaultCache()
 	if cached, ok := cache.Get(eff.Scope()); ok {

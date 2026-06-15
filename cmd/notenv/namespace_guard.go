@@ -135,7 +135,7 @@ func confirmNamespace(namespace, question, decline string) error {
 			ui.Notef("namespace %q accepted via %s", namespace, acceptNamespaceEnv)
 			return nil
 		}
-		return fmt.Errorf("refusing namespace %q: its first use here needs confirmation and there is no terminal to ask on. If this runner is meant to use it, set %s=%s", namespace, acceptNamespaceEnv, namespace)
+		return fmt.Errorf("refusing namespace %q: its first use here needs confirmation, but there is no terminal to prompt on. If this runner is meant to use it, set %s=%s", namespace, acceptNamespaceEnv, namespace)
 	}
 	ok, err := ui.Confirm(question, false)
 	if err != nil {
@@ -152,7 +152,7 @@ func confirmNamespace(namespace, question, decline string) error {
 func pinNamespace(dir string, binding config.LocalBinding, namespace string) {
 	binding.Namespace = namespace
 	if _, err := config.WriteLocalBinding(dir, binding); err != nil {
-		ui.Warnf("could not pin namespace %q in %s: %v (the contract-change guard stays off for this checkout)", namespace, config.LocalBindingFile, err)
+		ui.Warnf("could not pin namespace %q in %s: %v (notenv won't detect later contract changes for this project)", namespace, config.LocalBindingFile, err)
 		return
 	}
 	if err := ensureGitignore(dir, config.LocalBindingFile); err != nil {

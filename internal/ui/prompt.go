@@ -22,7 +22,7 @@ func tty() (*os.File, error) {
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		return os.Stdin, nil
 	}
-	return nil, errors.New("interactive prompt needs a terminal (or pass the value via flags)")
+	return nil, errors.New("interactive prompt needs a terminal; pass the value with a flag instead")
 }
 
 // Interactive reports whether prompts are possible at all.

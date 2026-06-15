@@ -90,7 +90,7 @@ func vetImport(a *app, pairs []dotenv.Pair) (items []importItem, skipped []strin
 		last[p.Key] = p
 	}
 	if len(invalid) > 0 {
-		return nil, nil, fmt.Errorf("not valid environment variable names: %s (nothing was imported)", strings.Join(invalid, ", "))
+		return nil, nil, fmt.Errorf("these are not valid environment variable names: %s (nothing was imported)", strings.Join(invalid, ", "))
 	}
 	for _, key := range order {
 		p := last[key]
@@ -105,7 +105,7 @@ func vetImport(a *app, pairs []dotenv.Pair) (items []importItem, skipped []strin
 }
 
 func reportDryRun(file string, items []importItem, skipped []string) {
-	ui.Notef("dry run: %s parses cleanly; %d secrets would be imported", file, len(items))
+	ui.Notef("dry run: %s parses cleanly; %d secret(s) would be imported", file, len(items))
 	for _, it := range items {
 		ui.Infof("  %s", it.key)
 	}
@@ -143,7 +143,7 @@ func runImport(cmd *cobra.Command, a *app, file string, items []importItem, skip
 		writes = append(writes, secrets.Write{Key: it.storageKey, Value: it.value, KeepDescription: true, TS: now})
 	}
 	var updated *secrets.State
-	if err := ui.Spin(fmt.Sprintf("Encrypting and recording %d secrets", len(items)), func() error {
+	if err := ui.Spin(fmt.Sprintf("Encrypting and recording %d secret(s)", len(items)), func() error {
 		var aerr error
 		updated, aerr = a.writeNamespace(ctx, view, writes)
 		return aerr
@@ -166,9 +166,9 @@ func runImport(cmd *cobra.Command, a *app, file string, items []importItem, skip
 		ui.Warnf("skipped %s: empty value", key)
 	}
 	if a.contract != nil {
-		ui.Successf("imported %d secrets into namespace %q (%d new, %d updated); keys declared in %s", len(items), a.namespace, len(items)-updatedKeys, updatedKeys, contract.FileName)
+		ui.Successf("imported %d secret(s) into namespace %q (%d new, %d updated); keys declared in %s", len(items), a.namespace, len(items)-updatedKeys, updatedKeys, contract.FileName)
 	} else {
-		ui.Successf("imported %d secrets into namespace %q (%d new, %d updated)", len(items), a.namespace, len(items)-updatedKeys, updatedKeys)
+		ui.Successf("imported %d secret(s) into namespace %q (%d new, %d updated)", len(items), a.namespace, len(items)-updatedKeys, updatedKeys)
 	}
 	ui.Notef("every value is now encrypted in your vault, so you can delete %s", file)
 	return nil

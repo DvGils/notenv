@@ -284,7 +284,7 @@ func writeUserConfig(u *User) (string, error) {
 	if u.Crypto.CacheTTL != "" {
 		fmt.Fprintf(&b, "cache_ttl = %q\n", u.Crypto.CacheTTL)
 	} else {
-		b.WriteString("# cache_ttl = \"1h\"   # master-key cache lifetime (Linux kernel keyring); \"0\" disables\n")
+		b.WriteString("# cache_ttl = \"1h\"   # master-key cache lifetime (OS keystore: kernel keyring / Keychain / DPAPI); \"0\" disables\n")
 	}
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
@@ -616,7 +616,7 @@ func ResolveNamespace(u *User, storageName, namespace string) (Effective, error)
 func cryptoEffective(u *User, eff Effective, st StorageEntry, name string) (Effective, error) {
 	eff.Mode = firstOf(u.Crypto.Mode, ModePass)
 	if eff.Mode != ModePass {
-		return eff, fmt.Errorf("unsupported crypto mode %q (MVP supports %q)", eff.Mode, ModePass)
+		return eff, fmt.Errorf("unsupported crypto mode %q (only %q is supported)", eff.Mode, ModePass)
 	}
 	ttl, err := u.MasterCacheTTL()
 	if err != nil {

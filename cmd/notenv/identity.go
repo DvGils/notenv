@@ -57,7 +57,7 @@ func creationIdentity() (*age.X25519Identity, error) {
 			return x, nil
 		}
 	}
-	return nil, fmt.Errorf("%s holds no X25519 identity usable for vault creation", identityEnv)
+	return nil, fmt.Errorf("%s holds no X25519 identity usable for vault creation; set it to an AGE-SECRET-KEY-1... value or a file containing one", identityEnv)
 }
 
 func identitiesFromFile(path string) ([]age.Identity, error) {
