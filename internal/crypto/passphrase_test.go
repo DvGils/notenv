@@ -4,7 +4,41 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+
+	"filippo.io/age"
 )
+
+// TestDecryptRejectsHighWorkFactor: a slot wrapped above the work-factor cap is
+// refused (age checks the embedded factor before running scrypt, so a planted
+// high-cost slot costs nothing), while a slot at the cap still opens. The cap is
+// lowered here so both fixtures are cheap to build.
+func TestDecryptRejectsHighWorkFactor(t *testing.T) {
+	const pass = "correct horse battery staple"
+	prev := maxScryptWorkFactor
+	maxScryptWorkFactor = 8
+	t.Cleanup(func() { maxScryptWorkFactor = prev })
+
+	wrapAt := func(logN int) []byte {
+		t.Helper()
+		r, err := age.NewScryptRecipient(pass)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.SetWorkFactor(logN)
+		ct, err := encryptTo([]byte("slot-key"), r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ct
+	}
+
+	if got, err := NewPassphraseCipher(pass).Decrypt(wrapAt(8)); err != nil || string(got) != "slot-key" {
+		t.Fatalf("a slot at the work-factor cap must open: got %q, err %v", got, err)
+	}
+	if _, err := NewPassphraseCipher(pass).Decrypt(wrapAt(10)); err == nil {
+		t.Fatal("a slot wrapped above the work-factor cap must be refused")
+	}
+}
 
 func TestPassphraseRoundTrip(t *testing.T) {
 	plaintext := []byte(`{"DATABASE_URL":"postgres://x"}`)

@@ -1,12 +1,32 @@
 package main
 
 import (
+	"os"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/DvGils/notenv/internal/secrets"
 )
+
+// TestEditBufferTrapsCatchableTerminationSignals asserts the edit buffer is
+// unlinked on every signal a process can actually catch, and that SIGKILL (which
+// it cannot) is not falsely listed.
+func TestEditBufferTrapsCatchableTerminationSignals(t *testing.T) {
+	got := map[os.Signal]bool{}
+	for _, s := range editBufferSignals {
+		got[s] = true
+	}
+	for _, want := range []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT} {
+		if !got[want] {
+			t.Errorf("edit must trap %v to unlink its plaintext buffer", want)
+		}
+	}
+	if got[syscall.SIGKILL] {
+		t.Error("SIGKILL cannot be trapped and must not be listed (it would imply false coverage)")
+	}
+}
 
 func editState(vals map[string]string, descs map[string]string) *secrets.State {
 	meta := map[string]secrets.Meta{}

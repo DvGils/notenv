@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/keyring"
 	"github.com/DvGils/notenv/internal/runner"
+	"github.com/DvGils/notenv/internal/runtimedir"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
@@ -83,8 +85,17 @@ func runHandoff(cmd *cobra.Command, agentArgv []string) error {
 
 	// Create the ephemeral vault directory, RAM-backed where available. Its name
 	// carries this process's PID so a later sweep can tell a dead session's
-	// leftovers from a concurrent live one.
-	eDir, err := os.MkdirTemp(ephemeralBase(), fmt.Sprintf("%s%d-", handoffDirPrefix, os.Getpid()))
+	// leftovers from a concurrent live one. A remote source keeps no vault
+	// ciphertext on this disk, so an on-disk ephemeral vault would be the first:
+	// ask before that (a local source already has ciphertext on disk, and
+	// macOS/Windows use the temp dir as the documented norm, so neither prompts).
+	base := ephemeralBase()
+	if ephemeralNeedsDiskConsent(srcSpec, base) {
+		if err := confirmDiskFallback("the agent's secrets", "encrypted, and removed when the agent exits"); err != nil {
+			return err
+		}
+	}
+	eDir, err := os.MkdirTemp(base, fmt.Sprintf("%s%d-", handoffDirPrefix, os.Getpid()))
 	if err != nil {
 		return fmt.Errorf("create ephemeral vault directory: %w", err)
 	}
@@ -210,6 +221,22 @@ func ephemeralBase() string {
 		return rt
 	}
 	return os.TempDir()
+}
+
+// ephemeralNeedsDiskConsent reports whether creating the ephemeral vault at base
+// would put remote-sourced secret ciphertext on persistent disk on Linux: the one
+// case worth asking about. A local source already keeps vault ciphertext on this
+// disk, so an ephemeral copy adds no new class of exposure; non-Linux uses the
+// temp dir as the documented norm. The ephemeral vault is ciphertext under a key
+// that never touches disk, so this is a courtesy heads-up, not a hard boundary.
+func ephemeralNeedsDiskConsent(srcSpec, base string) bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	if strings.HasPrefix(srcSpec, "local:") {
+		return false
+	}
+	return !runtimedir.IsRAMBacked(base)
 }
 
 // sweepStaleHandoffs removes the residue of handoff sessions that exited without

@@ -44,6 +44,76 @@ upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
   or inject a terminal escape sequence (for instance a teammate's booby-trapped
   description shown by `notenv list`). Descriptions are still stored faithfully and
   `--json` output is left exact; only the human-facing rendering is sanitized.
+- **The "RAM-only on Linux" guarantee is now verified, not assumed.** The blob
+  cache, the `edit` buffer, and the `handoff` ephemeral vault live under
+  `XDG_RUNTIME_DIR`, which notenv took on faith to be the spec's tmpfs (RAM-backed,
+  owner-only). A misconfigured or overridden value (some `sudo`/cron/SSH contexts, or
+  a hand-exported one) could silently put cached ciphertext or a plaintext buffer on
+  persistent disk. notenv now checks the directory is owner-only and on a
+  tmpfs/ramfs filesystem before trusting it: the blob cache disables itself rather
+  than cache on real disk, and `edit` (always) and `handoff` (only when the source is
+  a remote vault, since a local one already keeps ciphertext on this disk) ask before
+  falling back to a temporary file on disk, naming the fix. macOS and Windows are
+  unchanged; the temp-dir fallback is the documented norm there.
+- **Passphrases are harder to brute-force offline.** Since storage is dumb, anyone
+  who copies a vault (or sits on the wire) can grind its key slots offline, so the
+  bar is raised on both axes. The passphrase notenv generates, at creation and for
+  onboarding, is now eight words rather than six (about 83 bits of entropy, up from
+  62), and every passphrase slot is wrapped with scrypt at work factor 2^19 instead
+  of age's default 2^18, doubling both the time and the memory each offline guess
+  costs. The work factor is the one lever that also hardens a passphrase you chose
+  yourself. It is backward compatible: age records the work factor in each wrapped
+  slot, so existing vaults keep opening and a slot adopts the stronger cost the next
+  time its passphrase is set or rotated.
+- **The warm cache honors the handoff session guard.** A `notenv run`/`list` inside
+  a handoff session that hit the local cache could return a vault other than the
+  session's straight from cache, skipping the guard the cold path applies. The
+  handed-off source vault was never exposed (its master is dropped and held out of
+  the cache for the session), but another vault left warm in the cache could be. The
+  warm path now applies the same guard.
+- **A cached blob is bound to its namespace, not just the master.** The warm cache's
+  tamper check proved an entry came from the master but not which namespace it
+  belonged to, so a same-machine writer of the cache directory could move one
+  namespace's cached entry into another's slot and have it served as that namespace.
+  The check now covers the entry's (scope, namespace) too, the same binding the
+  on-storage blob already carries, so a cross-namespace entry is rejected and the
+  authenticated read runs instead.
+- **`notenv key evict` runs the onboarding gate like every other write command.** A
+  holder still on the temporary onboarding passphrase (which the inviter also knows)
+  could run the lossy `evict` repair without first replacing it; it now requires
+  setting an own passphrase first, matching `set`/`import`/`edit`/`add`/`rm`.
+- **`notenv edit` wipes its scratch buffer on a terminal hangup, not just Ctrl-C.**
+  The buffer holding the values you type was removed on `SIGINT`/`SIGTERM` and on a
+  clean exit, but a `SIGHUP` (the terminal or an SSH connection closing) or `SIGQUIT`
+  could leave it behind. It now unlinks the buffer synchronously on every signal a
+  process can catch. `SIGKILL` and power loss run no handler and cannot be cleaned
+  synchronously, but the buffer is RAM-backed in the normal case (discarded on
+  reboot/logout regardless) and reaches persistent disk only in the fallback that
+  now prompts first; this is not papered over with a flaky next-run sweep.
+- **Object reads are size-capped, so a hostile remote cannot exhaust memory.**
+  Storage is treated as dumb and possibly hostile, but neither backend bounded how
+  much a single read pulled into memory: rclone buffered the child's whole stdout,
+  the local backend read the whole file, and the header is JSON-parsed before its
+  master-keyed tag can be checked, on paths that never unlock (`inspect --all`, the
+  namespace first-use check). A remote could serve a multi-gigabyte header (or one
+  packed with millions of slots) and OOM the machine with no credential, pre-auth.
+  Reads now stop at a generous cap (8 MiB for the header, 64 MiB for a namespace
+  blob, far above any real vault) and fail closed with a clear error instead; the
+  rclone child is killed the instant it overruns rather than left streaming. Object
+  *listings* are bounded the same way (64 MiB of object-key names, ~a million
+  keys), so a remote cannot OOM the `doctor`, `vault copy`, or cleanup paths by
+  serving millions of object names either.
+- **Unlocking won't burn unbounded scrypt work on attacker-planted slots.** age's
+  decrypt side accepts a work factor up to 2^22 (minutes and gigabytes per
+  attempt), and `Unlock` trial-decrypts every passphrase slot before the master or
+  the header tag is known, so a storage-write attacker with no key could plant
+  slots stamped at a huge work factor and make the victim's next unlock grind
+  through them, pre-auth, per slot. notenv now clamps the accepted work factor to
+  just above what it writes (a higher-cost slot is refused before any scrypt runs)
+  and refuses a header with an absurd number of slots. A planted slot could never
+  open the vault anyway (its key is not a recipient of the master); these bounds
+  only stop the wasted work. The companion to the read-size caps above: together
+  they close the pre-auth resource-exhaustion surface.
 
 ## 0.19.1
 

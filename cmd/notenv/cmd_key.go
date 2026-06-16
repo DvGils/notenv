@@ -954,7 +954,7 @@ what survives without changing anything.`,
 		if err != nil {
 			return err
 		}
-		u, err := unlockHeader(ctx, store, false)
+		u, err := unlockHeader(ctx, store, true)
 		if err != nil {
 			return err
 		}

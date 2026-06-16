@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/DvGils/notenv/internal/contract"
+	"github.com/DvGils/notenv/internal/runtimedir"
 	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
@@ -28,6 +29,16 @@ import (
 // a leaked or forgotten buffer can disclose at most what was typed into it
 // during this edit.
 const keepSentinel = "<keep>"
+
+// editBufferSignals are the catchable termination signals writeEditBuffer traps
+// to unlink the plaintext buffer synchronously before the process dies: SIGINT
+// (Ctrl-C) and SIGQUIT (Ctrl-\), SIGTERM (kill), and SIGHUP (the terminal or SSH
+// connection hanging up). SIGKILL and power loss are deliberately absent: they run
+// no handler, and nothing can clean a named on-disk file synchronously after them.
+// That residual only reaches disk in the non-RAM fallback (which is prompted);
+// the RAM-backed buffer is discarded by tmpfs on reboot/logout regardless. A Go
+// panic or normal error path is covered by the deferred cleanup() instead.
+var editBufferSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT}
 
 var editCmd = &cobra.Command{
 	Use:   "edit",
@@ -148,14 +159,16 @@ func writeEditBuffer(a *app, state *secrets.State) (string, func(), error) {
 	base := os.Getenv("XDG_RUNTIME_DIR")
 	if base == "" {
 		base = os.TempDir()
-		// No runtime dir: on Linux that falls to /tmp on persistent disk, where a
-		// newly typed value (and the editor's own swap/undo files) can outlive the
-		// edit if cleanup never runs (SIGKILL, power loss). macOS/Windows temp dirs
-		// are per-user and acceptable, so the warning is Linux-only. Existing values
-		// never reach the buffer (they render as <keep>), so the exposure is bounded
-		// to values typed this session.
-		if runtime.GOOS == "linux" {
-			ui.Warnf("XDG_RUNTIME_DIR is unset, so the edit buffer uses %s (likely persistent disk); a value you type could linger there if the editor or notenv is killed. Point XDG_RUNTIME_DIR at a RAM-backed dir (e.g. /run/user/$UID) to avoid this", base)
+	}
+	// The buffer holds the plaintext values typed this session (existing values
+	// render as <keep>, so the exposure is bounded to what is typed now). When the
+	// chosen base is not a verified RAM-backed dir, it would touch persistent disk,
+	// where a typed value (and the editor's own swap/undo files) can outlive the
+	// edit if cleanup never runs (SIGKILL, power loss), so ask before proceeding.
+	// macOS/Windows use the temp dir as the documented norm and are not prompted.
+	if runtime.GOOS == "linux" && !runtimedir.IsRAMBacked(base) {
+		if err := confirmDiskFallback("the values you type", "removed when you're done"); err != nil {
+			return "", nil, err
 		}
 	}
 	dir, err := os.MkdirTemp(base, "notenv-edit-*")
@@ -163,8 +176,11 @@ func writeEditBuffer(a *app, state *secrets.State) (string, func(), error) {
 		return "", nil, err
 	}
 	remove := func() { _ = os.RemoveAll(dir) }
+	// Unlink the buffer synchronously on any catchable termination (see
+	// editBufferSignals). Removing a file the editor still has open just drops the
+	// name; the kernel frees the inode when the orphaned editor exits.
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sig, editBufferSignals...)
 	go func() {
 		if _, ok := <-sig; ok {
 			remove()
@@ -216,6 +232,29 @@ func renderEditBuffer(namespace string, state *secrets.State) string {
 
 // runEditor opens path in $VISUAL, falling back to $EDITOR. The value is
 // split on whitespace so editors invoked with flags ("code --wait") work.
+// confirmDiskFallback asks before notenv writes secret material to persistent
+// disk because no RAM-backed scratch space is available, and refuses when there
+// is no terminal to ask on (fail closed). subject names what would be written
+// ("the values you type"); lifecycle reassures how it is cleaned up ("removed
+// when you're done"). Callers decide when the risk is real (Linux, not
+// RAM-backed); this only handles the asking, defaulting to no.
+func confirmDiskFallback(subject, lifecycle string) error {
+	const hint = "point XDG_RUNTIME_DIR at a RAM-backed directory (for example /run/user/$(id -u))"
+	msg := fmt.Sprintf("notenv normally keeps %s in memory, never on your disk. This system has no RAM-backed scratch space available, so they would be written to a temporary file on disk instead (%s).", subject, lifecycle)
+	if !interactiveFn() {
+		return fmt.Errorf("%s Re-run in a terminal to choose, or %s", msg, hint)
+	}
+	ui.Warnf("%s", msg)
+	ok, err := ui.Confirm("Continue anyway?", false)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("aborted; to keep secrets in memory, %s", hint)
+	}
+	return nil
+}
+
 func runEditor(path string) error {
 	editor := os.Getenv("VISUAL")
 	if editor == "" {

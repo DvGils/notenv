@@ -10,11 +10,15 @@ import (
 	"time"
 )
 
-// Point XDG_RUNTIME_DIR at a temp dir so the test never touches the real
-// runtime cache.
+// Point XDG_RUNTIME_DIR at a temp dir so the test never touches the real runtime
+// cache, and accept that dir as RAM-backed (a test temp dir is on disk, not
+// tmpfs) so the fsCache logic itself can be exercised.
 func withRuntimeDir(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	prev := ramBacked
+	ramBacked = func(string) bool { return true }
+	t.Cleanup(func() { ramBacked = prev })
 }
 
 func TestBlobCacheRoundTrip(t *testing.T) {
@@ -118,5 +122,22 @@ func TestBlobCacheNoRuntimeDir(t *testing.T) {
 	}
 	if _, ok := c.Get("s", "n"); ok {
 		t.Fatal("without XDG_RUNTIME_DIR the cache must not store anything")
+	}
+}
+
+// TestBlobCacheNotRAMBacked: a runtime dir that is set but not verified RAM-backed
+// disables caching rather than write ciphertext to persistent disk.
+func TestBlobCacheNotRAMBacked(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	prev := ramBacked
+	ramBacked = func(string) bool { return false } // not tmpfs
+	t.Cleanup(func() { ramBacked = prev })
+
+	c := New(time.Minute)
+	if err := c.Put("s", "n", []byte("x")); err != nil {
+		t.Fatalf("Put should be a no-op when the runtime dir is not RAM-backed: %v", err)
+	}
+	if _, ok := c.Get("s", "n"); ok {
+		t.Fatal("a non-RAM-backed runtime dir must disable the cache")
 	}
 }

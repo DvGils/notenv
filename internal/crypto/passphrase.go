@@ -25,8 +25,21 @@ var ErrWrongPassphrase = errors.New("wrong passphrase")
 // Bumping it stays backward compatible (see suite.go): age records the work
 // factor inside each wrapped blob, so a slot wrapped at 18 still opens, and a slot
 // adopts the new cost the next time its passphrase is set or rotated. age's
-// decrypt side accepts up to 2^22 by default, well above this.
+// decrypt side accepts up to 2^22 by default; maxScryptWorkFactor clamps that.
 const scryptWorkFactor = 19
+
+// maxScryptWorkFactor bounds the scrypt cost notenv will spend opening a slot.
+// age's decrypt side otherwise accepts up to 2^22 (minutes and gigabytes per
+// attempt), so a storage-write attacker with no key could plant a slot stamped at
+// a huge work factor and make the victim's next unlock burn that work, pre-auth,
+// for every slot tried. age checks the embedded factor before running scrypt, so a
+// slot above this cap is refused for free. It is scryptWorkFactor+1: every slot
+// notenv writes is at or below the current factor, and the +1 lets a slot written
+// one bump in the future still open on an older binary. A planted slot can never
+// weaken security (its key is not a recipient of the master, so Unlock skips it);
+// the cap only stops wasted work. A var, not a const, so a test can lower it
+// without building costly high-factor fixtures.
+var maxScryptWorkFactor = scryptWorkFactor + 1
 
 // PassphraseCipher encrypts to an age scrypt recipient (symmetric,
 // passphrase-derived). In the header model it wraps key-slot contents,
@@ -53,6 +66,7 @@ func (c *PassphraseCipher) Decrypt(ciphertext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("age identity: %w", err)
 	}
+	identity.SetMaxWorkFactor(maxScryptWorkFactor)
 	plaintext, err := decryptWith(ciphertext, identity)
 	if err != nil {
 		var noMatch *age.NoIdentityMatchError

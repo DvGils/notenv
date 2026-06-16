@@ -57,6 +57,14 @@ import (
 // selection within a schema (a registry, additive, fail-closed on the unknown).
 const headerVersion = 6
 
+// maxSlots bounds the key slots a header may carry; ParseHeader refuses more. A
+// real vault has a handful (team passphrases plus machine identities), so this is
+// a sanity ceiling far above any of them: a storage-write attacker with no key
+// cannot plant thousands of slots to make every unlock trial-decrypt them all
+// (the per-slot scrypt cost is itself capped, see maxScryptWorkFactor). A planted
+// slot cannot weaken security; both bounds only stop wasted work.
+const maxSlots = 256
+
 // Header is the parsed header object. Optional-shaped fields carry omitempty
 // so a parsed header reproduces the exact canonical bytes it was sealed over
 // (a vault that has never stored a secret has no manifest, and its tag was
@@ -419,6 +427,9 @@ func ParseHeader(data []byte) (*Header, error) {
 	}
 	if len(h.Slots) == 0 {
 		return nil, errors.New("corrupt header: no key slots")
+	}
+	if len(h.Slots) > maxSlots {
+		return nil, fmt.Errorf("corrupt header: %d key slots exceeds the maximum of %d", len(h.Slots), maxSlots)
 	}
 	if len(h.Master) == 0 {
 		return nil, errors.New("corrupt header: no wrapped master key")

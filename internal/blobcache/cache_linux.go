@@ -6,22 +6,31 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/DvGils/notenv/internal/runtimedir"
 )
 
-// fsCache stores blobs as files under XDG_RUNTIME_DIR (/run/user/UID), a
-// tmpfs that is RAM-backed, 0700, and wiped on logout/reboot by the system.
-// So cached ciphertext never reaches persistent disk and cannot outlive the
-// login session, no matter when notenv is next run.
+// fsCache stores blobs as files under XDG_RUNTIME_DIR (/run/user/UID). The dir is
+// verified to be RAM-backed (tmpfs/ramfs), owner-only, before use, so cached
+// ciphertext never reaches persistent disk and cannot outlive the login session,
+// no matter when notenv is next run. If it cannot be verified, caching is
+// disabled rather than fall back to real disk (see blobDir).
 type fsCache struct {
 	dir string
 	ttl time.Duration
 }
 
-// blobDir returns the tmpfs cache directory and whether one is available.
+// ramBacked verifies a candidate runtime dir; a test seam so the round-trip tests
+// can exercise fsCache on an ordinary temp dir that is not actually tmpfs.
+var ramBacked = runtimedir.IsRAMBacked
+
+// blobDir returns the tmpfs cache directory and whether one is available. It is
+// available only when XDG_RUNTIME_DIR is set and verified RAM-backed; otherwise
+// caching is refused rather than land ciphertext on persistent disk.
 func blobDir() (string, bool) {
 	runtime := os.Getenv("XDG_RUNTIME_DIR")
-	if runtime == "" {
-		return "", false // no RAM-backed dir, refuse to cache on real disk
+	if runtime == "" || !ramBacked(runtime) {
+		return "", false // no verified RAM-backed dir, refuse to cache on real disk
 	}
 	return filepath.Join(runtime, "notenv", "blobs"), true
 }

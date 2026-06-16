@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -79,6 +80,55 @@ func TestWarmCacheRejectsForgedEntry(t *testing.T) {
 
 	if _, ok := a.cachedSecrets(); ok {
 		t.Fatal("a cache entry whose MAC is not the master's must be rejected, even though it decrypts")
+	}
+}
+
+// TestWarmCacheRejectsCrossNamespaceEntry: an envelope validly MAC'd for one
+// namespace, copied into another namespace's cache slot, must be rejected (the MAC
+// binds the namespace, not just the ciphertext), so the warm path can never serve
+// one namespace's secrets as another's.
+func TestWarmCacheRejectsCrossNamespaceEntry(t *testing.T) {
+	a, blobs, mk := warmApp(t) // a.namespace == "proj"
+	a.cacheState(mk, &secrets.State{Secrets: map[string]string{"K": "proj-secret"}, Meta: map[string]secrets.Meta{}})
+	raw, ok := blobs.Get(a.cacheScope, a.namespace)
+	if !ok {
+		t.Fatal("expected the proj entry to be cached")
+	}
+
+	// Plant the proj envelope under a different namespace, sharing the master cache.
+	other := &app{namespace: "other", cache: a.cache, blobs: blobs, cacheScope: a.cacheScope}
+	if err := blobs.Put(other.cacheScope, other.namespace, raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := other.cachedSecrets(); ok {
+		t.Fatal("an envelope MAC'd for namespace \"proj\" must be rejected when read as \"other\"")
+	}
+}
+
+// TestFetchSecretsRefusesForeignSessionVault: inside a handoff session the warm
+// path must refuse a vault other than the session's, not serve it from cache.
+func TestFetchSecretsRefusesForeignSessionVault(t *testing.T) {
+	a, _, mk := warmApp(t) // a.cacheScope == "scope"
+	a.cacheState(mk, &secrets.State{Secrets: map[string]string{"K": "v"}, Meta: map[string]secrets.Meta{}})
+	t.Setenv(sessionEnv, "a-different-scope")
+
+	if _, err := a.fetchSecrets(context.Background(), false); err == nil {
+		t.Fatal("a warm cache hit must not bypass the handoff session guard for a foreign vault")
+	}
+}
+
+// TestFetchSecretsServesSessionVault: the session's own vault still serves warm.
+func TestFetchSecretsServesSessionVault(t *testing.T) {
+	a, _, mk := warmApp(t)
+	a.cacheState(mk, &secrets.State{Secrets: map[string]string{"K": "v"}, Meta: map[string]secrets.Meta{}})
+	t.Setenv(sessionEnv, a.cacheScope) // the session is for this vault
+
+	got, err := a.fetchSecrets(context.Background(), false)
+	if err != nil {
+		t.Fatalf("the session's own vault must serve from cache: %v", err)
+	}
+	if got.secrets["K"] != "v" {
+		t.Fatalf("K = %q, want v", got.secrets["K"])
 	}
 }
 
