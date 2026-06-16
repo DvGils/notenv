@@ -123,13 +123,13 @@ func PromptNewPassphrase(label string) (string, error) {
 	return pass, nil
 }
 
-// GeneratePassphrase returns a random diceware-style passphrase: six words
+// GeneratePassphrase returns a random diceware-style passphrase: eight words
 // drawn uniformly from the embedded wordlist, hyphen-joined. Used for the
-// temporary onboarding credential, which must be high-entropy without asking
-// its issuer to invent it (issuers pick weak ones) and easy to relay over a
-// chat message.
+// credentials notenv mints itself (the creation passphrase and the temporary
+// onboarding credential), which must be high-entropy without asking a human to
+// invent it (humans pick weak ones) and easy to relay over a chat message.
 func GeneratePassphrase() (string, error) {
-	const count = 6
+	const count = 8
 	words := make([]string, count)
 	for i := range words {
 		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(tempWords))))

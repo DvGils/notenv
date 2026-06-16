@@ -14,11 +14,11 @@ import (
 )
 
 // onboardingStringRe matches the string `key add` prints: the generated
-// six-word passphrase, a slash, and the vault fingerprint. Only generated
+// eight-word passphrase, a slash, and the vault fingerprint. Only generated
 // passphrases have this shape (the wordlist is pure lowercase letters), so a
 // prompt entry matching it is split; a chosen passphrase that happens to
 // match is covered by the retry in resolveUnlock.
-var onboardingStringRe = regexp.MustCompile(`^([a-z]+(?:-[a-z]+){5})/([a-z2-7]{16})$`)
+var onboardingStringRe = regexp.MustCompile(`^([a-z]+(?:-[a-z]+){7})/([a-z2-7]{16})$`)
 
 // splitOnboardingString splits a prompt entry into passphrase and
 // fingerprint; the fingerprint is empty when the entry is a plain passphrase.
