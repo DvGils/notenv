@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DvGils/notenv/internal/backend/local"
 	"github.com/DvGils/notenv/internal/backend/memstore"
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/crypto"
@@ -148,16 +149,16 @@ func TestHumanUnlockRefusesForeignSessionVault(t *testing.T) {
 	}
 }
 
-// TestDestroyVaultLocal: a local vault is removed by deleting its directory.
+// TestDestroyVaultLocal: a clean local vault (only notenv's own objects) is
+// removed by deleting its directory.
 func TestDestroyVaultLocal(t *testing.T) {
+	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "vault")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	store := &local.Storage{Path: dir}
+	if err := store.Put(ctx, "api/data-0123456789abcdef.age", []byte("y")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "obj"), []byte("y"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := destroyVault(context.Background(), config.Effective{Path: dir}, nil); err != nil {
+	if err := destroyVault(ctx, config.Effective{Path: dir}, store); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {

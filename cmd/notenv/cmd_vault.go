@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -133,7 +134,31 @@ func copyDestination(ctx context.Context) (string, config.StorageEntry, error) {
 	if !config.ValidStorageName(name) {
 		return "", config.StorageEntry{}, fmt.Errorf("invalid storage name %q: use letters, digits, '-' or '_'", name)
 	}
+	if reason, bad := dangerousVaultPath(entry.Path); bad {
+		return "", config.StorageEntry{}, fmt.Errorf("refusing %q as a copy destination: %s; a vault directory is owned by notenv, so point --to-path at a dedicated, empty directory instead", entry.Path, reason)
+	}
 	return name, entry, nil
+}
+
+// dangerousVaultPath flags a local destination that must never be treated as a
+// vault directory: the filesystem root or the user's home directory. notenv owns a
+// vault directory (copy reconciles it, delete removes it), so handing it a
+// populated tree puts that tree's other contents at risk. This is the fast, clear
+// guard for the two paths that are both catastrophic and expensive to walk;
+// refuseForeignDestination is the general backstop for any other populated dir. The
+// empty path (a remote destination) is never flagged.
+func dangerousVaultPath(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	clean := filepath.Clean(path)
+	if clean == filepath.VolumeName(clean)+string(filepath.Separator) {
+		return "it is a filesystem root", true
+	}
+	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(home) == clean {
+		return "it is your home directory", true
+	}
+	return "", false
 }
 
 func promptDestination(ctx context.Context) (config.StorageEntry, error) {
@@ -210,6 +235,9 @@ func copyVault(ctx context.Context, src, dst vaultStorage) error {
 	} else if !errors.Is(err, backend.ErrNotFound) {
 		return err
 	}
+	if err := refuseForeignDestination(ctx, dst); err != nil {
+		return err
+	}
 
 	for range 3 {
 		if err := ui.Spin("Copying and verifying objects", func() error {
@@ -270,10 +298,34 @@ func copyObjects(ctx context.Context, src, dst vaultStorage) error {
 		return err
 	}
 	for _, key := range dstKeys {
-		if !srcSet[key] && !reservedCopyName(key) {
-			if err := dst.Delete(ctx, key); err != nil {
-				return fmt.Errorf("reconcile stale %s: %w", key, err)
-			}
+		// Delete only a stale namespace blob the source no longer has. A key that
+		// is not a namespace blob is a file notenv did not write (the destination
+		// precheck should have refused such a destination, but the whitelist makes
+		// the delete safe by construction even if that check is ever bypassed).
+		if srcSet[key] || !backend.IsNamespaceBlob(key) {
+			continue
+		}
+		if err := dst.Delete(ctx, key); err != nil {
+			return fmt.Errorf("reconcile stale %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// refuseForeignDestination fails, before any write, if the destination already
+// holds a file notenv did not create. A copy goes to an empty directory or to one
+// holding only the blobs of an interrupted earlier copy; a directory full of
+// unrelated files (a home directory, a project, "/") is a mispointed destination,
+// and copying there would later delete those files in the reconcile pass. Turning
+// that into an early error is what keeps a stray --to-path from becoming data loss.
+func refuseForeignDestination(ctx context.Context, dst vaultStorage) error {
+	keys, err := dst.List(ctx, "")
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if !backend.IsNotenvObject(key) {
+			return fmt.Errorf("the destination already holds files notenv did not create (e.g. %q); copy writes only to an empty directory or a fresh location, never one with unrelated files in it", key)
 		}
 	}
 	return nil
@@ -362,16 +414,25 @@ local trust state.`,
 	},
 }
 
-// destroyVault removes a vault's bytes: a local vault is its directory; a remote
-// vault is every object it holds (rclone lists the header artifacts as objects,
-// so they go too).
+// destroyVault removes a vault's bytes: a local vault is its directory (removed
+// only once we confirm it holds nothing notenv did not write); a remote vault is
+// every object it holds.
 func destroyVault(ctx context.Context, eff config.Effective, store vaultStorage) error {
-	if eff.Local() {
-		return os.RemoveAll(eff.Path)
-	}
 	keys, err := store.List(ctx, "")
 	if err != nil {
 		return err
+	}
+	if eff.Local() {
+		// A local vault is removed by deleting its directory, but only once we are
+		// sure it is a vault and not a storage entry mispointed at unrelated files:
+		// a foreign file under the path means this is not a vault directory, so
+		// refuse rather than turn a delete into an rm -rf of whatever lives there.
+		for _, key := range keys {
+			if !backend.IsNamespaceBlob(key) {
+				return fmt.Errorf("refusing to delete %s: it holds a file notenv did not create (%q), so it does not look like a vault directory; delete it yourself if you are certain", eff.Path, key)
+			}
+		}
+		return os.RemoveAll(eff.Path)
 	}
 	for _, k := range keys {
 		if err := store.Delete(ctx, k); err != nil {

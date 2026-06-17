@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"regexp"
 	"strings"
 )
 
@@ -95,6 +96,30 @@ func IsReserved(key string) bool {
 		return true
 	}
 	return strings.HasPrefix(path.Base(key), TempPrefix)
+}
+
+// namespaceBlobKey matches the only non-reserved object notenv writes: a namespace
+// blob keyed "<namespace>/data-<16 hex>.age". The namespace charset mirrors
+// contract.NamespaceName and the "data-<hex>.age" shape is internal/secrets'
+// generated blob name; TestNamespaceBlobKeyTracksContract guards the first against
+// drift. Anything else in a vault directory is a file notenv did not put there.
+var namespaceBlobKey = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*/data-[0-9a-f]{16}\.age$`)
+
+// IsNamespaceBlob reports whether key names a namespace data blob. This is the
+// delete whitelist for the copy reconcile and vault teardown: a key that is not a
+// namespace blob is never a stray to clean up, it is either plumbing (handled
+// separately) or a foreign file notenv must not touch.
+func IsNamespaceBlob(key string) bool {
+	return namespaceBlobKey.MatchString(key)
+}
+
+// IsNotenvObject reports whether key is something notenv itself put in a vault:
+// reserved plumbing or a namespace blob. Everything else is a foreign file that
+// does not belong to the vault. Recognizing our own files, rather than trusting
+// that a path notenv was handed is safe to own, is what stops copy from deleting a
+// mispointed destination's contents and delete from removing an unrelated tree.
+func IsNotenvObject(key string) bool {
+	return IsReserved(key) || IsNamespaceBlob(key)
 }
 
 // WithinPrefix reports whether key falls under the directory named by prefix:
