@@ -53,6 +53,15 @@ upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
 
 ### Changed
 
+- **Output masking covers more encoded forms and now runs in linear time.** The masker
+  also scrubs the base32, JSON-string-escaped, and HTML-escaped renderings of a secret
+  (on top of the base64, hex, and percent-encoded forms it already caught), so a value
+  logged inside a JSON body or rendered into a page is masked too. The matcher was
+  rebuilt on a per-pattern KMP automaton: a held byte is never re-scanned, so masking a
+  large captured stream is linear in its length and never quadratic in the secret's
+  length, even for kilobyte secrets like a PEM. Output that touches no secret passes
+  straight through. Masking remains accident-proofing, not a boundary: code that holds
+  a secret can still move it some other way.
 - **A secret value must be valid UTF-8 with no control characters other than newline,
   tab, and carriage return.** A value becomes an environment variable and may be
   written back out as a `.env`, so it has to survive both: a NUL cannot ride in an

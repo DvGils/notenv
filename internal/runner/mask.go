@@ -21,31 +21,44 @@ import (
 // reading. Masking is accident-proofing, not a boundary: code that already
 // holds the secret can always move it some other way.
 //
-// Matching is exact-byte, streamed, by maximal munch: from the leftmost
-// unresolved byte it extends a held window as far as some pattern's prefix allows,
-// then replaces the longest pattern that started there. A value split across writes
-// is still caught (the window is held until later bytes decide), and Flush emits
-// whatever is still held at end-of-stream, so callers must call it after the child
-// exits or trailing output is lost. It is tuned for few but possibly long patterns
-// (a handful of secrets, each expanded into encodings, any of which can be
-// kilobytes, like a PEM): patterns are kept flat (cheap to build, small) and grouped
-// by first byte, and while a window is held a small candidate list (the patterns it
-// is still a prefix of) is narrowed byte by byte. The window and candidates persist
-// across Writes, so a value split over many small writes is matched once, not
-// re-scanned each Write: cost stays linear in the stream, not quadratic in the value.
+// Matching is exact-byte, streamed, leftmost-longest, and non-overlapping: each
+// output position is replaced by the longest pattern that starts there, then
+// scanning resumes after it. A value split across writes is still caught (the
+// decision for a position is deferred until later bytes settle it), and Flush emits
+// whatever is still pending at end-of-stream, so callers must call it after the
+// child exits or trailing output is lost.
+//
+// Each pattern runs as its own KMP automaton (a flat failure table per pattern),
+// all advanced one step per input byte. KMP's failure links mean a byte is never
+// re-scanned, so the cost is linear in the stream and a fixed factor of the pattern
+// count, never quadratic in the pattern length: this matters because patterns can
+// be kilobytes (a handful of secrets, each expanded into encodings, any of which
+// may be a PEM). A byte that starts no pattern and extends no live match is emitted
+// at once (plain passthrough); a byte is held only while some automaton is mid-match
+// and could still complete a match covering it, so the hold is bounded by the
+// longest live partial match (at most one pattern length), and is zero for output
+// that touches no secret.
 type Masker struct {
 	dst       io.Writer
 	patterns  []pattern
+	fail      [][]int32      // KMP failure table per pattern (the partial-match function)
 	firstByte map[byte][]int // pattern indices keyed by value[0]; empty => passthrough
 
-	// Held-window state, persisted across Writes. buf is the bytes held from the
-	// current anchor; cand (owned, never aliasing a firstByte bucket) is the indices
-	// of patterns that have buf as a prefix; bestLen/bestPh are the longest pattern
-	// that has fully matched at the anchor so far (0 if none).
-	buf     []byte
-	cand    []int
-	bestLen int
-	bestPh  []byte
+	// Matcher state, persisted across Writes so a value split over many writes is
+	// matched once. q[i] is pattern i's KMP state (length of the prefix matched
+	// ending at the last byte); active lists the patterns with q>0, the only ones a
+	// byte can advance besides those a byte freshly starts.
+	q      []int32
+	active []int
+
+	// Pending emit queue. buf[bh:] are bytes read but not yet settled; mlen/midx[j]
+	// record the longest match that starts at buf[j] (mlen 0, midx -1 if none). A
+	// front byte is settled, and emitted, once no live automaton could still begin a
+	// match at it, so the queue holds at most the longest live partial match.
+	buf  []byte
+	mlen []int32
+	midx []int32
+	bh   int
 }
 
 // Secret is one injected env var for masking purposes.
@@ -80,11 +93,31 @@ func NewMasker(dst io.Writer, secrets []Secret) *Masker {
 // match at every position.
 func NewMaskerFloor(dst io.Writer, secrets []Secret, minLen int) *Masker {
 	patterns := buildPatterns(secrets, minLen)
+	fail := make([][]int32, len(patterns))
 	firstByte := map[byte][]int{}
 	for i, p := range patterns { // values are non-empty, so value[0] is safe
+		fail[i] = buildFail(p.value)
 		firstByte[p.value[0]] = append(firstByte[p.value[0]], i)
 	}
-	return &Masker{dst: dst, patterns: patterns, firstByte: firstByte}
+	return &Masker{dst: dst, patterns: patterns, fail: fail, firstByte: firstByte, q: make([]int32, len(patterns))}
+}
+
+// buildFail returns the KMP failure table for v: fail[i] is the length of the
+// longest proper prefix of v[:i+1] that is also a suffix of it, the jump that lets
+// the matcher resume after a mismatch without re-reading any byte.
+func buildFail(v []byte) []int32 {
+	fail := make([]int32, len(v))
+	var k int32
+	for i := 1; i < len(v); i++ {
+		for k > 0 && v[i] != v[k] {
+			k = fail[k-1]
+		}
+		if v[i] == v[k] {
+			k++
+		}
+		fail[i] = k
+	}
+	return fail
 }
 
 // buildPatterns expands secrets into the byte patterns to match: each secret's
@@ -181,117 +214,150 @@ func (m *Masker) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// process feeds in through the matcher, appending settled bytes (and placeholders
-// for matches) to out and leaving any unresolved window in m.buf. The window and
-// its candidate set persist across calls: an incoming byte that extends the window
-// narrows the candidates in O(len(cand)) with no re-scan of what is already held.
-// Only when a byte cannot extend the window does it resolve the front (the longest
-// pattern that started at the anchor, else one byte) and re-process the small
-// leftover.
+// process feeds in through the matcher one byte at a time, appending settled bytes
+// (and placeholders for matches) to out and leaving the unsettled tail pending in
+// m.buf. Each byte advances every live automaton plus any the byte starts (O(1)
+// amortized each, no re-scan), records the longest match that completes, then emits
+// every front byte no live automaton could still begin a match at.
 func (m *Masker) process(in []byte, out *[]byte) {
-	// Bytes are pulled from refeed first (leftover re-queued after a resolve), then
-	// from in by index: in itself is never copied, so a divergence costs only the
-	// bounded held window, not the rest of the stream.
-	var refeed []byte
-	ri, ii := 0, 0
-	for {
-		var c byte
-		switch {
-		case ri < len(refeed):
-			c, ri = refeed[ri], ri+1
-		case ii < len(in):
-			c, ii = in[ii], ii+1
-		default:
-			return
-		}
+	for _, b := range in {
+		// Enqueue the byte with an empty match record; matches completing here fill it
+		// in at the position where they start.
+		m.buf = append(m.buf, b)
+		m.mlen = append(m.mlen, 0)
+		m.midx = append(m.midx, -1)
+		pos := len(m.buf) - 1
 
-		if len(m.buf) == 0 {
-			// Not holding: does c begin any pattern?
-			bucket := m.firstByte[c]
-			if len(bucket) == 0 {
-				*out = append(*out, c)
+		// Advance the in-progress automata, recording any completed match and the
+		// largest surviving state (maxQ: the longest live partial match, which is also
+		// how many trailing bytes must stay pending).
+		var maxQ int32
+		w := 0
+		for _, pi := range m.active {
+			nq, matched := m.step(pi, b)
+			m.q[pi] = nq
+			if matched {
+				m.record(pi, pos)
+			}
+			if nq > 0 {
+				m.active[w] = pi
+				w++
+				if nq > maxQ {
+					maxQ = nq
+				}
+			}
+		}
+		m.active = m.active[:w]
+
+		// Start the automata this byte begins (q was 0; ones already advanced above
+		// kept q>0 and are skipped). A length-1 pattern completes here and stays at 0.
+		for _, pi := range m.firstByte[b] {
+			if m.q[pi] != 0 {
 				continue
 			}
-			m.cand = append(m.cand[:0], bucket...) // owned copy; never mutate the bucket
-			m.buf = append(m.buf, c)
-			m.bestLen, m.bestPh = 0, nil
-			for _, pi := range bucket { // a length-1 pattern completes immediately
-				if len(m.patterns[pi].value) == 1 {
-					m.bestLen, m.bestPh = 1, m.patterns[pi].placeholder
-				}
+			nq, matched := m.step(pi, b)
+			m.q[pi] = nq
+			if matched {
+				m.record(pi, pos)
 			}
-			continue
-		}
-
-		// Holding: narrow candidates to those that c extends (still matching at the
-		// next position), recording any that complete exactly here.
-		off := len(m.buf)
-		w := 0
-		var doneLen int
-		var donePh []byte
-		for _, pi := range m.cand {
-			v := m.patterns[pi].value
-			if len(v) > off && v[off] == c {
-				m.cand[w] = pi
-				w++
-				if len(v) == off+1 {
-					doneLen, donePh = off+1, m.patterns[pi].placeholder
+			if nq > 0 {
+				m.active = append(m.active, pi)
+				if nq > maxQ {
+					maxQ = nq
 				}
 			}
 		}
-		if w > 0 {
-			m.cand = m.cand[:w]
-			m.buf = append(m.buf, c)
-			if doneLen > 0 {
-				m.bestLen, m.bestPh = doneLen, donePh
-			}
-			continue
-		}
 
-		// c cannot extend the held window: resolve its front (longest pattern from
-		// the anchor, else one byte), then re-queue the leftover and c ahead of any
-		// remaining refeed. leftover and c are copied into a fresh slice first, since
-		// leftover aliases m.buf's storage which is about to be reset.
-		var leftover []byte
-		if m.bestLen > 0 {
-			*out = append(*out, m.bestPh...)
-			leftover = m.buf[m.bestLen:]
-		} else {
-			*out = append(*out, m.buf[0])
-			leftover = m.buf[1:]
+		// A front byte is settled once it sits before the earliest position any live
+		// automaton is still building from (pending length > maxQ). Emit settled
+		// bytes, taking the longest match recorded at each, else one literal byte.
+		for len(m.buf)-m.bh > int(maxQ) {
+			if m.mlen[m.bh] > 0 {
+				*out = append(*out, m.patterns[m.midx[m.bh]].placeholder...)
+				m.bh += int(m.mlen[m.bh])
+			} else {
+				*out = append(*out, m.buf[m.bh])
+				m.bh++
+			}
 		}
-		nr := make([]byte, 0, len(leftover)+1+len(refeed)-ri)
-		nr = append(nr, leftover...)
-		nr = append(nr, c)
-		nr = append(nr, refeed[ri:]...)
-		refeed, ri = nr, 0
-		m.buf = m.buf[:0]
-		m.cand = m.cand[:0]
-		m.bestLen, m.bestPh = 0, nil
+		if m.bh > 0 && m.bh >= len(m.buf)-m.bh {
+			m.compact() // dead prefix has overtaken the live tail; reclaim it
+		}
 	}
 }
 
-// Flush drains the held window at end of stream. No more bytes can extend it, so a
-// held prefix can no longer complete: resolve its front (the longest pattern that
-// started at the anchor, else one byte) and re-walk the leftover, which exposes a
-// shorter or later match the hold was deferring, until nothing is held. Callers
-// must Flush after the child exits or trailing output is lost.
-func (m *Masker) Flush() error {
-	out := make([]byte, 0, len(m.buf))
-	for len(m.buf) > 0 {
-		var leftover []byte
-		if m.bestLen > 0 {
-			out = append(out, m.bestPh...)
-			leftover = append([]byte(nil), m.buf[m.bestLen:]...)
-		} else {
-			out = append(out, m.buf[0])
-			leftover = append([]byte(nil), m.buf[1:]...)
-		}
-		m.buf = m.buf[:0]
-		m.cand = m.cand[:0]
-		m.bestLen, m.bestPh = 0, nil
-		m.process(leftover, &out)
+// step advances pattern pi's KMP automaton by one byte, following failure links on
+// a mismatch. It returns the new state and whether a full match just completed; on
+// a match the state is rolled back along the failure link so overlapping matches
+// still fire.
+func (m *Masker) step(pi int, b byte) (int32, bool) {
+	v := m.patterns[pi].value
+	f := m.fail[pi]
+	k := m.q[pi]
+	for k > 0 && v[k] != b {
+		k = f[k-1]
 	}
+	if v[k] == b {
+		k++
+	}
+	if int(k) == len(v) {
+		return f[k-1], true
+	}
+	return k, false
+}
+
+// record notes that pattern pi completed a match ending at buf position pos, at the
+// position it started; the longest match starting there wins (leftmost-longest). A
+// match starting before the pending front (start < bh) begins inside output already
+// emitted, so it overlaps a match (or literal run) already committed; the resume is
+// non-overlapping, so it is dropped. Any start at or after the front is real: a
+// position is emitted only once no automaton can still be building from it, so a
+// match that completes later cannot start in already-emitted, non-consumed output.
+func (m *Masker) record(pi, pos int) {
+	ml := len(m.patterns[pi].value)
+	start := pos - ml + 1
+	if start < m.bh {
+		return
+	}
+	if int32(ml) > m.mlen[start] {
+		m.mlen[start] = int32(ml)
+		m.midx[start] = int32(pi)
+	}
+}
+
+// compact slides the live pending region to the front of the buffers, reclaiming
+// the emitted prefix. Triggered only when the dead prefix has grown past the live
+// tail, so it is amortized O(1) per byte.
+func (m *Masker) compact() {
+	n := copy(m.buf, m.buf[m.bh:])
+	m.buf = m.buf[:n]
+	copy(m.mlen, m.mlen[m.bh:])
+	m.mlen = m.mlen[:n]
+	copy(m.midx, m.midx[m.bh:])
+	m.midx = m.midx[:n]
+	m.bh = 0
+}
+
+// Flush drains the pending queue at end of stream: no more bytes can arrive, so
+// every pending byte is settled. It emits the longest recorded match at each front
+// position, else one literal byte, then resets the matcher so a later Write starts
+// clean. Callers must Flush after the child exits or trailing output is lost.
+func (m *Masker) Flush() error {
+	out := make([]byte, 0, len(m.buf)-m.bh)
+	for len(m.buf)-m.bh > 0 {
+		if m.mlen[m.bh] > 0 {
+			out = append(out, m.patterns[m.midx[m.bh]].placeholder...)
+			m.bh += int(m.mlen[m.bh])
+		} else {
+			out = append(out, m.buf[m.bh])
+			m.bh++
+		}
+	}
+	m.buf, m.mlen, m.midx, m.bh = m.buf[:0], m.mlen[:0], m.midx[:0], 0
+	for _, pi := range m.active {
+		m.q[pi] = 0
+	}
+	m.active = m.active[:0]
 	if len(out) == 0 {
 		return nil
 	}
