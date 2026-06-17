@@ -179,13 +179,17 @@ func createWithIdentity(ctx context.Context, store keymgmt.Vault, id *age.X25519
 	return mk, header, nil
 }
 
+// readSecretFn is a seam for tests: the real prompt reads /dev/tty, so tests
+// stub it to drive the generate, confirm-match, and mismatch paths.
+var readSecretFn = keyring.ReadSecret
+
 // chooseCreationPassphrase runs the creation prompt. Empty input generates a
 // passphrase (printed once, never confirmed: it was displayed); a typed one
 // is confirmed and gets the length warning. The passphrase is the root of
 // trust and the offline brute-force surface, so the easy path is the strong
 // one: users invent weak passphrases, the generator does not.
 func chooseCreationPassphrase() (string, error) {
-	pass, err := keyring.ReadSecret("Choose a passphrase for this storage (Enter to generate one): ")
+	pass, err := readSecretFn("Choose a passphrase for this storage (Enter to generate one): ")
 	if err != nil {
 		return "", err
 	}
@@ -198,7 +202,7 @@ func chooseCreationPassphrase() (string, error) {
 		fmt.Println(gen)
 		return gen, nil
 	}
-	again, err := keyring.ReadSecret("Confirm passphrase: ")
+	again, err := readSecretFn("Confirm passphrase: ")
 	if err != nil {
 		return "", err
 	}

@@ -49,7 +49,7 @@ jobs:
         run: |
           set -uo pipefail
           failed=""
-          for tgt in FuzzWriteReadRoundTrip FuzzReadDecodeNeverPanics FuzzCommitSequence; do
+          for tgt in FuzzWriteReadRoundTrip FuzzReadDecodeNeverPanics FuzzCommitSequence FuzzMultiWriterCommit; do
             echo "::group::$tgt"
             out=$(go test -run='^$' -fuzz="^${tgt}\$" -fuzztime=20m ./internal/secrets/ 2>&1)
             status=$?

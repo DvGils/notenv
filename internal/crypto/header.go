@@ -448,18 +448,27 @@ func ParseHeader(data []byte) (*Header, error) {
 	if !SuiteKnown(h.Suite) {
 		return nil, fmt.Errorf("this vault uses cipher suite %q, which this notenv does not know; upgrade notenv", h.Suite)
 	}
+	if err := h.checkPassphraseSlots(); err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+// checkPassphraseSlots verifies each passphrase slot names a KDF this build
+// implements, so an unknown KDF fails closed at parse rather than at unlock.
+func (h *Header) checkPassphraseSlots() error {
 	for i, slot := range h.Slots {
 		if slot.Type != SlotPassphrase {
 			continue
 		}
 		if slot.KDF == "" {
-			return nil, fmt.Errorf("corrupt header: passphrase slot %d has no KDF", i)
+			return fmt.Errorf("corrupt header: passphrase slot %d has no KDF", i)
 		}
 		if !KDFKnown(slot.KDF) {
-			return nil, fmt.Errorf("slot %d uses passphrase KDF %q, which this notenv does not know; upgrade notenv", i, slot.KDF)
+			return fmt.Errorf("slot %d uses passphrase KDF %q, which this notenv does not know; upgrade notenv", i, slot.KDF)
 		}
 	}
-	return &h, nil
+	return nil
 }
 
 func (h *Header) Marshal() ([]byte, error) {
