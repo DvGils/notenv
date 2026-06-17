@@ -64,6 +64,16 @@ func runHandoffBuild(ctx context.Context, cache keyring.Cache) error {
 	if err != nil {
 		return err
 	}
+	// Refuse to run the builder against a foreign vault from inside a handoff
+	// session. The agent runs with NOTENV_SESSION set and could otherwise invoke
+	// __handoff-build directly against your real vault to re-encrypt it under its
+	// own recipient, defeating the master-protection guarantee. The legitimate
+	// builder is spawned by `handoff`, which is not inside a session, so this only
+	// blocks the agent. ensureMaster guards the cold unlock, but unlockSource's
+	// warm-cache read would otherwise slip past it, so the guard belongs here.
+	if err := sessionGuard(srcEff.Scope()); err != nil {
+		return err
+	}
 	srcStore := openStorage(srcEff)
 	vault, ok := srcStore.(keymgmt.Vault)
 	if !ok {

@@ -163,6 +163,37 @@ func TestRunHandoffBuildCopiesOnlyRequestedNamespaces(t *testing.T) {
 	}
 }
 
+// TestRunHandoffBuildRefusedInForeignSession is the master-protection guard: an
+// agent runs with NOTENV_SESSION set, and must not be able to drive the builder
+// against a different (real) vault to re-encrypt it under its own recipient. The
+// source master is warm in the cache here, which is the path that slips past
+// ensureMaster's own session guard, so this pins the guard at the builder entry.
+func TestRunHandoffBuildRefusedInForeignSession(t *testing.T) {
+	isolateConfig(t)
+	ctx := context.Background()
+	cache := newMapCache()
+	srcEff := seedCachedSource(t, cache, "app") // a real source, master cached (warm)
+
+	me, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eDir := t.TempDir()
+	withBuildFlags(t, storageSpec(srcEff), "app", eDir, me.Recipient().String())
+	t.Setenv(identityEnv, "")
+	// Inside a handoff session scoped to some OTHER ephemeral vault (what a
+	// compromised agent's environment carries).
+	t.Setenv(sessionEnv, "9::local:/some/other/ephemeral")
+
+	if err := runHandoffBuild(ctx, cache); err == nil {
+		t.Fatal("builder must refuse a foreign vault from inside a handoff session")
+	}
+	// The refusal must precede any extraction: no ephemeral vault was written.
+	if _, err := openStorage(config.Effective{Path: eDir}).GetHeader(ctx); err == nil {
+		t.Error("builder wrote an ephemeral vault despite refusing the source (extraction leaked)")
+	}
+}
+
 // countingCache is an in-memory cache that records Store calls, so a test can
 // assert the handoff builder never caches the source master.
 type countingCache struct {

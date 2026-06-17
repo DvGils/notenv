@@ -54,6 +54,17 @@ upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
 
 ### Fixed
 
+- **`handoff` no longer lets a compromised agent reach your real vault through the
+  internal builder.** The hidden `__handoff-build` step unlocks the source vault to
+  copy the handed-off namespace into the ephemeral one. A session guard refused
+  unlocking any vault but the handed-off one on the passphrase (cold) path, but a
+  master already warm in the session cache slipped past it: an agent (which runs with
+  the session marker set) could invoke the builder directly against another vault
+  whose master was cached and re-encrypt it under its own key, defeating the
+  master-protection promise. The guard now sits at the builder's entry, before the
+  cache is consulted, so it covers the warm path too. The legitimate builder, spawned
+  by `handoff` itself (which is not inside a session), is unaffected. Still
+  accident-and-master-protection, not agent containment, which is the OS's job.
 - **`vault copy` and `vault delete` can no longer destroy unrelated data.** Copying a
   vault to a local `--to-path` reconciled the destination by deleting anything the
   source did not have, so pointing it at a populated directory (a home directory, a
