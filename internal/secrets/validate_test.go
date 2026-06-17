@@ -14,7 +14,7 @@ func TestValidateValue(t *testing.T) {
 		"token123",
 		"with spaces and a\ttab",
 		"-----BEGIN KEY-----\nabc\ndef\n-----END KEY-----", // multiline PEM
-		"crlf\r\nline",                                     // CRLF cert
+		"crlf\r\nline", // CRLF cert
 		"unicode: køde 世界 🎉",
 	}
 	for _, v := range valid {

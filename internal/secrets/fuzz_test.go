@@ -86,8 +86,8 @@ func FuzzWriteReadRoundTrip(f *testing.F) {
 func FuzzReadDecodeNeverPanics(f *testing.F) {
 	f.Add([]byte(`{"v":2,"ns":"proj","entries":{}}`))
 	f.Add([]byte(`{"v":2,"ns":"proj","entries":{"K":{"value":"dg==","desc":"ZA==","ts":1}}}`)) // base64("v"), base64("d")
-	f.Add([]byte(`{"v":2,"ns":"proj","entries":{"K":{"value":"!notbase64","ts":1}}}`))        // invalid base64: clean corrupt error, no panic
-	f.Add([]byte(`{"v":1,"ns":"proj","entries":{}}`))                                         // older format: clean version error
+	f.Add([]byte(`{"v":2,"ns":"proj","entries":{"K":{"value":"!notbase64","ts":1}}}`))         // invalid base64: clean corrupt error, no panic
+	f.Add([]byte(`{"v":1,"ns":"proj","entries":{}}`))                                          // older format: clean version error
 	f.Add([]byte(`{"v":999,"ns":"proj","entries":{}}`))
 	f.Add([]byte(`{"v":2,"ns":"elsewhere","entries":{}}`))
 	f.Add([]byte(`not json at all`))
