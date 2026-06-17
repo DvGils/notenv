@@ -18,6 +18,28 @@ replacement character (a value you could never get back intact). There is no in-
 upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
 `notenv import` into a fresh 0.20.0 vault.
 
+### Added
+
+- **`notenv inspect handoff` tells a launched program whether it is in a scoped
+  handoff session.** A coding agent started with `notenv handoff -- <agent>` holds
+  only a scoped, ephemeral copy of one namespace; one started with `notenv run`
+  instead has the raw values in its environment and no scoped vault. This subcommand
+  lets the program tell the two apart at startup: exit `0` means it is inside a live
+  handoff, exit `1` means it is not, and `--json` adds the single namespace it was
+  scoped to. It reads only its own environment and the ephemeral vault on disk, so it
+  never unlocks a vault, asks for a passphrase, or prints a secret value. The "yes"
+  answer is corroborated against live ground truth (the named ephemeral vault must
+  still exist and its supervisor still be running), so a stale or clobbered
+  `NOTENV_SESSION` fails safe to "no" rather than a false sense of being scoped.
+- **`notenv run` nudges toward `handoff` when the command looks like a coding agent.**
+  Running a known agent (Claude Code, Codex, Copilot, Gemini, Aider, OpenHands,
+  Continue, OpenCode, Cursor) through `run` injects this namespace's real secret
+  values into its environment; `handoff` instead gives it a scoped ephemeral vault and
+  keeps your master key out of reach. The guard asks before proceeding (default no),
+  and only ever asks a human at a terminal: a non-interactive caller, or a process
+  already inside a handoff session, proceeds untouched. It is accident-proofing, not
+  enforcement: a wrapper invocation like `npx <agent>` is not matched.
+
 ### Changed
 
 - **A secret value must be valid UTF-8 with no control characters other than newline,

@@ -58,6 +58,35 @@ If your own vault is unlocked by an age identity (`NOTENV_IDENTITY`), the agent 
 as you and could replay that identity, so handoff refuses rather than give you a
 false guarantee.
 
+## Telling whether you are in a handoff
+
+A launched agent can ask notenv, at startup, whether it is actually inside a scoped
+handoff session:
+
+```text
+notenv inspect handoff   # exit 0 = inside a handoff, exit 1 = not
+notenv inspect handoff --json   # {"handoff": true, "namespace": "api"}
+```
+
+The answer is the exit code, so an agent can branch without parsing, and `--json` adds
+the single namespace it was scoped to (never an enumeration of your other namespaces).
+It reads only its own environment and the ephemeral vault on disk: no vault is unlocked,
+no passphrase is asked, and no secret value is ever printed.
+
+This matters because an environment variable is only a claim. A detached or
+long-outliving process can carry a stale `NOTENV_SESSION`, and an unrelated `export`
+can clobber one variable but not another. So "yes" is corroborated against live ground
+truth: the vault `NOTENV_STORAGE` names must be the ephemeral vault that session is
+scoped to, still present on disk, and its handoff supervisor must still be running. A
+lost or clobbered variable therefore fails to a safe "no" (a harmless nudge to restart
+under handoff), never a false sense of being scoped.
+
+The human side has a complement. If you run a recognized coding agent through
+`notenv run` instead of `notenv handoff`, notenv notices and asks whether you meant
+handoff before injecting your real values, so the unrecommended path is caught at the
+moment you type it rather than only after the agent starts. Like the check above, it is
+accident-proofing, not a boundary: it nudges, it does not enforce.
+
 ## What this is and is not
 
 Handoff protects your **master key**. It does not contain the agent.

@@ -40,6 +40,12 @@ values are not yours to see; your job is to run things that need them, by name.
 
 ## Inside a handoff session
 
+**Check at startup with `notenv inspect handoff`** (exit `0` = you are in a scoped
+handoff, `1` = you are not; `--json` adds the namespace). If you are not, the user
+likely started you with `notenv run` instead of `notenv handoff`: tell them, and ask
+how they want to proceed before using any credentials. The command reads no vault and
+prints no secret, so it is always safe to run.
+
 If you were started with `notenv handoff`, you are pointed at an ephemeral vault
 holding only the namespace you were handed. Work normally: `notenv run -- <cmd>`
 and `notenv list` resolve against it and give you the real values. Do not try to
