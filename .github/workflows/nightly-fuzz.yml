@@ -51,7 +51,7 @@ jobs:
           failed=""
           for tgt in FuzzWriteReadRoundTrip FuzzReadDecodeNeverPanics FuzzCommitSequence FuzzMultiWriterCommit; do
             echo "::group::$tgt"
-            out=$(go test -run='^$' -fuzz="^${tgt}\$" -fuzztime=20m ./internal/secrets/ 2>&1)
+            out=$(go test -tags fastkdf -run='^$' -fuzz="^${tgt}\$" -fuzztime=20m ./internal/secrets/ 2>&1)
             status=$?
             echo "$out"
             echo "::endgroup::"
