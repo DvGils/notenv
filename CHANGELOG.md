@@ -20,6 +20,17 @@ upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
 
 ### Added
 
+- **`notenv copy KEY --from NS1 --to NS2` copies one secret between namespaces
+  without exposing its value.** The value is read under the master and written back
+  under the same master in a single process: it is never printed, piped, or written
+  to disk the way a `get`-then-`set` would leak it. It is deliberately within one
+  vault only (there is no source/target storage flag): the namespace name is bound
+  into each blob, so the only safe primitive is re-encrypting under the one vault's
+  master, and both namespaces resolve through a single addressed storage. The
+  destination key is refused if it already exists unless you pass `--force`, and the
+  description rides along. Inside a handoff session the unlock is refused for any
+  vault but the handed-off one, so an agent can only ever copy between namespaces it
+  was already given.
 - **`notenv inspect handoff` tells a launched program whether it is in a scoped
   handoff session.** A coding agent started with `notenv handoff -- <agent>` holds
   only a scoped, ephemeral copy of one namespace; one started with `notenv run`

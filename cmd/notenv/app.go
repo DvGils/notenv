@@ -296,8 +296,18 @@ func (a *app) vault() (keymgmt.Vault, error) {
 // the orphaned blob is removed, the now-stale local caches are dropped, and the
 // user re-runs, which unlocks the new master and writes cleanly.
 func (a *app) writeNamespace(ctx context.Context, view *vaultView, writes []secrets.Write) (*secrets.State, error) {
-	state, _, err := a.namespaceFor(view).Commit(ctx,
-		func(cur *secrets.State) (*secrets.State, error) { return cur.Apply(writes), nil },
+	return a.commitNamespace(ctx, view, func(cur *secrets.State) (*secrets.State, error) {
+		return cur.Apply(writes), nil
+	})
+}
+
+// commitNamespace is writeNamespace's engine: it runs apply against the current
+// namespace state under the header compare-and-swap, with the same epoch and
+// uncertain-commit recovery. apply sees the freshly re-read state on each
+// attempt, so a check-then-write (e.g. copy's refuse-if-exists) decides against
+// the state that will actually be committed, with no separate-read TOCTOU gap.
+func (a *app) commitNamespace(ctx context.Context, view *vaultView, apply func(*secrets.State) (*secrets.State, error)) (*secrets.State, error) {
+	state, _, err := a.namespaceFor(view).Commit(ctx, apply,
 		func(h *crypto.Header) { pinCurrent(a.cacheScope, h, view.mk) })
 	if err != nil {
 		if errors.Is(err, backend.ErrCommitUncertain) {

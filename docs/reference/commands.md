@@ -12,6 +12,7 @@
 | `notenv set KEY --stdin` | Read the value from stdin (for multiline or piped values). |
 | `notenv set KEY --description "..."` | Also record what the secret is for. Omitted, the existing note is kept; `""` clears it. |
 | `notenv unset KEY` | Remove a stored secret value. |
+| `notenv copy KEY --from NS1 --to NS2` | Copy one secret between two namespaces of the same vault without exposing its value (re-encrypted in place, never printed). Refuses an existing destination key unless `--force`. |
 | `notenv list` | List stored secret names with descriptions and modified times (never values). `--json` for machines; piped output is bare names; `--refresh` bypasses the local cache. |
 | `notenv inspect KEY` | Show a secret's metadata: whether it exists, its length, description, and modified time; exit 1 if absent. Never a value. `--json` for machines. |
 | `notenv inspect` | Summarize the current namespace: each secret's name, length, description, and modified time. `--json` for machines. |
