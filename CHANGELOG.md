@@ -76,6 +76,13 @@ upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
 
 ### Hardened
 
+- **The `handoff` builder can no longer cache your real master key.** Caching the
+  source vault's master during a handoff would leave it where the agent (which runs as
+  you) could read it and open your real vault. A no-cache lease already suppressed this
+  machine-wide, but the builder now also unlocks the source with a hard-coded zero cache
+  TTL, so it cannot store the master even if the lease is somehow absent, and never
+  honors a `cache_ttl` an agent might have rewritten into your config. Warm reads and
+  the post-build cache drop are unchanged; only the store is foreclosed.
 - **`export` never writes a raw control byte into the `.env`.** Carriage return now
   joins newline and tab as an escaped sequence (`\r`), and because values are
   validated no other control byte can occur, so an exported value can no longer break
