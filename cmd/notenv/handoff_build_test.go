@@ -157,18 +157,31 @@ func TestRunHandoffBuildCopiesOnlyRequestedNamespaces(t *testing.T) {
 
 	// R1: the build drops the source master from the shared cache before the
 	// agent runs, so no agent-readable entry for your master survives.
-	if _, ok := keyring.DefaultCache().Get(srcEff.Scope()); ok {
+	if _, ok := cacheProvider().Get(srcEff.Scope()); ok {
 		t.Error("source master left in the cache after build (R1)")
 	}
 }
 
+// useInProcessCache points the build path at an in-memory cache for the test. The
+// handoff builder runs in-process in these tests, so it needs no cross-process
+// platform store; the real macOS Keychain only added a headless-CI hang.
+func useInProcessCache(t *testing.T) {
+	t.Helper()
+	prev := cacheProvider
+	c := newMapCache()
+	cacheProvider = func() keyring.Cache { return c }
+	t.Cleanup(func() { cacheProvider = prev })
+}
+
 // seedCachedSource builds a passphrase source vault holding each namespace with
-// one secret (K=value-<ns>) and seeds its master into the platform cache, so
-// unlockSource resolves it warm instead of prompting. It skips the test where the
-// platform store is a no-op, matching how the keyring suite guards its own
-// roundtrip tests.
+// one secret (K=value-<ns>) and seeds its master into an in-process cache, so
+// unlockSource resolves it warm instead of prompting. The builder runs in-process
+// in these tests, so an in-memory cache is sufficient and avoids the real platform
+// store (the macOS Keychain hung headlessly in CI). The keyring package's own
+// tests cover the real native caches.
 func seedCachedSource(t *testing.T, namespaces ...string) config.Effective {
 	t.Helper()
+	useInProcessCache(t)
 	ctx := context.Background()
 	srcEff, err := config.ResolveStorage(&config.User{}, "local:"+t.TempDir())
 	if err != nil {
@@ -197,12 +210,12 @@ func seedCachedSource(t *testing.T, namespaces ...string) config.Effective {
 			t.Fatalf("seed %s: %v", ns, err)
 		}
 	}
-	cache := keyring.DefaultCache()
+	cache := cacheProvider()
 	if err := cache.Store(srcEff.Scope(), mk.String(), time.Minute); err != nil {
-		t.Skipf("platform key store unavailable: %v", err)
+		t.Fatalf("seed cache: %v", err)
 	}
 	if _, ok := cache.Get(srcEff.Scope()); !ok {
-		t.Skip("platform key store unavailable (cache miss after store)")
+		t.Fatal("seed cache: miss after store")
 	}
 	t.Cleanup(func() { cache.Drop(srcEff.Scope()) })
 	return srcEff

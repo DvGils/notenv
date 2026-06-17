@@ -42,6 +42,12 @@ var handoffBuildCmd = &cobra.Command{
 	},
 }
 
+// cacheProvider returns the master-key cache the build path uses. It is the real
+// platform cache in production; a test seam, because TestRunHandoffBuild* runs the
+// builder in-process and so needs no cross-process store, and reaching for the real
+// macOS Keychain there imported its headless-CI fragility for no benefit.
+var cacheProvider = keyring.DefaultCache
+
 func runHandoffBuild(ctx context.Context) error {
 	namespaces := splitNamespaces(buildNamespaces)
 	if buildSource == "" || buildVault == "" || buildRecipient == "" || len(namespaces) == 0 {
@@ -94,7 +100,7 @@ func runHandoffBuild(ctx context.Context) error {
 	// Drop the source master from the shared cache. The lease kept it from being
 	// re-stored during the build; this removes any entry that predated the handoff,
 	// so no agent-readable cache entry for your master survives (R1).
-	keyring.DefaultCache().Drop(srcEff.Scope())
+	cacheProvider().Drop(srcEff.Scope())
 	return nil
 }
 
@@ -117,7 +123,7 @@ func unlockSource(ctx context.Context, vault keymgmt.Vault, eff config.Effective
 	if identityUnlocks(header) {
 		return nil, nil, fmt.Errorf("handoff won't use a vault that your %s identity can unlock, because the agent runs as you and could reuse that identity to open your real vault. Either unset %s before handing off, or hand off from a passphrase-protected vault", identityEnv, identityEnv)
 	}
-	cache := keyring.DefaultCache()
+	cache := cacheProvider()
 	if cached, ok := cache.Get(eff.Scope()); ok {
 		if mk, err := crypto.ParseMasterKey(cached); err == nil {
 			return mk, header, nil
