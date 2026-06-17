@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/backend/local"
 	"github.com/DvGils/notenv/internal/backend/memstore"
 	"github.com/DvGils/notenv/internal/config"
@@ -166,12 +168,18 @@ func TestDestroyVaultLocal(t *testing.T) {
 	}
 }
 
-// TestDestroyVaultRemote: a remote vault is removed by deleting every object it
-// lists (rclone lists the header artifacts too, so they go with it).
+// TestDestroyVaultRemote: a remote vault is removed by deleting its namespace
+// blobs and its fixed-name plumbing (header and backup), leaving nothing behind.
 func TestDestroyVaultRemote(t *testing.T) {
 	ctx := context.Background()
 	ms := memstore.New()
-	for _, k := range []string{"ns/seg-a.age", "ns/snap-b.age", ".header.json"} {
+	objects := []string{
+		"ns/data-0123456789abcdef.age",
+		"ns2/data-fedcba9876543210.age",
+		".header.json",
+		".header.json.prev",
+	}
+	for _, k := range objects {
 		if err := ms.Put(ctx, k, []byte("x")); err != nil {
 			t.Fatal(err)
 		}
@@ -184,6 +192,32 @@ func TestDestroyVaultRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(keys) != 0 {
-		t.Fatalf("every object must be deleted, remaining: %v", keys)
+		t.Fatalf("every namespace blob must be deleted, remaining: %v", keys)
+	}
+	for _, artifact := range []string{backend.HeaderName, backend.HeaderBackupName} {
+		if _, err := ms.Get(ctx, artifact); !errors.Is(err, backend.ErrNotFound) {
+			t.Errorf("plumbing object %q must be deleted too, got err %v", artifact, err)
+		}
+	}
+}
+
+// TestDestroyVaultRemoteRefusesForeign: a shared remote whose prefix also holds a
+// non-notenv object is refused, and nothing is deleted (the refusal is atomic).
+func TestDestroyVaultRemoteRefusesForeign(t *testing.T) {
+	ctx := context.Background()
+	ms := memstore.New()
+	objects := []string{"ns/data-0123456789abcdef.age", "backups/photos.tar"}
+	for _, k := range objects {
+		if err := ms.Put(ctx, k, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := destroyVault(ctx, config.Effective{Remote: "r", Base: "b"}, doctorStore{ms}); err == nil {
+		t.Fatal("destroyVault must refuse a remote prefix holding a foreign object")
+	}
+	for _, k := range objects {
+		if _, err := ms.Get(ctx, k); err != nil {
+			t.Errorf("object %q must survive a refused delete, got err %v", k, err)
+		}
 	}
 }

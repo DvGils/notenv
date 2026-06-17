@@ -54,16 +54,19 @@ upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
 
 ### Fixed
 
-- **`vault copy` and `vault delete` can no longer destroy an unrelated directory.**
-  Copying a vault to a local `--to-path` reconciled the destination by deleting
-  anything the source did not have, so pointing it at a populated directory (a home
-  directory, a project, `/`) deleted that directory's other files; `vault delete`
-  likewise removed its whole configured path. notenv now recognizes its own objects
-  (reserved plumbing and `<namespace>/data-*.age` blobs) and only ever deletes those:
-  copy refuses a destination that already holds a file it did not write, delete refuses
-  a directory that is not a clean vault, and `--to-path` rejects the filesystem root
-  and your home directory outright. An empty directory, or one holding only the blobs
-  of an interrupted earlier copy, is still accepted.
+- **`vault copy` and `vault delete` can no longer destroy unrelated data.** Copying a
+  vault to a local `--to-path` reconciled the destination by deleting anything the
+  source did not have, so pointing it at a populated directory (a home directory, a
+  project, `/`) deleted that directory's other files; `vault delete` likewise removed
+  its whole configured path or, on a remote, every object under its prefix, taking out
+  other data a shared bucket happened to keep there. notenv now recognizes its own
+  objects (reserved plumbing and `<namespace>/data-*.age` blobs) and only ever deletes
+  those: copy refuses a destination that already holds a file it did not write, delete
+  refuses any storage (local or remote) that holds an object notenv did not create, and
+  `--to-path` rejects the filesystem root and your home directory outright. An empty
+  destination, or one holding only the blobs of an interrupted earlier copy, is still
+  accepted. A remote delete now also removes the vault's header objects, which it
+  previously left behind.
 
 ### Hardened
 

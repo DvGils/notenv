@@ -414,32 +414,65 @@ local trust state.`,
 	},
 }
 
-// destroyVault removes a vault's bytes: a local vault is its directory (removed
-// only once we confirm it holds nothing notenv did not write); a remote vault is
-// every object it holds.
+// reservedArtifacts are the fixed-name plumbing objects a remote vault may hold
+// besides its namespace blobs. List omits them (they are not data), so a remote
+// teardown deletes them by name to leave nothing of the vault behind. A local
+// teardown removes the whole directory instead and never needs this.
+var reservedArtifacts = []string{
+	backend.HeaderName,
+	backend.HeaderBackupName,
+	backend.HeaderLockName,
+	backend.ProbeName,
+}
+
+// destroyVault removes a vault's bytes, but only once it is sure the storage holds
+// nothing notenv did not write: a local vault is its directory (removed whole); a
+// remote vault is its namespace blobs plus its fixed-name plumbing.
 func destroyVault(ctx context.Context, eff config.Effective, store vaultStorage) error {
 	keys, err := store.List(ctx, "")
 	if err != nil {
 		return err
 	}
+	if err := refuseForeignVault(keys, eff); err != nil {
+		return err
+	}
 	if eff.Local() {
-		// A local vault is removed by deleting its directory, but only once we are
-		// sure it is a vault and not a storage entry mispointed at unrelated files:
-		// a foreign file under the path means this is not a vault directory, so
-		// refuse rather than turn a delete into an rm -rf of whatever lives there.
-		for _, key := range keys {
-			if !backend.IsNamespaceBlob(key) {
-				return fmt.Errorf("refusing to delete %s: it holds a file notenv did not create (%q), so it does not look like a vault directory; delete it yourself if you are certain", eff.Path, key)
-			}
-		}
 		return os.RemoveAll(eff.Path)
 	}
-	for _, k := range keys {
+	// A remote has no directory to remove, so delete every object the vault holds:
+	// the namespace blobs from the listing, then the plumbing List omits because it
+	// is not data. Delete is idempotent, so naming an artifact the vault never wrote
+	// is a harmless no-op.
+	for _, k := range append(keys, reservedArtifacts...) {
 		if err := store.Delete(ctx, k); err != nil {
 			return fmt.Errorf("delete %s: %w", k, err)
 		}
 	}
 	return nil
+}
+
+// refuseForeignVault fails, before anything is deleted, when the storage holds an
+// object notenv did not write. That stops a vault delete from taking out a user's
+// unrelated data: neither an os.RemoveAll of a local path mispointed at a populated
+// directory, nor the delete loop over a remote prefix a shared bucket also uses for
+// other things. The refusal is atomic because it runs before the first delete.
+func refuseForeignVault(keys []string, eff config.Effective) error {
+	for _, key := range keys {
+		if backend.IsNamespaceBlob(key) {
+			continue
+		}
+		return fmt.Errorf("refusing to delete the vault at %s: its storage holds %q, which notenv did not create; vault delete removes only notenv's own objects, so remove that yourself if you are certain it should go", vaultLocation(eff), key)
+	}
+	return nil
+}
+
+// vaultLocation names a storage for an error message: the directory for a local
+// vault, "remote:base" for a remote one.
+func vaultLocation(eff config.Effective) string {
+	if eff.Local() {
+		return eff.Path
+	}
+	return eff.Remote + ":" + eff.Base
 }
 
 func init() {
