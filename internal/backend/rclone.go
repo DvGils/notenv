@@ -158,10 +158,21 @@ func (s *RcloneStorage) Put(ctx context.Context, key string, data []byte) error 
 
 func (s *RcloneStorage) Delete(ctx context.Context, key string) error {
 	if _, err := runRclone(ctx, nil, []string{"deletefile"}, s.objectPath(key)); err != nil {
-		// Only a true not-found exit (4) counts as "already gone". Matching rclone's
-		// stderr text here could read a real failure (whose message merely contains
-		// "not found") as success and report a delete that never happened.
+		// Modern rclone reports a missing target with a dedicated not-found exit, so
+		// "already gone" is unambiguous and cheap.
 		if isNotFoundExit(err) {
+			return nil
+		}
+		// Older rclone (e.g. 1.60) instead exits with a generic code and "is a
+		// directory or doesn't exist" for a missing target, so the exit code alone
+		// cannot separate "already gone" from a real failure. Rather than match that
+		// message (a genuine failure could carry similar text, and reporting a delete
+		// that never happened is the dangerous direction), confirm the actual state:
+		// Delete's postcondition is that the object is absent, so if it is already
+		// gone the delete is satisfied. Unlike deletefile, cat reports a missing
+		// object as a clean not-found on every rclone version, so Get is reliable
+		// where the deletefile exit code is not. This runs only on the error path.
+		if _, getErr := s.Get(ctx, key); errors.Is(getErr, ErrNotFound) {
 			return nil
 		}
 		return err

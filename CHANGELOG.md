@@ -67,6 +67,12 @@ upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
   destination, or one holding only the blobs of an interrupted earlier copy, is still
   accepted. A remote delete now also removes the vault's header objects, which it
   previously left behind.
+- **Remote operations work with older rclone versions again.** Deleting an object that
+  is already gone is a no-op, but older rclone (around 1.60) reports a missing target
+  with a generic exit code rather than the dedicated not-found one, so notenv treated it
+  as a real failure. notenv now confirms the object is actually absent (a check that
+  behaves the same on every rclone version) before reporting success, so a delete of a
+  missing object no longer errors on an older rclone.
 
 ### Hardened
 
