@@ -99,14 +99,18 @@ func TestEvalHandoff(t *testing.T) {
 }
 
 func TestLocalSpecPath(t *testing.T) {
+	// A platform-native absolute path: "/.../vaults/e" on Unix, "C:\...\vaults\e"
+	// on Windows. A hardcoded "/srv/..." is not absolute on Windows (filepath.IsAbs
+	// wants a drive letter), so localSpecPath would correctly reject it there.
+	abs := filepath.Join(t.TempDir(), "vaults", "e")
 	cases := []struct {
 		storage  string
 		wantOK   bool
 		wantPath string
 	}{
-		{"local:/srv/vaults/e", true, "/srv/vaults/e"},
-		{"local:/srv/vaults/e/", true, "/srv/vaults/e"}, // cleaned
-		{"local:relative/path", false, ""},              // env paths must be absolute
+		{"local:" + abs, true, abs},
+		{"local:" + abs + string(filepath.Separator), true, abs}, // trailing separator cleaned
+		{"local:relative/path", false, ""},                       // env paths must be absolute
 		{"local:", false, ""},
 		{"rclone:b2:notenv", false, ""},
 		{"prod", false, ""}, // a configured storage name
