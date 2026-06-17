@@ -101,7 +101,7 @@ func humanUnlock(ctx context.Context, store backend.HeaderStore, scope, action s
 		return nil, -1, nil, err
 	}
 	ui.Infof("%s; confirm with your passphrase", action)
-	pass, err := keyring.PromptPassphrase("Passphrase: ")
+	pass, err := promptPassphraseFn("Passphrase: ")
 	if err != nil {
 		return nil, -1, nil, err
 	}

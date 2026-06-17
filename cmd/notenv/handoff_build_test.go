@@ -84,7 +84,7 @@ func TestUnlockSourceRefusesIdentityUnlockableSource(t *testing.T) {
 	}
 
 	t.Setenv(identityEnv, id.String())
-	_, _, err = unlockSource(ctx, openStorage(config.Effective{Path: srcDir}), config.Effective{Path: srcDir})
+	_, _, err = unlockSource(ctx, openStorage(config.Effective{Path: srcDir}), config.Effective{Path: srcDir}, newMapCache())
 	if err == nil {
 		t.Fatal("unlockSource accepted a source the configured identity can unlock")
 	}
@@ -98,7 +98,7 @@ func TestUnlockSourceRefusesIdentityUnlockableSource(t *testing.T) {
 func TestUnlockSourceMissingHeader(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv(identityEnv, "")
-	_, _, err := unlockSource(ctx, openStorage(config.Effective{Path: t.TempDir()}), config.Effective{Path: "/x"})
+	_, _, err := unlockSource(ctx, openStorage(config.Effective{Path: t.TempDir()}), config.Effective{Path: "/x"}, newMapCache())
 	if err == nil || !strings.Contains(err.Error(), "no vault found") {
 		t.Fatalf("expected no-vault error, got %v", err)
 	}
@@ -112,7 +112,8 @@ func TestRunHandoffBuildCopiesOnlyRequestedNamespaces(t *testing.T) {
 	isolateConfig(t)
 	ctx := context.Background()
 	// A passphrase source vault with two namespaces; only "app" is handed off.
-	srcEff := seedCachedSource(t, "app", "other")
+	cache := newMapCache()
+	srcEff := seedCachedSource(t, cache, "app", "other")
 
 	me, err := age.GenerateX25519Identity()
 	if err != nil {
@@ -122,7 +123,7 @@ func TestRunHandoffBuildCopiesOnlyRequestedNamespaces(t *testing.T) {
 	withBuildFlags(t, storageSpec(srcEff), "app", eDir, me.Recipient().String())
 	t.Setenv(identityEnv, "")
 
-	if err := runHandoffBuild(ctx); err != nil {
+	if err := runHandoffBuild(ctx, cache); err != nil {
 		t.Fatalf("runHandoffBuild: %v", err)
 	}
 
@@ -157,31 +158,70 @@ func TestRunHandoffBuildCopiesOnlyRequestedNamespaces(t *testing.T) {
 
 	// R1: the build drops the source master from the shared cache before the
 	// agent runs, so no agent-readable entry for your master survives.
-	if _, ok := cacheProvider().Get(srcEff.Scope()); ok {
+	if _, ok := cache.Get(srcEff.Scope()); ok {
 		t.Error("source master left in the cache after build (R1)")
 	}
 }
 
-// useInProcessCache points the build path at an in-memory cache for the test. The
-// handoff builder runs in-process in these tests, so it needs no cross-process
-// platform store; the real macOS Keychain only added a headless-CI hang.
-func useInProcessCache(t *testing.T) {
-	t.Helper()
-	prev := cacheProvider
-	c := newMapCache()
-	cacheProvider = func() keyring.Cache { return c }
-	t.Cleanup(func() { cacheProvider = prev })
+// countingCache is an in-memory cache that records Store calls, so a test can
+// assert the handoff builder never caches the source master.
+type countingCache struct {
+	*mapCache
+	stores int
+}
+
+func (c *countingCache) Store(scope, secret string, ttl time.Duration) error {
+	c.stores++
+	return c.mapCache.Store(scope, secret, ttl)
+}
+
+// TestUnlockSourceNeverCachesSourceMaster is the handoff caching guarantee: the
+// builder unlocks the source, but a cached source master is exactly what would let
+// the agent (which runs as you) open your real vault. Even on the cold path (empty
+// cache, so the unlock prompts and reaches the caching code) and with a positive
+// storage TTL, unlockSource must pass ttl 0 so the master is never stored. No lease
+// is taken here, so this proves the no-caching is structural, not lease-dependent.
+func TestUnlockSourceNeverCachesSourceMaster(t *testing.T) {
+	isolateConfig(t)
+	ctx := context.Background()
+	t.Setenv(identityEnv, "")
+
+	srcDir := t.TempDir()
+	const pass = "correct horse battery staple"
+	header, mk, err := crypto.NewHeader(pass, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header.Revision = 0 // SafePut owns the revision
+	store := openStorage(config.Effective{Path: srcDir})
+	verify := func(h *crypto.Header) (*crypto.MasterKey, error) { m, _, _, e := h.Unlock(pass); return m, e }
+	if err := keymgmt.SafePut(ctx, store, header, nil, mk, verify); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drive the cold unlock without a terminal.
+	prev := promptPassphraseFn
+	promptPassphraseFn = func(string) (string, error) { return pass, nil }
+	t.Cleanup(func() { promptPassphraseFn = prev })
+
+	cache := &countingCache{mapCache: newMapCache()}
+	// CacheTTL > 0: without the ttl-0 hardening, the cold unlock would cache here.
+	eff := config.Effective{Path: srcDir, CacheTTL: time.Hour}
+	if _, _, err := unlockSource(ctx, store, eff, cache); err != nil {
+		t.Fatalf("unlockSource: %v", err)
+	}
+	if cache.stores != 0 {
+		t.Errorf("builder cached the source master (%d Store calls); it must never cache, even with a positive TTL", cache.stores)
+	}
 }
 
 // seedCachedSource builds a passphrase source vault holding each namespace with
-// one secret (K=value-<ns>) and seeds its master into an in-process cache, so
-// unlockSource resolves it warm instead of prompting. The builder runs in-process
-// in these tests, so an in-memory cache is sufficient and avoids the real platform
-// store (the macOS Keychain hung headlessly in CI). The keyring package's own
-// tests cover the real native caches.
-func seedCachedSource(t *testing.T, namespaces ...string) config.Effective {
+// one secret (K=value-<ns>) and seeds its master into the given cache, so
+// unlockSource resolves it warm instead of prompting. An in-memory cache is
+// sufficient because the builder runs in-process in these tests; the keyring
+// package's own tests cover the real native caches.
+func seedCachedSource(t *testing.T, cache keyring.Cache, namespaces ...string) config.Effective {
 	t.Helper()
-	useInProcessCache(t)
 	ctx := context.Background()
 	srcEff, err := config.ResolveStorage(&config.User{}, "local:"+t.TempDir())
 	if err != nil {
@@ -210,7 +250,6 @@ func seedCachedSource(t *testing.T, namespaces ...string) config.Effective {
 			t.Fatalf("seed %s: %v", ns, err)
 		}
 	}
-	cache := cacheProvider()
 	if err := cache.Store(srcEff.Scope(), mk.String(), time.Minute); err != nil {
 		t.Fatalf("seed cache: %v", err)
 	}
@@ -225,7 +264,7 @@ func seedCachedSource(t *testing.T, namespaces ...string) config.Effective {
 // are an internal error, caught before any vault is touched.
 func TestRunHandoffBuildMissingArgs(t *testing.T) {
 	withBuildFlags(t, "", "", "", "")
-	if err := runHandoffBuild(context.Background()); err == nil || !strings.Contains(err.Error(), "missing arguments") {
+	if err := runHandoffBuild(context.Background(), newMapCache()); err == nil || !strings.Contains(err.Error(), "missing arguments") {
 		t.Fatalf("expected missing-arguments error, got %v", err)
 	}
 }
@@ -235,7 +274,7 @@ func TestRunHandoffBuildMissingArgs(t *testing.T) {
 // vault no one can open.
 func TestRunHandoffBuildRejectsBadRecipient(t *testing.T) {
 	withBuildFlags(t, "local:/src", "app", t.TempDir(), "not-a-recipient")
-	if err := runHandoffBuild(context.Background()); err == nil || !strings.Contains(err.Error(), "recipient") {
+	if err := runHandoffBuild(context.Background(), newMapCache()); err == nil || !strings.Contains(err.Error(), "recipient") {
 		t.Fatalf("expected bad-recipient error, got %v", err)
 	}
 }

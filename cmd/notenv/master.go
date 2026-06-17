@@ -183,6 +183,11 @@ func createWithIdentity(ctx context.Context, store keymgmt.Vault, id *age.X25519
 // stub it to drive the generate, confirm-match, and mismatch paths.
 var readSecretFn = keyring.ReadSecret
 
+// promptPassphraseFn is the unlock-prompt seam (the counterpart of readSecretFn for
+// the read path): the real prompt reads /dev/tty, so tests stub it to drive a cold
+// unlock without a terminal.
+var promptPassphraseFn = keyring.PromptPassphrase
+
 // chooseCreationPassphrase runs the creation prompt. Empty input generates a
 // passphrase (printed once, never confirmed: it was displayed); a typed one
 // is confirmed and gets the length warning. The passphrase is the root of

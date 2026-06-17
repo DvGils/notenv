@@ -38,17 +38,15 @@ var handoffBuildCmd = &cobra.Command{
 	Hidden: true,
 	Args:   cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		return runHandoffBuild(cmd.Context())
+		// keyring.DefaultCache() is acquired here, at the command root, and injected:
+		// the builder receives its cache rather than reaching for the global, so a
+		// test can hand it an in-process cache (and so the cache the builder is
+		// allowed to touch is visible in one place).
+		return runHandoffBuild(cmd.Context(), keyring.DefaultCache())
 	},
 }
 
-// cacheProvider returns the master-key cache the build path uses. It is the real
-// platform cache in production; a test seam, because TestRunHandoffBuild* runs the
-// builder in-process and so needs no cross-process store, and reaching for the real
-// macOS Keychain there imported its headless-CI fragility for no benefit.
-var cacheProvider = keyring.DefaultCache
-
-func runHandoffBuild(ctx context.Context) error {
+func runHandoffBuild(ctx context.Context, cache keyring.Cache) error {
 	namespaces := splitNamespaces(buildNamespaces)
 	if buildSource == "" || buildVault == "" || buildRecipient == "" || len(namespaces) == 0 {
 		return errors.New("internal: handoff build is missing arguments")
@@ -72,7 +70,7 @@ func runHandoffBuild(ctx context.Context) error {
 		return errors.New("source backend does not support client-side crypto")
 	}
 
-	mk, header, err := unlockSource(ctx, vault, srcEff)
+	mk, header, err := unlockSource(ctx, vault, srcEff, cache)
 	if err != nil {
 		return err
 	}
@@ -100,7 +98,7 @@ func runHandoffBuild(ctx context.Context) error {
 	// Drop the source master from the shared cache. The lease kept it from being
 	// re-stored during the build; this removes any entry that predated the handoff,
 	// so no agent-readable cache entry for your master survives (R1).
-	cacheProvider().Drop(srcEff.Scope())
+	cache.Drop(srcEff.Scope())
 	return nil
 }
 
@@ -108,7 +106,7 @@ func runHandoffBuild(ctx context.Context) error {
 // otherwise the full unlock ceremony (which prompts). It first refuses a source
 // any configured identity can unlock, since the agent runs as you and could
 // replay that identity to reach your real vault.
-func unlockSource(ctx context.Context, vault keymgmt.Vault, eff config.Effective) (*crypto.MasterKey, *crypto.Header, error) {
+func unlockSource(ctx context.Context, vault keymgmt.Vault, eff config.Effective, cache keyring.Cache) (*crypto.MasterKey, *crypto.Header, error) {
 	raw, err := vault.GetHeader(ctx)
 	if errors.Is(err, backend.ErrNotFound) {
 		return nil, nil, errors.New("no vault found at the source storage; nothing to hand off")
@@ -123,14 +121,17 @@ func unlockSource(ctx context.Context, vault keymgmt.Vault, eff config.Effective
 	if identityUnlocks(header) {
 		return nil, nil, fmt.Errorf("handoff won't use a vault that your %s identity can unlock, because the agent runs as you and could reuse that identity to open your real vault. Either unset %s before handing off, or hand off from a passphrase-protected vault", identityEnv, identityEnv)
 	}
-	cache := cacheProvider()
 	if cached, ok := cache.Get(eff.Scope()); ok {
 		if mk, err := crypto.ParseMasterKey(cached); err == nil {
 			return mk, header, nil
 		}
 	}
-	// readOnly reason forbids the create-on-missing branch: handoff only reads.
-	mk, _, err := ensureMaster(ctx, vault, cache, eff.Scope(), eff.CacheTTL, "handoff only reads the source vault")
+	// ttl 0, never eff.CacheTTL: the builder must never cache the source master (a
+	// cached entry the agent could read to open your real vault). The session's
+	// no-cache lease already suppresses this machine-wide, but passing 0 makes the
+	// builder's own no-caching structural and lease-independent. The readOnly reason
+	// also forbids the create-on-missing branch: handoff only reads.
+	mk, _, err := ensureMaster(ctx, vault, cache, eff.Scope(), 0, "handoff only reads the source vault")
 	if err != nil {
 		return nil, nil, err
 	}

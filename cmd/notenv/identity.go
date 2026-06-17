@@ -9,7 +9,6 @@ import (
 	"filippo.io/age"
 
 	"github.com/DvGils/notenv/internal/crypto"
-	"github.com/DvGils/notenv/internal/keyring"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
@@ -143,7 +142,7 @@ func resolveUnlock(header *crypto.Header, joinHint bool) (*unlockResult, error) 
 			ui.Infof("configured identity matches no slot here; using your passphrase")
 		}
 	}
-	entered, err := keyring.PromptPassphrase("Passphrase: ")
+	entered, err := promptPassphraseFn("Passphrase: ")
 	if err != nil {
 		return nil, err
 	}
