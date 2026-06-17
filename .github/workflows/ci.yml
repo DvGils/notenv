@@ -57,7 +57,13 @@ jobs:
           security create-keychain -p ci ci.keychain
           security default-keychain -s ci.keychain
           security unlock-keychain -p ci ci.keychain
-          security set-keychain-settings ci.keychain
+          # Disable the auto-lock timeout for the run. create-keychain leaves a
+          # ~5-minute lock timer; once the suite runs past it the keychain relocks
+          # and the next `security add-generic-password` blocks on an unanswerable
+          # GUI unlock prompt, hanging the native-cache test until it times out
+          # (the early keyring tests pass only because they run before it relocks).
+          # A timeout longer than the job keeps it unlocked throughout.
+          security set-keychain-settings -lut 21600 ci.keychain
       # This job provisions a working native store, so a Store failure here is a
       # real regression (e.g. the macOS Keychain write that feeds the key over
       # stdin), not an unsupported environment: assert hard instead of skipping.
