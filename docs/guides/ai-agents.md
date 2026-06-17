@@ -43,6 +43,18 @@ This project manages secrets with notenv (https://github.com/DvGils/notenv).
 For the full rules in installable form, use the
 [notenv agent skill](https://github.com/DvGils/notenv/tree/main/skills/notenv).
 
+
+## What `notenv handoff` does and does not do
+
+| | | |
+|---|:--:|---|
+| Limits the agent to one namespace | ✓ | It runs against an ephemeral vault holding only the namespace you hand off. The key to the rest of your vault is never given to it. |
+| Withholds your real key | ✓ | The agent gets a fresh, throwaway key. It cannot unlock or write your full vault. |
+| Masks injected values out of the agent's captured output | ✓ | Values notenv injected are masked from stdout/stderr. This is accident-proofing: it catches a value printed by mistake, not a deliberate transform around it. |
+| Allows and agent to *use* secrets when it needs to | ✓ | Unlike injecting variables straight into the agent's process, where the values live in its environment the whole time, handoff keeps the agent one step removed: it gets the ability to run commands with the secrets, not the secrets themselves. |
+| Stop the agent from sending those values elsewhere | ✗ | A process holding a secret can transmit it anywhere it reaches. That is sandbox and network-policy territory, not notenv's. |
+| Contain a deliberately malicious agent | ✗ | Code running as you can read the session cache or work around the mask on purpose. The mask and the session marker reduce accidents, they are not a cage. |
+
 ## Without a project
 
 An agent or job with no checkout points at a vault directly with `NOTENV_STORAGE` (or

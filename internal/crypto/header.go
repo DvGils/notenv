@@ -57,6 +57,14 @@ import (
 // selection within a schema (a registry, additive, fail-closed on the unknown).
 const headerVersion = 6
 
+// maxSlots bounds the key slots a header may carry; ParseHeader refuses more. A
+// real vault has a handful (team passphrases plus machine identities), so this is
+// a sanity ceiling far above any of them: a storage-write attacker with no key
+// cannot plant thousands of slots to make every unlock trial-decrypt them all
+// (the per-slot scrypt cost is itself capped, see maxScryptWorkFactor). A planted
+// slot cannot weaken security; both bounds only stop wasted work.
+const maxSlots = 256
+
 // Header is the parsed header object. Optional-shaped fields carry omitempty
 // so a parsed header reproduces the exact canonical bytes it was sealed over
 // (a vault that has never stored a secret has no manifest, and its tag was
@@ -420,6 +428,9 @@ func ParseHeader(data []byte) (*Header, error) {
 	if len(h.Slots) == 0 {
 		return nil, errors.New("corrupt header: no key slots")
 	}
+	if len(h.Slots) > maxSlots {
+		return nil, fmt.Errorf("corrupt header: %d key slots exceeds the maximum of %d", len(h.Slots), maxSlots)
+	}
 	if len(h.Master) == 0 {
 		return nil, errors.New("corrupt header: no wrapped master key")
 	}
@@ -437,18 +448,27 @@ func ParseHeader(data []byte) (*Header, error) {
 	if !SuiteKnown(h.Suite) {
 		return nil, fmt.Errorf("this vault uses cipher suite %q, which this notenv does not know; upgrade notenv", h.Suite)
 	}
+	if err := h.checkPassphraseSlots(); err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+// checkPassphraseSlots verifies each passphrase slot names a KDF this build
+// implements, so an unknown KDF fails closed at parse rather than at unlock.
+func (h *Header) checkPassphraseSlots() error {
 	for i, slot := range h.Slots {
 		if slot.Type != SlotPassphrase {
 			continue
 		}
 		if slot.KDF == "" {
-			return nil, fmt.Errorf("corrupt header: passphrase slot %d has no KDF", i)
+			return fmt.Errorf("corrupt header: passphrase slot %d has no KDF", i)
 		}
 		if !KDFKnown(slot.KDF) {
-			return nil, fmt.Errorf("slot %d uses passphrase KDF %q, which this notenv does not know; upgrade notenv", i, slot.KDF)
+			return fmt.Errorf("slot %d uses passphrase KDF %q, which this notenv does not know; upgrade notenv", i, slot.KDF)
 		}
 	}
-	return &h, nil
+	return nil
 }
 
 func (h *Header) Marshal() ([]byte, error) {

@@ -49,9 +49,15 @@ jobs:
         run: |
           set -uo pipefail
           failed=""
-          for tgt in FuzzWriteReadRoundTrip FuzzReadDecodeNeverPanics FuzzCommitSequence; do
+          for entry in \
+            internal/secrets:FuzzWriteReadRoundTrip \
+            internal/secrets:FuzzReadDecodeNeverPanics \
+            internal/secrets:FuzzCommitSequence \
+            internal/secrets:FuzzMultiWriterCommit \
+            internal/runner:FuzzMaskerMatchesReference; do
+            pkg="${entry%%:*}"; tgt="${entry##*:}"
             echo "::group::$tgt"
-            out=$(go test -run='^$' -fuzz="^${tgt}\$" -fuzztime=20m ./internal/secrets/ 2>&1)
+            out=$(go test -tags fastkdf -run='^$' -fuzz="^${tgt}\$" -fuzztime=20m "./${pkg}/" 2>&1)
             status=$?
             echo "$out"
             echo "::endgroup::"
@@ -76,7 +82,7 @@ jobs:
         if: always()
         run: |
           mkdir -p /tmp/crashers
-          for f in $(git ls-files --others --exclude-standard internal/secrets/testdata/fuzz); do
+          for f in $(git ls-files --others --exclude-standard internal/secrets/testdata/fuzz internal/runner/testdata/fuzz); do
             mkdir -p "/tmp/crashers/$(dirname "$f")"
             cp "$f" "/tmp/crashers/$f"
           done

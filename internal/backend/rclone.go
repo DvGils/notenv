@@ -114,7 +114,7 @@ func (s *RcloneStorage) Probe(ctx context.Context) error {
 	if _, err := runRclone(ctx, marker, []string{"rcat"}, path); err != nil {
 		return fmt.Errorf("probe write failed: %w", err)
 	}
-	got, err := runRclone(ctx, nil, []string{"cat"}, path)
+	got, err := runRcloneCapped(ctx, MaxHeaderBytes, []string{"cat"}, path)
 	if err != nil {
 		return fmt.Errorf("probe read-back failed: %w", err)
 	}
@@ -128,15 +128,17 @@ func (s *RcloneStorage) Probe(ctx context.Context) error {
 }
 
 func (s *RcloneStorage) Get(ctx context.Context, key string) ([]byte, error) {
-	return s.catObject(ctx, s.objectPath(key))
+	return s.catObject(ctx, s.objectPath(key), MaxObjectBytes)
 }
 
-// catObject downloads a single object, mapping both rclone's not-found exit
-// and its empty-output directory quirk to ErrNotFound. `rclone cat` on a
-// missing path treats it as a directory and concatenates its (zero) files
-// (exit 0, empty output), and an empty result can never be a valid age blob.
-func (s *RcloneStorage) catObject(ctx context.Context, path string) ([]byte, error) {
-	out, err := runRclone(ctx, nil, []string{"cat"}, path)
+// catObject downloads a single object, reading at most max bytes so a hostile
+// remote cannot OOM the process by serving a huge object (ErrObjectTooLarge past
+// the cap). It maps both rclone's not-found exit and its empty-output directory
+// quirk to ErrNotFound. `rclone cat` on a missing path treats it as a directory
+// and concatenates its (zero) files (exit 0, empty output), and an empty result
+// can never be a valid age blob.
+func (s *RcloneStorage) catObject(ctx context.Context, path string, max int64) ([]byte, error) {
+	out, err := runRcloneCapped(ctx, max, []string{"cat"}, path)
 	if err != nil {
 		if isNotFoundExit(err) {
 			return nil, ErrNotFound
@@ -156,10 +158,21 @@ func (s *RcloneStorage) Put(ctx context.Context, key string, data []byte) error 
 
 func (s *RcloneStorage) Delete(ctx context.Context, key string) error {
 	if _, err := runRclone(ctx, nil, []string{"deletefile"}, s.objectPath(key)); err != nil {
-		// Only a true not-found exit (4) counts as "already gone". Matching rclone's
-		// stderr text here could read a real failure (whose message merely contains
-		// "not found") as success and report a delete that never happened.
+		// Modern rclone reports a missing target with a dedicated not-found exit, so
+		// "already gone" is unambiguous and cheap.
 		if isNotFoundExit(err) {
+			return nil
+		}
+		// Older rclone (e.g. 1.60) instead exits with a generic code and "is a
+		// directory or doesn't exist" for a missing target, so the exit code alone
+		// cannot separate "already gone" from a real failure. Rather than match that
+		// message (a genuine failure could carry similar text, and reporting a delete
+		// that never happened is the dangerous direction), confirm the actual state:
+		// Delete's postcondition is that the object is absent, so if it is already
+		// gone the delete is satisfied. Unlike deletefile, cat reports a missing
+		// object as a clean not-found on every rclone version, so Get is reliable
+		// where the deletefile exit code is not. This runs only on the error path.
+		if _, getErr := s.Get(ctx, key); errors.Is(getErr, ErrNotFound) {
 			return nil
 		}
 		return err
@@ -174,7 +187,9 @@ func (s *RcloneStorage) List(ctx context.Context, prefix string) ([]string, erro
 	if clean != "" {
 		root += "/" + clean
 	}
-	out, err := runRclone(ctx, nil, []string{"lsf", "-R", "--files-only"}, root)
+	// Cap the listing like any other read: a hostile remote could otherwise stream
+	// an unbounded `lsf` output (millions of object names) and OOM the process.
+	out, err := runRcloneCapped(ctx, MaxListBytes, []string{"lsf", "-R", "--files-only"}, root)
 	if err != nil {
 		if isNotFoundExit(err) {
 			return nil, nil // prefix doesn't exist yet, so no objects
@@ -215,7 +230,7 @@ const (
 )
 
 func (s *RcloneStorage) GetHeader(ctx context.Context) ([]byte, error) {
-	return s.catObject(ctx, s.basePath()+"/"+headerObject)
+	return s.catObject(ctx, s.basePath()+"/"+headerObject, MaxHeaderBytes)
 }
 
 // PutHeader writes the header object. It does NOT back up first: the safe-write
@@ -287,7 +302,7 @@ func (s *RcloneStorage) RestoreHeaderBackup(ctx context.Context) error {
 	// cannot tell "no backup yet" from "restore failed". Reading then writing keeps
 	// those apart; headers are tiny, so the extra round-trip is negligible on this
 	// rare recovery path.
-	prev, err := s.catObject(ctx, s.basePath()+"/"+headerBackupObject)
+	prev, err := s.catObject(ctx, s.basePath()+"/"+headerBackupObject, MaxHeaderBytes)
 	if err != nil {
 		return err
 	}
@@ -326,6 +341,57 @@ func runRclone(ctx context.Context, stdin []byte, args []string, paths ...string
 		return nil, &rcloneError{args: args, err: err, stderr: strings.TrimSpace(stderr.String())}
 	}
 	return stdout.Bytes(), nil
+}
+
+// runRcloneCapped runs rclone for a read command (no stdin) and returns at most
+// max bytes of stdout, with ErrObjectTooLarge if the child produces more. The
+// child writes into a capped buffer that stops accumulating and cancels the
+// command the instant the cap is passed, so a remote serving a multi-GB object
+// can neither exhaust memory nor keep the transfer running. cmd.Run waits for the
+// stdout copier to finish before returning, so reading cw.exceeded afterward is
+// race-free.
+func runRcloneCapped(ctx context.Context, max int64, args []string, paths ...string) ([]byte, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if len(paths) > 0 {
+		args = append(append(slices.Clip(args), "--"), paths...)
+	}
+	cmd := exec.CommandContext(ctx, "rclone", args...)
+	cw := &cappedWriter{max: max, cancel: cancel}
+	var stderr bytes.Buffer
+	cmd.Stdout = cw
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if cw.exceeded {
+		return nil, fmt.Errorf("%w (limit %d bytes)", ErrObjectTooLarge, max)
+	}
+	if err != nil {
+		return nil, &rcloneError{args: args, err: err, stderr: strings.TrimSpace(stderr.String())}
+	}
+	return cw.buf.Bytes(), nil
+}
+
+// cappedWriter accumulates up to max bytes; the first write that would exceed max
+// sets exceeded, cancels the command (to stop the transfer), and from then on
+// discards rather than buffers, so memory stays bounded even as the killed child
+// drains. It is written only by os/exec's single stdout-copy goroutine.
+type cappedWriter struct {
+	buf      bytes.Buffer
+	max      int64
+	exceeded bool
+	cancel   context.CancelFunc
+}
+
+func (w *cappedWriter) Write(p []byte) (int, error) {
+	if w.exceeded {
+		return len(p), nil // already over the cap: discard while the child is killed
+	}
+	if int64(w.buf.Len())+int64(len(p)) > w.max {
+		w.exceeded = true
+		w.cancel()
+		return len(p), nil
+	}
+	return w.buf.Write(p)
 }
 
 type rcloneError struct {

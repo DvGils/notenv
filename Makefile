@@ -14,8 +14,11 @@ install:
 	go install -ldflags "$(LDFLAGS)" $(PKG)
 
 ## test: run the test suite (race detector on)
+# -tags fastkdf lowers the scrypt work factor so the suite is not dominated by
+# 2^19 KDF cost; production keeps 2^19 (guarded by TestProductionScryptWorkFactor,
+# which builds only without the tag). CI runs that guard in a separate untagged step.
 test:
-	go test -race ./...
+	go test -tags fastkdf -race ./...
 
 ## vet: run go vet
 vet:

@@ -296,8 +296,18 @@ func (a *app) vault() (keymgmt.Vault, error) {
 // the orphaned blob is removed, the now-stale local caches are dropped, and the
 // user re-runs, which unlocks the new master and writes cleanly.
 func (a *app) writeNamespace(ctx context.Context, view *vaultView, writes []secrets.Write) (*secrets.State, error) {
-	state, _, err := a.namespaceFor(view).Commit(ctx,
-		func(cur *secrets.State) (*secrets.State, error) { return cur.Apply(writes), nil },
+	return a.commitNamespace(ctx, view, func(cur *secrets.State) (*secrets.State, error) {
+		return cur.Apply(writes), nil
+	})
+}
+
+// commitNamespace is writeNamespace's engine: it runs apply against the current
+// namespace state under the header compare-and-swap, with the same epoch and
+// uncertain-commit recovery. apply sees the freshly re-read state on each
+// attempt, so a check-then-write (e.g. copy's refuse-if-exists) decides against
+// the state that will actually be committed, with no separate-read TOCTOU gap.
+func (a *app) commitNamespace(ctx context.Context, view *vaultView, apply func(*secrets.State) (*secrets.State, error)) (*secrets.State, error) {
+	state, _, err := a.namespaceFor(view).Commit(ctx, apply,
 		func(h *crypto.Header) { pinCurrent(a.cacheScope, h, view.mk) })
 	if err != nil {
 		if errors.Is(err, backend.ErrCommitUncertain) {
@@ -401,6 +411,15 @@ type resolved struct {
 // cached; otherwise it reads from storage and repopulates the cache. refresh
 // skips the cache to pull another machine's changes.
 func (a *app) fetchSecrets(ctx context.Context, refresh bool) (*resolved, error) {
+	// Honor the handoff session guard on the warm path too. The cold path enforces
+	// it via master(), but a warm cache hit returns before reaching it, so without
+	// this an in-session run could serve a vault other than the session's straight
+	// from cache. The handed-off source vault is already protected (its master is
+	// dropped and held out of the cache by the no-cache lease); this closes the same
+	// rule for any other vault left warm in the cache.
+	if err := sessionGuard(a.cacheScope); err != nil {
+		return nil, err
+	}
 	// Salvage never touches the warm cache: serving a cached complete read would
 	// defeat the request, and caching a degraded one would silently hand later
 	// reads a state missing its dropped keys.
@@ -428,10 +447,21 @@ func (a *app) fetchSecrets(ctx context.Context, refresh bool) (*resolved, error)
 // origin (anyone who can write the cache dir could plant one that decrypts
 // cleanly). The MAC is keyed by the master's secret material, which a
 // cache-writing attacker does not have, so it binds a cache entry to a holder of
-// the real master, restoring the fail-closed integrity every other read has.
+// the real master, and is taken over the entry's (scope, namespace) as well as
+// its ciphertext (see cacheMACInput), so an entry cannot be replayed into another
+// namespace's slot, restoring the fail-closed integrity every other read has.
 type cacheEnvelope struct {
 	MAC    string `json:"mac"`
 	Sealed []byte `json:"sealed"`
+}
+
+// cacheMACInput binds a cache envelope's MAC to its (scope, namespace) slot, not
+// just its ciphertext, so an entry copied into another namespace's cache file
+// fails verification and falls through to the authenticated read, the same
+// namespace binding the on-storage blob carries in its plaintext. The master-keyed
+// MAC over this input is unforgeable without the master.
+func cacheMACInput(scope, namespace string, sealed []byte) []byte {
+	return append([]byte(scope+"\x00"+namespace+"\x00"), sealed...)
 }
 
 // cachedSecrets opens the warm local cache with no network: it needs both the
@@ -454,9 +484,10 @@ func (a *app) cachedSecrets() (*resolved, bool) {
 	if err := json.Unmarshal(cached, &env); err != nil {
 		return nil, false // old/foreign layout: treat as a miss and re-fetch
 	}
-	// Verify the entry is bound to this master before decrypting it: a forged or
-	// tampered blob fails here and falls through to the authenticated read.
-	if err := mk.CheckBlobMAC(env.Sealed, env.MAC); err != nil {
+	// Verify the entry is bound to this master AND to this namespace before
+	// decrypting it: a forged, tampered, or cross-namespace-replayed blob fails here
+	// and falls through to the authenticated read.
+	if err := mk.CheckBlobMAC(cacheMACInput(a.cacheScope, a.namespace, env.Sealed), env.MAC); err != nil {
 		return nil, false
 	}
 	plaintext, err := mk.Decrypt(env.Sealed)
@@ -483,7 +514,7 @@ func (a *app) cacheState(mk *crypto.MasterKey, state *secrets.State) {
 	if err != nil {
 		return
 	}
-	mac, err := mk.BlobMAC(sealed)
+	mac, err := mk.BlobMAC(cacheMACInput(a.cacheScope, a.namespace, sealed))
 	if err != nil {
 		return
 	}

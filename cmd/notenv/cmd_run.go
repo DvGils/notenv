@@ -40,6 +40,12 @@ for output, not a security boundary: the value and its common encodings
 (base64, hex, url) are masked, but values shorter than 6 bytes pass through,
 and code that holds a secret can always move it some other way.
 
+When the command is a known coding agent, run asks (default No) before
+injecting your real secret values into its environment with no scoped vault,
+and points you at "notenv handoff -- <agent>", which hands the agent an
+ephemeral scoped copy and keeps your master key out of reach. The prompt only
+fires for a human at a terminal, so automation is never blocked.
+
 Exit codes (docker's convention): the child's own exit code passes through;
 125 means notenv itself failed, 126 the command was found but cannot run,
 127 the command was not found.`,
@@ -61,6 +67,12 @@ Exit codes (docker's convention): the child's own exit code passes through;
 func runChild(cmd *cobra.Command, args []string) error {
 	if runMask && runNoMask {
 		return errors.New("--mask and --no-mask are mutually exclusive")
+	}
+	// Nudge a human who ran a coding agent through `run` toward `handoff` before
+	// anything touches the vault. Argv-only and interactive-only, so automation
+	// never hangs and the cost is nil when the command is not an agent.
+	if err := guardAgentRun(args); err != nil {
+		return err
 	}
 	a, err := loadApp(cmd.Context())
 	if err != nil {

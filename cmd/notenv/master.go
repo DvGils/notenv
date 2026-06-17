@@ -179,13 +179,22 @@ func createWithIdentity(ctx context.Context, store keymgmt.Vault, id *age.X25519
 	return mk, header, nil
 }
 
+// readSecretFn is a seam for tests: the real prompt reads /dev/tty, so tests
+// stub it to drive the generate, confirm-match, and mismatch paths.
+var readSecretFn = keyring.ReadSecret
+
+// promptPassphraseFn is the unlock-prompt seam (the counterpart of readSecretFn for
+// the read path): the real prompt reads /dev/tty, so tests stub it to drive a cold
+// unlock without a terminal.
+var promptPassphraseFn = keyring.PromptPassphrase
+
 // chooseCreationPassphrase runs the creation prompt. Empty input generates a
 // passphrase (printed once, never confirmed: it was displayed); a typed one
 // is confirmed and gets the length warning. The passphrase is the root of
 // trust and the offline brute-force surface, so the easy path is the strong
 // one: users invent weak passphrases, the generator does not.
 func chooseCreationPassphrase() (string, error) {
-	pass, err := keyring.ReadSecret("Choose a passphrase for this storage (Enter to generate one): ")
+	pass, err := readSecretFn("Choose a passphrase for this storage (Enter to generate one): ")
 	if err != nil {
 		return "", err
 	}
@@ -198,7 +207,7 @@ func chooseCreationPassphrase() (string, error) {
 		fmt.Println(gen)
 		return gen, nil
 	}
-	again, err := keyring.ReadSecret("Confirm passphrase: ")
+	again, err := readSecretFn("Confirm passphrase: ")
 	if err != nil {
 		return "", err
 	}
@@ -220,12 +229,13 @@ func warnShortPassphrase(pass string) {
 }
 
 // cacheMaster stores best-effort: a cache failure must never fail the
-// command, the user just gets prompted again next time. A scope under an active
-// handoff no-cache lease is never cached: while a vault is handed off to an
-// agent, its master stays out of the shared per-uid cache, even when the user
-// unlocks the same vault in another terminal (see session.go).
+// command, the user just gets prompted again next time. While any handoff holds
+// the no-cache lease, NO master is cached: a handoff hands an agent your uid, and
+// the cache is the shared per-uid keyring, so every vault's master, not just the
+// handed-off one, must stay out of it for the session, even one unlocked in another
+// terminal (see session.go).
 func cacheMaster(cache keyring.Cache, scope string, mk *crypto.MasterKey, ttl time.Duration) {
-	if ttl > 0 && !leaseActive(scope) {
+	if ttl > 0 && !noCacheLeaseActive() {
 		_ = cache.Store(scope, mk.String(), ttl)
 	}
 }

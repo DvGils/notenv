@@ -14,8 +14,8 @@ func TestGeneratePassphrase(t *testing.T) {
 			t.Fatal(err)
 		}
 		words := strings.Split(p, "-")
-		if len(words) != 6 {
-			t.Fatalf("want 6 words, got %q", p)
+		if len(words) != 8 {
+			t.Fatalf("want 8 words, got %q", p)
 		}
 		for _, w := range words {
 			if !slices.Contains(tempWords, w) {

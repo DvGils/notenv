@@ -4,6 +4,219 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.20.0
+
+An input-integrity pass: notenv now defines exactly what a secret value may contain
+and stores it byte-for-byte, so a value is always handed back exactly as it went in
+and can never leak control characters into a `.env` file or a terminal.
+
+**Breaking, on purpose: the namespace blob format is now version 2 and an older (v1)
+vault is not read by this version.** Each blob now stores its values and descriptions
+base64-encoded, so any stored byte round-trips exactly; the previous format kept them
+as raw JSON strings, where Go's JSON encoder silently rewrites invalid UTF-8 to the
+replacement character (a value you could never get back intact). There is no in-place
+upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
+`notenv import` into a fresh 0.20.0 vault.
+
+### Added
+
+- **`notenv copy KEY --from NS1 --to NS2` copies one secret between namespaces
+  without exposing its value.** The value is read under the master and written back
+  under the same master in a single process: it is never printed, piped, or written
+  to disk the way a `get`-then-`set` would leak it. It is deliberately within one
+  vault only (there is no source/target storage flag): the namespace name is bound
+  into each blob, so the only safe primitive is re-encrypting under the one vault's
+  master, and both namespaces resolve through a single addressed storage. The
+  destination key is refused if it already exists unless you pass `--force`, and the
+  description rides along. Inside a handoff session the unlock is refused for any
+  vault but the handed-off one, so an agent can only ever copy between namespaces it
+  was already given.
+- **`notenv inspect handoff` tells a launched program whether it is in a scoped
+  handoff session.** A coding agent started with `notenv handoff -- <agent>` holds
+  only a scoped, ephemeral copy of one namespace; one started with `notenv run`
+  instead has the raw values in its environment and no scoped vault. This subcommand
+  lets the program tell the two apart at startup: exit `0` means it is inside a live
+  handoff, exit `1` means it is not, and `--json` adds the single namespace it was
+  scoped to. It reads only its own environment and the ephemeral vault on disk, so it
+  never unlocks a vault, asks for a passphrase, or prints a secret value. The "yes"
+  answer is corroborated against live ground truth (the named ephemeral vault must
+  still exist and its supervisor still be running), so a stale or clobbered
+  `NOTENV_SESSION` fails safe to "no" rather than a false sense of being scoped.
+- **`notenv run` nudges toward `handoff` when the command looks like a coding agent.**
+  Running a known agent (Claude Code, Codex, Copilot, Gemini, Aider, OpenHands,
+  Continue, OpenCode, Cursor) through `run` injects this namespace's real secret
+  values into its environment; `handoff` instead gives it a scoped ephemeral vault and
+  keeps your master key out of reach. The guard asks before proceeding (default no),
+  and only ever asks a human at a terminal: a non-interactive caller, or a process
+  already inside a handoff session, proceeds untouched. It is accident-proofing, not
+  enforcement: a wrapper invocation like `npx <agent>` is not matched.
+
+### Changed
+
+- **Output masking covers more encoded forms and now runs in linear time.** The masker
+  also scrubs the base32, JSON-string-escaped, and HTML-escaped renderings of a secret
+  (on top of the base64, hex, and percent-encoded forms it already caught), so a value
+  logged inside a JSON body or rendered into a page is masked too. The matcher was
+  rebuilt on a per-pattern KMP automaton: a held byte is never re-scanned, so masking a
+  large captured stream is linear in its length and never quadratic in the secret's
+  length, even for kilobyte secrets like a PEM. Output that touches no secret passes
+  straight through. Masking remains accident-proofing, not a boundary: code that holds
+  a secret can still move it some other way.
+- **A secret value must be valid UTF-8 with no control characters other than newline,
+  tab, and carriage return.** A value becomes an environment variable and may be
+  written back out as a `.env`, so it has to survive both: a NUL cannot ride in an
+  environment variable at all, an ESC and friends cannot be represented in a `.env`,
+  and invalid UTF-8 was silently corrupted at rest. notenv now refuses these on `set`,
+  `import`, and `edit`, early and with a clear message, and enforces it at the storage
+  layer that every write funnels through. Binary belongs base64-encoded, which is
+  itself valid text and passes; the error says so. The newline family is allowed
+  because real secrets carry it (PEM keys, JSON blobs, CRLF certs).
+
+### Fixed
+
+- **`handoff` now keeps every vault's master out of the agent's reach, not just the
+  handed-off one.** The session's no-cache lease and cache drop covered only the
+  source vault, so a sibling vault you had unlocked earlier sat warm in the shared
+  per-uid key cache, which the agent (running as you) could read directly to decrypt
+  it, outside the handed-off scope. Handoff now drops every cached master at startup
+  and holds a global no-cache lease for the session's lifetime, so while an agent
+  runs no notenv process on the machine caches any master, even one unlocked in
+  another terminal. The cost is that your other terminals re-prompt for those vaults
+  during a handoff; the upside is the "the agent can't get your master" guarantee now
+  holds for all your vaults, not just the one you handed off. (Single-vault setups are
+  unaffected: the one vault was already covered.)
+- **The handoff session guard now covers the `key` commands and `doctor` too.** Every
+  other unlock path already refused, inside a handoff session, to open any vault but
+  the handed-off one; the mutating `key` commands (which always prompt) and `doctor`
+  (which reads the warm session key to verify and decrypt blobs) did not. An
+  in-session `notenv key …`/`doctor`/`key restore-backup`/`key trust` pointed at a
+  different `--storage` would prompt for, or read a warm-cached master of, another
+  vault. The guard now sits at each of those entry points, so the whole header
+  surface fails closed in-session like the rest. As before this is
+  accident-and-master-protection, not agent containment.
+- **`handoff` no longer lets a compromised agent reach your real vault through the
+  internal builder.** The hidden `__handoff-build` step unlocks the source vault to
+  copy the handed-off namespace into the ephemeral one. A session guard refused
+  unlocking any vault but the handed-off one on the passphrase (cold) path, but a
+  master already warm in the session cache slipped past it: an agent (which runs with
+  the session marker set) could invoke the builder directly against another vault
+  whose master was cached and re-encrypt it under its own key, defeating the
+  master-protection promise. The guard now sits at the builder's entry, before the
+  cache is consulted, so it covers the warm path too. The legitimate builder, spawned
+  by `handoff` itself (which is not inside a session), is unaffected. Still
+  accident-and-master-protection, not agent containment, which is the OS's job.
+- **`vault copy` and `vault delete` can no longer destroy unrelated data.** Copying a
+  vault to a local `--to-path` reconciled the destination by deleting anything the
+  source did not have, so pointing it at a populated directory (a home directory, a
+  project, `/`) deleted that directory's other files; `vault delete` likewise removed
+  its whole configured path or, on a remote, every object under its prefix, taking out
+  other data a shared bucket happened to keep there. notenv now recognizes its own
+  objects (reserved plumbing and `<namespace>/data-*.age` blobs) and only ever deletes
+  those: copy refuses a destination that already holds a file it did not write, delete
+  refuses any storage (local or remote) that holds an object notenv did not create, and
+  `--to-path` rejects the filesystem root and your home directory outright. An empty
+  destination, or one holding only the blobs of an interrupted earlier copy, is still
+  accepted. A remote delete now also removes the vault's header objects, which it
+  previously left behind.
+- **Remote operations work with older rclone versions again.** Deleting an object that
+  is already gone is a no-op, but older rclone (around 1.60) reports a missing target
+  with a generic exit code rather than the dedicated not-found one, so notenv treated it
+  as a real failure. notenv now confirms the object is actually absent (a check that
+  behaves the same on every rclone version) before reporting success, so a delete of a
+  missing object no longer errors on an older rclone.
+
+### Hardened
+
+- **The `handoff` builder can no longer cache your real master key.** Caching the
+  source vault's master during a handoff would leave it where the agent (which runs as
+  you) could read it and open your real vault. A no-cache lease already suppressed this
+  machine-wide, but the builder now also unlocks the source with a hard-coded zero cache
+  TTL, so it cannot store the master even if the lease is somehow absent, and never
+  honors a `cache_ttl` an agent might have rewritten into your config. Warm reads and
+  the post-build cache drop are unchanged; only the store is foreclosed.
+- **`export` never writes a raw control byte into the `.env`.** Carriage return now
+  joins newline and tab as an escaped sequence (`\r`), and because values are
+  validated no other control byte can occur, so an exported value can no longer break
+  a third-party dotenv parser's line splitting or inject a terminal escape sequence
+  when the file is viewed. The dotenv reader decodes `\r`, so the `export | import`
+  round-trip stays exact.
+- **Secret descriptions are escaped when displayed.** A control character in a
+  description (shown by `list` and `inspect`, and written as a comment by `export`) is
+  rendered as a visible escape, so a description can no longer break the table layout
+  or inject a terminal escape sequence (for instance a teammate's booby-trapped
+  description shown by `notenv list`). Descriptions are still stored faithfully and
+  `--json` output is left exact; only the human-facing rendering is sanitized.
+- **The "RAM-only on Linux" guarantee is now verified, not assumed.** The blob
+  cache, the `edit` buffer, and the `handoff` ephemeral vault live under
+  `XDG_RUNTIME_DIR`, which notenv took on faith to be the spec's tmpfs (RAM-backed,
+  owner-only). A misconfigured or overridden value (some `sudo`/cron/SSH contexts, or
+  a hand-exported one) could silently put cached ciphertext or a plaintext buffer on
+  persistent disk. notenv now checks the directory is owner-only and on a
+  tmpfs/ramfs filesystem before trusting it: the blob cache disables itself rather
+  than cache on real disk, and `edit` (always) and `handoff` (only when the source is
+  a remote vault, since a local one already keeps ciphertext on this disk) ask before
+  falling back to a temporary file on disk, naming the fix. macOS and Windows are
+  unchanged; the temp-dir fallback is the documented norm there.
+- **Passphrases are harder to brute-force offline.** Since storage is dumb, anyone
+  who copies a vault (or sits on the wire) can grind its key slots offline, so the
+  bar is raised on both axes. The passphrase notenv generates, at creation and for
+  onboarding, is now eight words rather than six (about 83 bits of entropy, up from
+  62), and every passphrase slot is wrapped with scrypt at work factor 2^19 instead
+  of age's default 2^18, doubling both the time and the memory each offline guess
+  costs. The work factor is the one lever that also hardens a passphrase you chose
+  yourself. It is backward compatible: age records the work factor in each wrapped
+  slot, so existing vaults keep opening and a slot adopts the stronger cost the next
+  time its passphrase is set or rotated.
+- **The warm cache honors the handoff session guard.** A `notenv run`/`list` inside
+  a handoff session that hit the local cache could return a vault other than the
+  session's straight from cache, skipping the guard the cold path applies. The
+  handed-off source vault was never exposed (its master is dropped and held out of
+  the cache for the session), but another vault left warm in the cache could be. The
+  warm path now applies the same guard.
+- **A cached blob is bound to its namespace, not just the master.** The warm cache's
+  tamper check proved an entry came from the master but not which namespace it
+  belonged to, so a same-machine writer of the cache directory could move one
+  namespace's cached entry into another's slot and have it served as that namespace.
+  The check now covers the entry's (scope, namespace) too, the same binding the
+  on-storage blob already carries, so a cross-namespace entry is rejected and the
+  authenticated read runs instead.
+- **`notenv key evict` runs the onboarding gate like every other write command.** A
+  holder still on the temporary onboarding passphrase (which the inviter also knows)
+  could run the lossy `evict` repair without first replacing it; it now requires
+  setting an own passphrase first, matching `set`/`import`/`edit`/`add`/`rm`.
+- **`notenv edit` wipes its scratch buffer on a terminal hangup, not just Ctrl-C.**
+  The buffer holding the values you type was removed on `SIGINT`/`SIGTERM` and on a
+  clean exit, but a `SIGHUP` (the terminal or an SSH connection closing) or `SIGQUIT`
+  could leave it behind. It now unlinks the buffer synchronously on every signal a
+  process can catch. `SIGKILL` and power loss run no handler and cannot be cleaned
+  synchronously, but the buffer is RAM-backed in the normal case (discarded on
+  reboot/logout regardless) and reaches persistent disk only in the fallback that
+  now prompts first; this is not papered over with a flaky next-run sweep.
+- **Object reads are size-capped, so a hostile remote cannot exhaust memory.**
+  Storage is treated as dumb and possibly hostile, but neither backend bounded how
+  much a single read pulled into memory: rclone buffered the child's whole stdout,
+  the local backend read the whole file, and the header is JSON-parsed before its
+  master-keyed tag can be checked, on paths that never unlock (`inspect --all`, the
+  namespace first-use check). A remote could serve a multi-gigabyte header (or one
+  packed with millions of slots) and OOM the machine with no credential, pre-auth.
+  Reads now stop at a generous cap (8 MiB for the header, 64 MiB for a namespace
+  blob, far above any real vault) and fail closed with a clear error instead; the
+  rclone child is killed the instant it overruns rather than left streaming. Object
+  *listings* are bounded the same way (64 MiB of object-key names, ~a million
+  keys), so a remote cannot OOM the `doctor`, `vault copy`, or cleanup paths by
+  serving millions of object names either.
+- **Unlocking won't burn unbounded scrypt work on attacker-planted slots.** age's
+  decrypt side accepts a work factor up to 2^22 (minutes and gigabytes per
+  attempt), and `Unlock` trial-decrypts every passphrase slot before the master or
+  the header tag is known, so a storage-write attacker with no key could plant
+  slots stamped at a huge work factor and make the victim's next unlock grind
+  through them, pre-auth, per slot. notenv now clamps the accepted work factor to
+  just above what it writes (a higher-cost slot is refused before any scrypt runs)
+  and refuses a header with an absurd number of slots. A planted slot could never
+  open the vault anyway (its key is not a recipient of the master); these bounds
+  only stop the wasted work. The companion to the read-size caps above: together
+  they close the pre-auth resource-exhaustion surface.
+
 ## 0.19.1
 
 A correctness and footgun pass after 0.19.0, plus internal cleanup. No storage-format

@@ -1,17 +1,17 @@
 package main
 
-// A handoff session takes a no-cache lease on its source vault's scope: while
-// the lease is live, no notenv process on the machine caches that vault's master
-// (cacheMaster consults leaseActive). This closes the one honest edge of
-// `handoff`, an accidental concurrent unlock in another terminal leaving the
-// master in the shared per-uid cache where the agent could read it. The marker
-// is not a secret (a scope digest plus the supervisor PID), so it lives in a
-// per-user runtime dir on every platform; a marker whose owning process is gone
+// A handoff session takes a global no-cache lease: while the lease is live, no
+// notenv process on the machine caches ANY vault's master (cacheMaster consults
+// noCacheLeaseActive). A handoff hands an agent your whole uid, and the master
+// cache is the shared per-uid keyring, so a master left warm there, the handed-off
+// vault's or any sibling vault's, is one the agent could read directly and decrypt
+// outside its scope. Suppressing the entire cache for the session keeps the "the
+// agent can't get your master" guarantee true for every vault, not just the one
+// handed off. The marker is not a secret (just the supervisor PID), so it lives in
+// a per-user runtime dir on every platform; a marker whose owning process is gone
 // is stale and ignored, so a SIGKILLed session cannot wedge caching forever.
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,29 +56,27 @@ func sessionDir() (string, error) {
 	return filepath.Join(base, "notenv", "sessions"), nil
 }
 
-// leaseDir is the per-scope directory holding one marker file per live handoff
-// supervisor (each filename is its PID). Refcounting via separate files lets
-// concurrent handoffs of the same source vault coexist: the lease is active while
-// ANY supervisor's marker is live, and each session removes only its own, so the
-// first to finish cannot cancel the lease the others still rely on. The scope is
-// hashed so the directory name is filesystem-safe and does not spell out the
-// storage location.
-func leaseDir(scope string) (string, error) {
+// noCacheLeaseDir is the single directory holding one marker file per live handoff
+// supervisor (each filename is its PID). One directory, not one per scope: the
+// lease suppresses caching for every vault, so there is nothing to key it by.
+// Refcounting via separate files lets concurrent handoffs coexist: the lease is
+// active while ANY supervisor's marker is live, and each session removes only its
+// own, so the first to finish cannot cancel the lease the others still rely on.
+func noCacheLeaseDir() (string, error) {
 	dir, err := sessionDir()
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256([]byte(scope))
-	return filepath.Join(dir, hex.EncodeToString(sum[:16])+".lease.d"), nil
+	return filepath.Join(dir, "nocache.lease.d"), nil
 }
 
-// takeLease registers this process as a no-cache-lease holder on scope and returns
-// a release func that removes only this holder's marker (and the directory once it
+// takeNoCacheLease registers this process as a no-cache-lease holder and returns a
+// release func that removes only this holder's marker (and the directory once it
 // empties). A missing lease only means caching is not suppressed, never a loss of
-// the master guarantee (the builder drops the cache and cannot refill it), so
-// callers may proceed on error.
-func takeLease(scope string) (func(), error) {
-	dir, err := leaseDir(scope)
+// the master guarantee (handoff drops the cache and the agent's reads cannot refill
+// it past this), so callers may proceed on error.
+func takeNoCacheLease() (func(), error) {
+	dir, err := noCacheLeaseDir()
 	if err != nil {
 		return nil, err
 	}
@@ -95,11 +93,11 @@ func takeLease(scope string) (func(), error) {
 	}, nil
 }
 
-// leaseActive reports whether any live no-cache lease covers scope. A marker whose
-// owning process is gone, or whose name is not a PID, is reaped, so a crashed
-// session cannot suppress caching forever; an emptied directory is removed too.
-func leaseActive(scope string) bool {
-	dir, err := leaseDir(scope)
+// noCacheLeaseActive reports whether any live handoff holds the no-cache lease. A
+// marker whose owning process is gone, or whose name is not a PID, is reaped, so a
+// crashed session cannot suppress caching forever; an emptied directory is removed.
+func noCacheLeaseActive() bool {
+	dir, err := noCacheLeaseDir()
 	if err != nil {
 		return false
 	}

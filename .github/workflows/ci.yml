@@ -32,8 +32,17 @@ jobs:
         run: go tool gocyclo -over 15 .
       - name: ineffassign
         run: go tool ineffassign ./...
+      # Guard the production scrypt cost in an untagged build: this fails if a
+      # release would ship the fastkdf work factor. Cheap (no scrypt, one test).
+      - name: production scrypt work factor
+        run: go test -run TestProductionScryptWorkFactor ./internal/crypto/
+      # The suite runs with -tags fastkdf: scrypt at 2^19 otherwise dominates the
+      # run (~80s for the crypto package alone, far more under -race). The tag drops
+      # the work factor to a near-instant cost for tests only; the guard above keeps
+      # production at 2^19. The work factor is a cost parameter, not a correctness
+      # one, so every code path is still exercised.
       - name: test
-        run: go test -race ./...
+        run: go test -tags fastkdf -race ./...
 
   # The native key caches (Keychain, DPAPI) and everything platform-shaped
   # only prove themselves by running, not cross-compiling.
@@ -57,14 +66,49 @@ jobs:
           security create-keychain -p ci ci.keychain
           security default-keychain -s ci.keychain
           security unlock-keychain -p ci ci.keychain
-          security set-keychain-settings ci.keychain
+          # Disable the auto-lock timeout for the run. create-keychain leaves a
+          # ~5-minute lock timer; once the suite runs past it the keychain relocks
+          # and the next `security add-generic-password` blocks on an unanswerable
+          # GUI unlock prompt, hanging the native-cache test until it times out
+          # (the early keyring tests pass only because they run before it relocks).
+          # A timeout longer than the job keeps it unlocked throughout.
+          security set-keychain-settings -lut 21600 ci.keychain
       # This job provisions a working native store, so a Store failure here is a
       # real regression (e.g. the macOS Keychain write that feeds the key over
       # stdin), not an unsupported environment: assert hard instead of skipping.
       - name: test
-        run: go test ./...
+        run: go test -tags fastkdf ./...
         env:
           NOTENV_TEST_REQUIRE_NATIVE_CACHE: "1"
+
+  # The rclone backend shells out to a real rclone for every cloud operation, so
+  # the only honest test of that seam is a real rclone, not the in-memory fake the
+  # default suite runs against. The conformance contracts already know how to run
+  # against rclone's built-in on-the-fly local backend (`:local`), which needs no
+  # remote or credentials, so a stock rclone exercises runRclone, the hand-rolled
+  # SwapHeader compare-and-swap, backup/restore, and the lsf listing end to end,
+  # and proves the in-memory fake still models the real backend. The base trims to
+  # a relative path, so the scratch lands under the gitignored internal/backend/tmp/.
+  # The distro rclone is a stable baseline (the operations under test predate it by
+  # years); a soak against a real B2/S3 remote is a separate, credentialed job.
+  backend-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: install rclone
+        run: sudo apt-get update && sudo apt-get install -y rclone
+      - name: rclone version
+        run: rclone version
+      - name: conformance (real rclone via :local)
+        env:
+          NOTENV_TEST_REMOTE: ":local"
+          NOTENV_TEST_BASE: "/tmp/notenv-conformance"
+        run: go test -race ./internal/backend/...
 
   fuzz:
     runs-on: ubuntu-latest
@@ -86,9 +130,15 @@ jobs:
       - name: fuzz (short smoke)
         run: |
           set -uo pipefail
-          for tgt in FuzzWriteReadRoundTrip FuzzReadDecodeNeverPanics FuzzCommitSequence; do
+          for entry in \
+            internal/secrets:FuzzWriteReadRoundTrip \
+            internal/secrets:FuzzReadDecodeNeverPanics \
+            internal/secrets:FuzzCommitSequence \
+            internal/secrets:FuzzMultiWriterCommit \
+            internal/runner:FuzzMaskerMatchesReference; do
+            pkg="${entry%%:*}"; tgt="${entry##*:}"
             echo "::group::$tgt"
-            out=$(go test -run='^$' -fuzz="^${tgt}\$" -fuzztime=30s -fuzzminimizetime=1x ./internal/secrets/ 2>&1)
+            out=$(go test -tags fastkdf -run='^$' -fuzz="^${tgt}\$" -fuzztime=30s -fuzzminimizetime=1x "./${pkg}/" 2>&1)
             status=$?
             echo "$out"
             echo "::endgroup::"

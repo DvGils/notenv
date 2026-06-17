@@ -39,6 +39,7 @@ type headerTarget struct {
 	vaultStorage
 	scope    string
 	readOnly string
+	cache    keyring.Cache
 }
 
 // loadHeaderStore builds the storage backend for header operations. The header
@@ -82,7 +83,7 @@ func headerTargetFor(storageName string) (*headerTarget, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &headerTarget{vaultStorage: openStorage(eff), scope: eff.Scope(), readOnly: readOnlyReason(eff.StorageName, eff.ReadOnly)}, nil
+	return &headerTarget{vaultStorage: openStorage(eff), scope: eff.Scope(), readOnly: readOnlyReason(eff.StorageName, eff.ReadOnly), cache: keyring.DefaultCache()}, nil
 }
 
 // trustHeader is the read-side integrity check run after every unlock: it
@@ -151,7 +152,7 @@ func pinCurrent(scope string, h *crypto.Header, mk *crypto.MasterKey) {
 // with a stale master nor re-prompts. Drops any stale entry first; honors the
 // configured cache TTL ("0" disables, so this no-ops). Best-effort.
 func recacheMaster(store *headerTarget, mk *crypto.MasterKey) {
-	cache := keyring.DefaultCache()
+	cache := store.cache
 	scope := store.scope
 	cache.Drop(scope)
 	user, err := config.LoadUser()
@@ -318,6 +319,12 @@ write).`,
 		if err != nil {
 			return err
 		}
+		// A restore rewrites the header (and repinAfterRestore reads the warm cache),
+		// so it must obey the session boundary: inside a handoff session, refuse any
+		// vault but the handed-off one rather than roll back a foreign vault's header.
+		if err := sessionGuard(store.scope); err != nil {
+			return err
+		}
 		if store.readOnly != "" {
 			return fmt.Errorf("%s; refusing to restore the header (a recovery is still a storage write)", store.readOnly)
 		}
@@ -350,7 +357,7 @@ func repinAfterRestore(ctx context.Context, store *headerTarget) {
 		return
 	}
 	var mk *crypto.MasterKey
-	if cached, ok := keyring.DefaultCache().Get(store.scope); ok {
+	if cached, ok := store.cache.Get(store.scope); ok {
 		mk, _ = crypto.ParseMasterKey(cached)
 	}
 	if repinRestored(store.scope, header, mk) {
@@ -393,6 +400,15 @@ type unlocked struct {
 // gateProvisional runs the onboarding gate; `key rotate` skips it because the
 // rotation it is about to perform is exactly what the gate would force.
 func unlockHeader(ctx context.Context, store *headerTarget, gateProvisional bool) (*unlocked, error) {
+	// Inside a handoff session, refuse to unlock any vault but the handed-off one,
+	// before prompting. unlockHeader always prompts for the credential (it never
+	// reads the cache), so without this an in-session `key ...` pointed at another
+	// --storage would walk the operator to a passphrase prompt for their real
+	// vault, exactly what the session guard exists to prevent. Same rule every
+	// other unlock path enforces (master, ensureMaster, fetchSecrets, humanUnlock).
+	if err := sessionGuard(store.scope); err != nil {
+		return nil, err
+	}
 	if store.readOnly != "" {
 		return nil, fmt.Errorf("%s; refusing to modify the vault header", store.readOnly)
 	}
@@ -823,7 +839,7 @@ remote's version history).`,
 			return err
 		}
 		if !bound {
-			keyring.DefaultCache().Drop(scope)
+			store.cache.Drop(scope)
 			ui.Notef("no vault pinned at this storage; dropped any cached key")
 			return nil
 		}
@@ -844,7 +860,7 @@ remote's version history).`,
 		if err := config.ForgetScope(scope); err != nil {
 			return err
 		}
-		keyring.DefaultCache().Drop(scope)
+		store.cache.Drop(scope)
 		ui.Successf("forgot the pin and cached key for this storage; the next unlock is trust-on-first-use")
 		return nil
 	},
@@ -879,6 +895,12 @@ authentication tag must still verify.`,
 		}
 		header, err := crypto.ParseHeader(raw)
 		if err != nil {
+			return err
+		}
+		// Inside a handoff session, refuse any vault but the handed-off one: trust
+		// unlocks (resolveUnlock prompts) to recover the master, so it obeys the same
+		// boundary as every other unlock path.
+		if err := sessionGuard(store.scope); err != nil {
 			return err
 		}
 		// Unlock to recover the master, then require the tag to verify (trust
@@ -954,7 +976,7 @@ what survives without changing anything.`,
 		if err != nil {
 			return err
 		}
-		u, err := unlockHeader(ctx, store, false)
+		u, err := unlockHeader(ctx, store, true)
 		if err != nil {
 			return err
 		}

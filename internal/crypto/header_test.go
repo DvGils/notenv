@@ -2,12 +2,35 @@ package crypto
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"filippo.io/age"
 )
+
+// TestParseHeaderRejectsTooManySlots: a header carrying an absurd slot count is
+// refused, so a storage-write attacker cannot plant thousands of slots for the
+// next unlock to trial-decrypt.
+func TestParseHeaderRejectsTooManySlots(t *testing.T) {
+	h := Header{
+		Version: headerVersion,
+		Suite:   currentSuite,
+		VaultID: "v",
+		SignPub: "s",
+		Master:  []byte("m"),
+		Auth:    []byte("a"),
+		Slots:   make([]Slot, maxSlots+1),
+	}
+	data, err := json.Marshal(&h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseHeader(data); err == nil {
+		t.Fatalf("a header with %d slots must be refused", maxSlots+1)
+	}
+}
 
 func TestHeaderLifecycle(t *testing.T) {
 	header, mk, err := NewHeader("escrowed passphrase", "demian@legion")

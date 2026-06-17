@@ -20,18 +20,18 @@ run**. Plaintext never touches disk.
 A `.env` file is plaintext: everything on your machine can read it, and sharing it means pasting it
 somewhere it will outlive. notenv removes the file instead of guarding it.
 
-- **Nothing on disk to leak.** A test runner, a package's postinstall script, or a coding agent in
-  your checkout cannot read a secret that exists only inside the process you ran, only while it runs.
 - **You hold the key, not a provider.** Secrets are age-encrypted locally; storage only ever sees
-  ciphertext, so it can live anywhere: a local vault, the NAS under your desk, B2, S3, Drive, dozens
-  more.
-- **Nothing to operate.** No server, no SaaS, no cloud account to stand up and babysit. `notenv
-  setup` is one passphrase and zero accounts.
-- **Joining and leaving are one command.** Onboard a teammate with a string over chat; their first
-  run swaps it for a credential only they know. Offboarding re-encrypts everything, so leaving
-  actually revokes.
-- **Built for AI agents.** `notenv run` lets a process *use* a secret without *seeing* it, and
-  captured output is masked, so an agent runs your commands without a value ever entering its context.
+  ciphertext. There is no account to create, no SaaS to trust, no vendor that can read, lock, or lose
+  your data.
+- **Storage you already have.** A local folder, a home NAS, B2, S3, Drive, SFTP, WebDAV, dozens more.
+  Move a vault from a folder to a cloud remote in one command when syncing starts to matter.
+- **Nothing on disk to leak.** A test runner, a package postinstall script, or a coding agent in your
+  checkout cannot read a secret that exists only inside the process you ran, only while it runs.
+- **Joining and leaving are one command.** Onboard a teammate with a string sent over chat; their first
+  run swaps it for a credential only they know. `notenv key rm` re-encrypts everything, so offboarding
+  actually revokes, not just "please delete your copy."
+- **Nothing to operate.** `notenv setup` is one passphrase and zero accounts. No server to stand up,
+  patch, or pay for.
 
 **Not this if** you want a platform: there is no web console or SSO, and access is scoped per vault,
 not per secret (everyone in a vault can read that vault). If a platform team already runs Vault, keep
@@ -116,18 +116,21 @@ only one namespace, so it never holds the key to the rest of your vault. An inst
 
 ## How it compares
 
-[SOPS](https://getsops.io) + age nail client-side encryption and process injection but leave storage
-and onboarding to you; [Teller](https://github.com/tellerops/teller) brokers cloud secret managers,
-where the provider holds your secrets. notenv is client-side encryption with the storage and the
-onboarding built in, and no provider in the loop.
+| | **notenv** | dotenvx | 1Password (`op run`) | SOPS + age |
+|---|---|---|---|---|
+| Where the ciphertext lives | **storage you own** (B2, S3, Drive, a NAS, a folder) | committed to your git repo | 1Password's servers | a file you place yourself |
+| What you depend on to read a secret | **only your key** | only your key | 1Password, your account and plan | only your key |
+| Account or service to sign up for | **none** | none | required | none |
+| Onboard a teammate | **one command**, with a verifiable vault fingerprint | hand over the private key | invite them in the app | add their key, redistribute the file |
+| Offboarding actually revokes | **yes**: `key rm` re-encrypts the vault | rotate the key, re-encrypt by hand | remove them from the vault | rotate, re-encrypt by hand |
+| Move to other storage | **one command**, any rclone remote | it lives in git | not applicable, it is their cloud | move the file yourself |
 
-| | notenv | teller | SOPS + age (DIY) |
-|---|---|---|---|
-| Plaintext on disk | never | never | never |
-| You hold the key | yes | no (provider does) | yes |
-| Storage backends | local vault or any rclone remote | per-provider code | you wire it up |
-| Infrastructure to run | none | none (uses your cloud) | none |
-| One-command onboarding | yes | partial | no |
+[dotenvx](https://dotenvx.com) and `op run` both nail encrypted injection; the difference is the master.
+dotenvx keeps the encrypted file in your repo and leaves distributing and rotating the private key to
+you; 1Password is excellent but is a service that holds your secrets and that you depend on.
+[SOPS](https://getsops.io) + age give you the keys but leave storage and onboarding as homework. notenv
+is the one combination of all three: keys you hold, storage you already own, and onboarding built in,
+with nobody in the loop.
 
 ## Security
 

@@ -38,17 +38,21 @@ func seededFast(t *testing.T) (*memstore.Store, *crypto.MasterKey) {
 	return mem, mk
 }
 
-// FuzzWriteReadRoundTrip: anything written through Apply + WriteBlob reads back
-// byte-for-byte. Inputs with invalid UTF-8 are skipped because encoding/json
-// coerces them to U+FFFD on the way out, and the secrets layer is only ever fed
-// valid env names and values (the command layer validates names), so that
-// coercion is not a layer this package is responsible for.
+// FuzzWriteReadRoundTrip: any storable value written through Apply + WriteBlob
+// reads back byte-for-byte. The value must satisfy the storage contract
+// (secrets.ValidateValue: valid UTF-8, no control bytes beyond the newline
+// family), so a value outside it is skipped, not a failure (WriteBlob rejects it
+// by design). The key is skipped only when it is not valid UTF-8, since it becomes
+// a JSON map key and encoding/json coerces invalid UTF-8 there to U+FFFD. The
+// description is unconstrained: it is stored base64-encoded (blob v2), so any byte
+// sequence round-trips, which is exactly what this also checks.
 func FuzzWriteReadRoundTrip(f *testing.F) {
 	f.Add("KEY", "value", "what it is for")
 	f.Add("A", "", "")
 	f.Add("MULTILINE", "line1\nline2\tend", "")
+	f.Add("DESC_RAW_BYTES", "ok", "desc with \x00 and \xff bytes")
 	f.Fuzz(func(t *testing.T, key, value, desc string) {
-		if !utf8.ValidString(key) || !utf8.ValidString(value) || !utf8.ValidString(desc) {
+		if !utf8.ValidString(key) || secrets.ValidateValue(value) != nil {
 			t.Skip()
 		}
 		ctx := context.Background()
@@ -80,10 +84,12 @@ func FuzzWriteReadRoundTrip(f *testing.F) {
 // and the version/namespace checks) and requires the read to resolve to either a
 // clean error or a non-nil state, never a panic and never nil-state-with-nil-err.
 func FuzzReadDecodeNeverPanics(f *testing.F) {
-	f.Add([]byte(`{"v":1,"ns":"proj","entries":{}}`))
-	f.Add([]byte(`{"v":1,"ns":"proj","entries":{"K":{"value":"v","desc":"d","ts":1}}}`))
+	f.Add([]byte(`{"v":2,"ns":"proj","entries":{}}`))
+	f.Add([]byte(`{"v":2,"ns":"proj","entries":{"K":{"value":"dg==","desc":"ZA==","ts":1}}}`)) // base64("v"), base64("d")
+	f.Add([]byte(`{"v":2,"ns":"proj","entries":{"K":{"value":"!notbase64","ts":1}}}`))         // invalid base64: clean corrupt error, no panic
+	f.Add([]byte(`{"v":1,"ns":"proj","entries":{}}`))                                          // older format: clean version error
 	f.Add([]byte(`{"v":999,"ns":"proj","entries":{}}`))
-	f.Add([]byte(`{"v":1,"ns":"elsewhere","entries":{}}`))
+	f.Add([]byte(`{"v":2,"ns":"elsewhere","entries":{}}`))
 	f.Add([]byte(`not json at all`))
 	f.Add([]byte(``))
 	f.Fuzz(func(t *testing.T, plain []byte) {

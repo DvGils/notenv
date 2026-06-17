@@ -113,6 +113,10 @@ const acceptNamespaceEnv = "NOTENV_ACCEPT_NAMESPACE"
 // exists when tests run from a terminal and not in CI, so tests pin it.
 var interactiveFn = ui.Interactive
 
+// confirmFn is the same seam for the prompt itself: the real one reads /dev/tty,
+// so tests stub it to drive the accept and decline paths.
+var confirmFn = ui.Confirm
+
 // envAcceptedNamespace reports whether acceptNamespaceEnv names namespace.
 func envAcceptedNamespace(namespace string) bool {
 	for _, n := range strings.Split(os.Getenv(acceptNamespaceEnv), ",") {
@@ -137,7 +141,7 @@ func confirmNamespace(namespace, question, decline string) error {
 		}
 		return fmt.Errorf("refusing namespace %q: its first use here needs confirmation, but there is no terminal to prompt on. If this runner is meant to use it, set %s=%s", namespace, acceptNamespaceEnv, namespace)
 	}
-	ok, err := ui.Confirm(question, false)
+	ok, err := confirmFn(question, false)
 	if err != nil {
 		return err
 	}

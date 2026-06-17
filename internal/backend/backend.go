@@ -7,12 +7,53 @@ package backend
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"path"
+	"regexp"
 	"strings"
 )
 
 // ErrNotFound is returned by Get and Delete when no object exists at the key.
 var ErrNotFound = errors.New("object not found")
+
+// ErrObjectTooLarge reports that a stored object is bigger than notenv will read
+// into memory. Storage is treated as dumb and possibly hostile, so a read is
+// bounded before the bytes are trusted: the header in particular is fetched and
+// JSON-parsed before its master-keyed tag can be checked, on paths that never
+// unlock (inspect --all, the namespace first-use check), so an unbounded read
+// would let a remote OOM the machine pre-auth. Reads fail closed with this error
+// instead.
+var ErrObjectTooLarge = errors.New("stored object exceeds the maximum size notenv will read")
+
+// Read caps. Far above any real vault, far below exhausting RAM. A header holds
+// the key slots, the rotation log, and one manifest entry per namespace; a single
+// object is one namespace's blob; MaxListBytes caps the total object-key bytes one
+// List pulls in (a vault stores a couple of objects per namespace, so 64 MiB is
+// ~a million keys). Capping the bytes also bounds the element count JSON parsing
+// can allocate (a header cannot smuggle 10^7 slots in a few MiB).
+const (
+	MaxHeaderBytes int64 = 8 << 20  // 8 MiB
+	MaxObjectBytes int64 = 64 << 20 // 64 MiB
+	MaxListBytes   int64 = 64 << 20 // 64 MiB
+)
+
+// ReadCapped reads from r until EOF or max bytes, whichever comes first, and
+// returns ErrObjectTooLarge if r holds more than max (it reads one byte past max
+// to detect the overflow). Memory is bounded to max+1 regardless of how much r
+// would yield, so a huge or endless object cannot exhaust memory. It never
+// returns a truncated object: on overflow it errors rather than hand back a
+// partial read the crypto layer would then reject anyway.
+func ReadCapped(r io.Reader, max int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("%w (limit %d bytes)", ErrObjectTooLarge, max)
+	}
+	return data, nil
+}
 
 // ErrHeaderChanged is returned by SwapHeader when the stored header does not
 // match the bytes the caller's operation started from: another writer landed
@@ -55,6 +96,30 @@ func IsReserved(key string) bool {
 		return true
 	}
 	return strings.HasPrefix(path.Base(key), TempPrefix)
+}
+
+// namespaceBlobKey matches the only non-reserved object notenv writes: a namespace
+// blob keyed "<namespace>/data-<16 hex>.age". The namespace charset mirrors
+// contract.NamespaceName and the "data-<hex>.age" shape is internal/secrets'
+// generated blob name; TestNamespaceBlobKeyTracksContract guards the first against
+// drift. Anything else in a vault directory is a file notenv did not put there.
+var namespaceBlobKey = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*/data-[0-9a-f]{16}\.age$`)
+
+// IsNamespaceBlob reports whether key names a namespace data blob. This is the
+// delete whitelist for the copy reconcile and vault teardown: a key that is not a
+// namespace blob is never a stray to clean up, it is either plumbing (handled
+// separately) or a foreign file notenv must not touch.
+func IsNamespaceBlob(key string) bool {
+	return namespaceBlobKey.MatchString(key)
+}
+
+// IsNotenvObject reports whether key is something notenv itself put in a vault:
+// reserved plumbing or a namespace blob. Everything else is a foreign file that
+// does not belong to the vault. Recognizing our own files, rather than trusting
+// that a path notenv was handed is safe to own, is what stops copy from deleting a
+// mispointed destination's contents and delete from removing an unrelated tree.
+func IsNotenvObject(key string) bool {
+	return IsReserved(key) || IsNamespaceBlob(key)
 }
 
 // WithinPrefix reports whether key falls under the directory named by prefix:

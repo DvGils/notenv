@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/DvGils/notenv/internal/backend"
+	"github.com/DvGils/notenv/internal/backend/local"
 	"github.com/DvGils/notenv/internal/backend/memstore"
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/crypto"
@@ -22,6 +25,7 @@ func TestFormatEnvValueRoundTrips(t *testing.T) {
 		"token123", "with space", `has"quote`, "with\nnewline", "",
 		"a=b", "trailing ", " leading", "tab\there", `back\slash`,
 		"hash#inside", "p@ss/w0rd:x+y,z", "unikøde",
+		"carriage\rreturn", "crlf\r\npair", "all\r\n\tmix",
 	}
 	for _, v := range values {
 		line := "K=" + formatEnvValue(v) + "\n"
@@ -31,6 +35,41 @@ func TestFormatEnvValueRoundTrips(t *testing.T) {
 		}
 		if len(pairs) != 1 || pairs[0].Value != v {
 			t.Fatalf("round-trip of %q via %q gave %+v", v, line, pairs)
+		}
+	}
+}
+
+// TestFormatEnvValueNoRawControlBytes: no matter what (validated) value is
+// exported, the .env line carries no raw control byte that a third-party parser
+// could read as a line break or that could inject a terminal escape sequence.
+func TestFormatEnvValueNoRawControlBytes(t *testing.T) {
+	for _, v := range []string{"a\rb", "x\ny", "t\tb", "\r\n\t", "mix\r\n\tend", "plain"} {
+		out := formatEnvValue(v)
+		for i := 0; i < len(out); i++ {
+			if c := out[i]; c < 0x20 || c == 0x7f {
+				t.Errorf("formatEnvValue(%q) emitted raw control byte 0x%02x in %q", v, c, out)
+			}
+		}
+	}
+}
+
+// TestSanitizeDisplay: descriptions render with every control byte as a visible
+// escape, so a description cannot break the list/inspect columns or inject a
+// terminal escape sequence; ordinary text (including multibyte UTF-8) is untouched.
+func TestSanitizeDisplay(t *testing.T) {
+	cases := map[string]string{
+		"plain text": "plain text",
+		"unikøde 世界": "unikøde 世界",
+		"new\nline":  `new\nline`,
+		"tab\tsep":   `tab\tsep`,
+		"cr\rret":    `cr\rret`,
+		"esc\x1bseq": `esc\x1bseq`,
+		"bell\x07":   `bell\x07`,
+		"del\x7f":    `del\x7f`,
+	}
+	for in, want := range cases {
+		if got := sanitizeDisplay(in); got != want {
+			t.Errorf("sanitizeDisplay(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -112,16 +151,16 @@ func TestHumanUnlockRefusesForeignSessionVault(t *testing.T) {
 	}
 }
 
-// TestDestroyVaultLocal: a local vault is removed by deleting its directory.
+// TestDestroyVaultLocal: a clean local vault (only notenv's own objects) is
+// removed by deleting its directory.
 func TestDestroyVaultLocal(t *testing.T) {
+	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "vault")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	store := &local.Storage{Path: dir}
+	if err := store.Put(ctx, "api/data-0123456789abcdef.age", []byte("y")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "obj"), []byte("y"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := destroyVault(context.Background(), config.Effective{Path: dir}, nil); err != nil {
+	if err := destroyVault(ctx, config.Effective{Path: dir}, store); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -129,12 +168,18 @@ func TestDestroyVaultLocal(t *testing.T) {
 	}
 }
 
-// TestDestroyVaultRemote: a remote vault is removed by deleting every object it
-// lists (rclone lists the header artifacts too, so they go with it).
+// TestDestroyVaultRemote: a remote vault is removed by deleting its namespace
+// blobs and its fixed-name plumbing (header and backup), leaving nothing behind.
 func TestDestroyVaultRemote(t *testing.T) {
 	ctx := context.Background()
 	ms := memstore.New()
-	for _, k := range []string{"ns/seg-a.age", "ns/snap-b.age", ".header.json"} {
+	objects := []string{
+		"ns/data-0123456789abcdef.age",
+		"ns2/data-fedcba9876543210.age",
+		".header.json",
+		".header.json.prev",
+	}
+	for _, k := range objects {
 		if err := ms.Put(ctx, k, []byte("x")); err != nil {
 			t.Fatal(err)
 		}
@@ -147,6 +192,32 @@ func TestDestroyVaultRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(keys) != 0 {
-		t.Fatalf("every object must be deleted, remaining: %v", keys)
+		t.Fatalf("every namespace blob must be deleted, remaining: %v", keys)
+	}
+	for _, artifact := range []string{backend.HeaderName, backend.HeaderBackupName} {
+		if _, err := ms.Get(ctx, artifact); !errors.Is(err, backend.ErrNotFound) {
+			t.Errorf("plumbing object %q must be deleted too, got err %v", artifact, err)
+		}
+	}
+}
+
+// TestDestroyVaultRemoteRefusesForeign: a shared remote whose prefix also holds a
+// non-notenv object is refused, and nothing is deleted (the refusal is atomic).
+func TestDestroyVaultRemoteRefusesForeign(t *testing.T) {
+	ctx := context.Background()
+	ms := memstore.New()
+	objects := []string{"ns/data-0123456789abcdef.age", "backups/photos.tar"}
+	for _, k := range objects {
+		if err := ms.Put(ctx, k, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := destroyVault(ctx, config.Effective{Remote: "r", Base: "b"}, doctorStore{ms}); err == nil {
+		t.Fatal("destroyVault must refuse a remote prefix holding a foreign object")
+	}
+	for _, k := range objects {
+		if _, err := ms.Get(ctx, k); err != nil {
+			t.Errorf("object %q must survive a refused delete, got err %v", k, err)
+		}
 	}
 }

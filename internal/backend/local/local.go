@@ -88,11 +88,23 @@ func (s *Storage) Get(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	return readFileCapped(path, backend.MaxObjectBytes)
+}
+
+// readFileCapped reads at most max bytes from path, returning
+// backend.ErrObjectTooLarge if the file holds more (so a hostile vault directory
+// cannot OOM the process) and backend.ErrNotFound if it is absent. Memory is
+// bounded to max regardless of the file's real size.
+func readFileCapped(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, backend.ErrNotFound
 	}
-	return data, err
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return backend.ReadCapped(f, max)
 }
 
 // Put stores data at key. The write is a temp file in the same directory
@@ -120,11 +132,18 @@ func (s *Storage) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// maxListBytes caps the total object-key bytes one List accumulates, so a vault
+// directory with a pathological number of entries cannot exhaust memory (the
+// directory counterpart of the rclone backend's listing cap). A var so a test can
+// lower it; production uses backend.MaxListBytes.
+var maxListBytes = backend.MaxListBytes
+
 // List returns base-relative keys of every object under prefix, recursively,
 // sorted. Header artifacts and abandoned temp files are not objects and are
 // never listed.
 func (s *Storage) List(ctx context.Context, prefix string) ([]string, error) {
 	var keys []string
+	var total int64
 	err := filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -144,6 +163,10 @@ func (s *Storage) List(ctx context.Context, prefix string) ([]string, error) {
 			return nil
 		}
 		if backend.WithinPrefix(key, prefix) {
+			total += int64(len(key))
+			if total > maxListBytes {
+				return fmt.Errorf("%w (vault listing exceeds %d bytes)", backend.ErrObjectTooLarge, maxListBytes)
+			}
 			keys = append(keys, key)
 		}
 		return nil
@@ -156,11 +179,7 @@ func (s *Storage) List(ctx context.Context, prefix string) ([]string, error) {
 }
 
 func (s *Storage) GetHeader(ctx context.Context) ([]byte, error) {
-	data, err := os.ReadFile(filepath.Join(s.Path, headerObject))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, backend.ErrNotFound
-	}
-	return data, err
+	return readFileCapped(filepath.Join(s.Path, headerObject), backend.MaxHeaderBytes)
 }
 
 // PutHeader writes the header object unconditionally (recovery paths only;
@@ -214,10 +233,7 @@ func (s *Storage) BackupHeader(ctx context.Context) error {
 // RestoreHeaderBackup copies the ".prev" backup back over the header,
 // ErrNotFound when there is none.
 func (s *Storage) RestoreHeaderBackup(ctx context.Context) error {
-	raw, err := os.ReadFile(filepath.Join(s.Path, headerBackupObject))
-	if errors.Is(err, fs.ErrNotExist) {
-		return backend.ErrNotFound
-	}
+	raw, err := readFileCapped(filepath.Join(s.Path, headerBackupObject), backend.MaxHeaderBytes)
 	if err != nil {
 		return err
 	}

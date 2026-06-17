@@ -92,13 +92,21 @@ func vetImport(a *app, pairs []dotenv.Pair) (items []importItem, skipped []strin
 	if len(invalid) > 0 {
 		return nil, nil, fmt.Errorf("these are not valid environment variable names: %s (nothing was imported)", strings.Join(invalid, ", "))
 	}
+	var badValues []string
 	for _, key := range order {
 		p := last[key]
 		if p.Value == "" {
 			skipped = append(skipped, key)
 			continue
 		}
+		if err := secrets.ValidateValue(p.Value); err != nil {
+			badValues = append(badValues, fmt.Sprintf("%s (line %d)", key, p.Line))
+			continue
+		}
 		items = append(items, importItem{key: key, storageKey: a.storageKey(key), value: p.Value})
+	}
+	if len(badValues) > 0 {
+		return nil, nil, fmt.Errorf("these values are not storable (not valid UTF-8 text, or they contain a control character that can't be an environment variable): %s. If any are binary, base64-encode them first. Nothing was imported", strings.Join(badValues, ", "))
 	}
 	sort.Strings(skipped)
 	return items, skipped, nil
