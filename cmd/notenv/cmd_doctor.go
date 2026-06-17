@@ -112,7 +112,7 @@ func runDoctor(cmd *cobra.Command, store *headerTarget, c *checkup) {
 	}
 	c.ok("header present and well-formed (vault %s, revision %d)", header.VaultID, header.Revision)
 
-	mk, _ := verifyWithSessionKey(c, store.scope, header)
+	mk, _ := verifyWithSessionKey(c, store.cache, store.scope, header)
 	checkPin(c, store.scope, header)
 	checkSlots(c, header)
 	checkBlobs(cmd, store, c, header, mk)
@@ -122,8 +122,8 @@ func runDoctor(cmd *cobra.Command, store *headerTarget, c *checkup) {
 // key is already cached: doctor never prompts, so a cold cache just reports the
 // limitation. It returns the master only when the header authenticates under it,
 // so callers can use it to verify object content too.
-func verifyWithSessionKey(c *checkup, scope string, header *crypto.Header) (*crypto.MasterKey, bool) {
-	cached, hit := keyring.DefaultCache().Get(scope)
+func verifyWithSessionKey(c *checkup, cache keyring.Cache, scope string, header *crypto.Header) (*crypto.MasterKey, bool) {
+	cached, hit := cache.Get(scope)
 	if !hit {
 		c.note("header not verified: no session key cached (any unlock verifies it). The object checks below confirm presence only, against the unverified manifest, not content")
 		return nil, false

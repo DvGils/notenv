@@ -39,6 +39,7 @@ type headerTarget struct {
 	vaultStorage
 	scope    string
 	readOnly string
+	cache    keyring.Cache
 }
 
 // loadHeaderStore builds the storage backend for header operations. The header
@@ -82,7 +83,7 @@ func headerTargetFor(storageName string) (*headerTarget, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &headerTarget{vaultStorage: openStorage(eff), scope: eff.Scope(), readOnly: readOnlyReason(eff.StorageName, eff.ReadOnly)}, nil
+	return &headerTarget{vaultStorage: openStorage(eff), scope: eff.Scope(), readOnly: readOnlyReason(eff.StorageName, eff.ReadOnly), cache: keyring.DefaultCache()}, nil
 }
 
 // trustHeader is the read-side integrity check run after every unlock: it
@@ -151,7 +152,7 @@ func pinCurrent(scope string, h *crypto.Header, mk *crypto.MasterKey) {
 // with a stale master nor re-prompts. Drops any stale entry first; honors the
 // configured cache TTL ("0" disables, so this no-ops). Best-effort.
 func recacheMaster(store *headerTarget, mk *crypto.MasterKey) {
-	cache := keyring.DefaultCache()
+	cache := store.cache
 	scope := store.scope
 	cache.Drop(scope)
 	user, err := config.LoadUser()
@@ -350,7 +351,7 @@ func repinAfterRestore(ctx context.Context, store *headerTarget) {
 		return
 	}
 	var mk *crypto.MasterKey
-	if cached, ok := keyring.DefaultCache().Get(store.scope); ok {
+	if cached, ok := store.cache.Get(store.scope); ok {
 		mk, _ = crypto.ParseMasterKey(cached)
 	}
 	if repinRestored(store.scope, header, mk) {
@@ -823,7 +824,7 @@ remote's version history).`,
 			return err
 		}
 		if !bound {
-			keyring.DefaultCache().Drop(scope)
+			store.cache.Drop(scope)
 			ui.Notef("no vault pinned at this storage; dropped any cached key")
 			return nil
 		}
@@ -844,7 +845,7 @@ remote's version history).`,
 		if err := config.ForgetScope(scope); err != nil {
 			return err
 		}
-		keyring.DefaultCache().Drop(scope)
+		store.cache.Drop(scope)
 		ui.Successf("forgot the pin and cached key for this storage; the next unlock is trust-on-first-use")
 		return nil
 	},

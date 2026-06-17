@@ -44,7 +44,7 @@ func TestDoctorCleanVault(t *testing.T) {
 	}
 
 	c := &checkup{}
-	runDoctor(doctorCmdCtx(t), &headerTarget{vaultStorage: doctorStore{store}, scope: "scope"}, c)
+	runDoctor(doctorCmdCtx(t), &headerTarget{vaultStorage: doctorStore{store}, scope: "scope", cache: newMapCache()}, c)
 	if c.problems != 0 {
 		t.Fatalf("clean vault must have no findings, got %d", c.problems)
 	}
@@ -87,7 +87,7 @@ func TestDoctorNamesEveryPlantedFault(t *testing.T) {
 	before := store.Header()
 
 	c := &checkup{}
-	runDoctor(doctorCmdCtx(t), &headerTarget{vaultStorage: doctorStore{store}, scope: "scope"}, c)
+	runDoctor(doctorCmdCtx(t), &headerTarget{vaultStorage: doctorStore{store}, scope: "scope", cache: newMapCache()}, c)
 	// stale provisional + missing blob + rollback
 	if c.problems != 3 {
 		t.Fatalf("want exactly 3 problems, got %d", c.problems)
@@ -140,7 +140,7 @@ func TestDoctorVerifiesBlobContent(t *testing.T) {
 	}
 
 	c := &checkup{}
-	checkBlobs(doctorCmdCtx(t), &headerTarget{vaultStorage: doctorStore{store}, scope: "scope"}, c, header, mk)
+	checkBlobs(doctorCmdCtx(t), &headerTarget{vaultStorage: doctorStore{store}, scope: "scope", cache: newMapCache()}, c, header, mk)
 	if c.problems != 2 {
 		t.Fatalf("want 2 problems (does-not-decrypt + MAC-mismatch), got %d", c.problems)
 	}

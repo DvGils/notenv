@@ -64,7 +64,7 @@ func TestEvictRecoversFromBackup(t *testing.T) {
 	isolateConfig(t)
 	ctx := context.Background()
 	store, mk, entry := brickedVault(t, false)
-	target := &headerTarget{vaultStorage: doctorStore{store}, scope: "scope"}
+	target := &headerTarget{vaultStorage: doctorStore{store}, scope: "scope", cache: newMapCache()}
 
 	state, err := secrets.For(store, "proj", mk).ReadSalvage(ctx, entry)
 	if err != nil {
@@ -106,7 +106,7 @@ func TestEvictClearsWhenNothingSurvives(t *testing.T) {
 	isolateConfig(t)
 	ctx := context.Background()
 	store, mk, entry := brickedVault(t, true)
-	target := &headerTarget{vaultStorage: doctorStore{store}, scope: "scope"}
+	target := &headerTarget{vaultStorage: doctorStore{store}, scope: "scope", cache: newMapCache()}
 
 	state, err := secrets.For(store, "proj", mk).ReadSalvage(ctx, entry)
 	if err != nil {
