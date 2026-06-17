@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bytes"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -22,19 +21,31 @@ import (
 // reading. Masking is accident-proofing, not a boundary: code that already
 // holds the secret can always move it some other way.
 //
-// Matching is exact byte matching, streamed: a value split across two writes
-// is still caught (the longest tail that could open a secret is held back
-// until later bytes decide). Flush emits whatever is still held at
-// end-of-stream; callers must call it after the child exits or trailing
-// output is lost.
+// Matching is exact-byte, streamed, by maximal munch: from the leftmost
+// unresolved byte it extends a held window as far as some pattern's prefix allows,
+// then replaces the longest pattern that started there. A value split across writes
+// is still caught (the window is held until later bytes decide), and Flush emits
+// whatever is still held at end-of-stream, so callers must call it after the child
+// exits or trailing output is lost. It is tuned for few but possibly long patterns
+// (a handful of secrets, each expanded into encodings, any of which can be
+// kilobytes, like a PEM): patterns are kept flat (cheap to build, small) and grouped
+// by first byte, and while a window is held a small candidate list (the patterns it
+// is still a prefix of) is narrowed byte by byte. The window and candidates persist
+// across Writes, so a value split over many small writes is matched once, not
+// re-scanned each Write: cost stays linear in the stream, not quadratic in the value.
 type Masker struct {
-	dst io.Writer
-	// index groups patterns by their first byte, each bucket longest-first. Most
-	// output positions start no secret, so the bucket is empty and matching is
-	// O(1) there: the cost does not scale with the number of patterns, which is
-	// what keeps masking snappy once each secret expands into several encodings.
-	index map[byte][]pattern
-	carry []byte
+	dst       io.Writer
+	patterns  []pattern
+	firstByte map[byte][]int // pattern indices keyed by value[0]; empty => passthrough
+
+	// Held-window state, persisted across Writes. buf is the bytes held from the
+	// current anchor; cand (owned, never aliasing a firstByte bucket) is the indices
+	// of patterns that have buf as a prefix; bestLen/bestPh are the longest pattern
+	// that has fully matched at the anchor so far (0 if none).
+	buf     []byte
+	cand    []int
+	bestLen int
+	bestPh  []byte
 }
 
 // Secret is one injected env var for masking purposes.
@@ -68,15 +79,23 @@ func NewMasker(dst io.Writer, secrets []Secret) *Masker {
 // output). An empty value is always skipped, whatever the floor, since it would
 // match at every position.
 func NewMaskerFloor(dst io.Writer, secrets []Secret, minLen int) *Masker {
+	patterns := buildPatterns(secrets, minLen)
+	firstByte := map[byte][]int{}
+	for i, p := range patterns { // values are non-empty, so value[0] is safe
+		firstByte[p.value[0]] = append(firstByte[p.value[0]], i)
+	}
+	return &Masker{dst: dst, patterns: patterns, firstByte: firstByte}
+}
+
+// buildPatterns expands secrets into the byte patterns to match: each secret's
+// literal plus its encodings (see encodedForms), all sharing one placeholder.
+// Values below the floor (and their encodings) are skipped, and forms that collide
+// (an alphanumeric token whose encoding equals its literal, or two secrets with the
+// same value) are deduped, the first name alphabetically winning.
+func buildPatterns(secrets []Secret, minLen int) []pattern {
 	sorted := append([]Secret(nil), secrets...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
-	// Each secret expands into its literal value plus the common encodings a
-	// program might apply before printing it (see encodedForms); all forms of one
-	// secret share its placeholder. The floor is applied to the original value, so
-	// a short secret and its encodings are all skipped together. seen dedups
-	// forms across secrets (an alphanumeric token's percent-encoding equals its
-	// literal, and two secrets may collide), first name alphabetically winning.
 	seen := map[string]bool{}
 	var patterns []pattern
 	for _, s := range sorted {
@@ -92,12 +111,7 @@ func NewMaskerFloor(dst io.Writer, secrets []Secret, minLen int) *Masker {
 			patterns = append(patterns, pattern{value: form, placeholder: placeholder})
 		}
 	}
-	sort.SliceStable(patterns, func(i, j int) bool { return len(patterns[i].value) > len(patterns[j].value) })
-	index := map[byte][]pattern{}
-	for _, p := range patterns { // patterns are non-empty, so value[0] is safe
-		index[p.value[0]] = append(index[p.value[0]], p)
-	}
-	return &Masker{dst: dst, index: index}
+	return patterns
 }
 
 // encodedForms returns the distinct byte forms of a secret value worth masking:
@@ -141,31 +155,24 @@ func encodedForms(value string) [][]byte {
 	}
 }
 
-// Write rewrites complete matches and holds back a tail that might still
-// become one. It always reports len(p) consumed: held bytes are not an error,
-// they are emitted by a later Write or by Flush.
+// Write feeds p through the matcher and forwards settled output. A value that may
+// still be completing is held (in m.buf) for a later Write or Flush, so it always
+// reports len(p) consumed: held bytes are not an error. With no patterns it is a
+// plain passthrough.
 func (m *Masker) Write(p []byte) (int, error) {
-	buf := p
-	if len(m.carry) > 0 {
-		buf = append(m.carry, p...)
-		m.carry = nil
-	}
-	out := make([]byte, 0, len(buf))
-	i := 0
-	for i < len(buf) {
-		rest := buf[i:]
-		if m.partialAt(rest) {
-			break // rest could still grow into a secret; hold it
+	if len(m.firstByte) == 0 {
+		if _, err := m.dst.Write(p); err != nil {
+			return 0, err
 		}
-		if n, ph := m.completeAt(rest); n > 0 {
-			out = append(out, ph...)
-			i += n
-			continue
-		}
-		out = append(out, rest[0])
-		i++
+		return len(p), nil
 	}
-	m.carry = append(m.carry, buf[i:]...)
+	// Size out by p, not by the held window: a Write emits at most the bytes it
+	// settles (a held value contributes a single placeholder when it completes, or
+	// is flushed out only once if it never matches), so it must not allocate in
+	// proportion to a growing hold, or a long value in many small writes is
+	// quadratic in allocation. append grows out on the rare large settle.
+	out := make([]byte, 0, len(p))
+	m.process(p, &out)
 	if len(out) > 0 {
 		if _, err := m.dst.Write(out); err != nil {
 			return 0, err
@@ -174,53 +181,120 @@ func (m *Masker) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Flush emits the held tail. No more bytes are coming, so a partial prefix
-// can no longer complete, but a shorter secret inside the tail still can,
-// so the tail is re-scanned for complete matches rather than emitted raw.
-func (m *Masker) Flush() error {
-	buf := m.carry
-	m.carry = nil
-	out := make([]byte, 0, len(buf))
-	i := 0
-	for i < len(buf) {
-		rest := buf[i:]
-		if n, ph := m.completeAt(rest); n > 0 {
-			out = append(out, ph...)
-			i += n
+// process feeds in through the matcher, appending settled bytes (and placeholders
+// for matches) to out and leaving any unresolved window in m.buf. The window and
+// its candidate set persist across calls: an incoming byte that extends the window
+// narrows the candidates in O(len(cand)) with no re-scan of what is already held.
+// Only when a byte cannot extend the window does it resolve the front (the longest
+// pattern that started at the anchor, else one byte) and re-process the small
+// leftover.
+func (m *Masker) process(in []byte, out *[]byte) {
+	// Bytes are pulled from refeed first (leftover re-queued after a resolve), then
+	// from in by index: in itself is never copied, so a divergence costs only the
+	// bounded held window, not the rest of the stream.
+	var refeed []byte
+	ri, ii := 0, 0
+	for {
+		var c byte
+		switch {
+		case ri < len(refeed):
+			c, ri = refeed[ri], ri+1
+		case ii < len(in):
+			c, ii = in[ii], ii+1
+		default:
+			return
+		}
+
+		if len(m.buf) == 0 {
+			// Not holding: does c begin any pattern?
+			bucket := m.firstByte[c]
+			if len(bucket) == 0 {
+				*out = append(*out, c)
+				continue
+			}
+			m.cand = append(m.cand[:0], bucket...) // owned copy; never mutate the bucket
+			m.buf = append(m.buf, c)
+			m.bestLen, m.bestPh = 0, nil
+			for _, pi := range bucket { // a length-1 pattern completes immediately
+				if len(m.patterns[pi].value) == 1 {
+					m.bestLen, m.bestPh = 1, m.patterns[pi].placeholder
+				}
+			}
 			continue
 		}
-		out = append(out, rest[0])
-		i++
+
+		// Holding: narrow candidates to those that c extends (still matching at the
+		// next position), recording any that complete exactly here.
+		off := len(m.buf)
+		w := 0
+		var doneLen int
+		var donePh []byte
+		for _, pi := range m.cand {
+			v := m.patterns[pi].value
+			if len(v) > off && v[off] == c {
+				m.cand[w] = pi
+				w++
+				if len(v) == off+1 {
+					doneLen, donePh = off+1, m.patterns[pi].placeholder
+				}
+			}
+		}
+		if w > 0 {
+			m.cand = m.cand[:w]
+			m.buf = append(m.buf, c)
+			if doneLen > 0 {
+				m.bestLen, m.bestPh = doneLen, donePh
+			}
+			continue
+		}
+
+		// c cannot extend the held window: resolve its front (longest pattern from
+		// the anchor, else one byte), then re-queue the leftover and c ahead of any
+		// remaining refeed. leftover and c are copied into a fresh slice first, since
+		// leftover aliases m.buf's storage which is about to be reset.
+		var leftover []byte
+		if m.bestLen > 0 {
+			*out = append(*out, m.bestPh...)
+			leftover = m.buf[m.bestLen:]
+		} else {
+			*out = append(*out, m.buf[0])
+			leftover = m.buf[1:]
+		}
+		nr := make([]byte, 0, len(leftover)+1+len(refeed)-ri)
+		nr = append(nr, leftover...)
+		nr = append(nr, c)
+		nr = append(nr, refeed[ri:]...)
+		refeed, ri = nr, 0
+		m.buf = m.buf[:0]
+		m.cand = m.cand[:0]
+		m.bestLen, m.bestPh = 0, nil
+	}
+}
+
+// Flush drains the held window at end of stream. No more bytes can extend it, so a
+// held prefix can no longer complete: resolve its front (the longest pattern that
+// started at the anchor, else one byte) and re-walk the leftover, which exposes a
+// shorter or later match the hold was deferring, until nothing is held. Callers
+// must Flush after the child exits or trailing output is lost.
+func (m *Masker) Flush() error {
+	out := make([]byte, 0, len(m.buf))
+	for len(m.buf) > 0 {
+		var leftover []byte
+		if m.bestLen > 0 {
+			out = append(out, m.bestPh...)
+			leftover = append([]byte(nil), m.buf[m.bestLen:]...)
+		} else {
+			out = append(out, m.buf[0])
+			leftover = append([]byte(nil), m.buf[1:]...)
+		}
+		m.buf = m.buf[:0]
+		m.cand = m.cand[:0]
+		m.bestLen, m.bestPh = 0, nil
+		m.process(leftover, &out)
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	_, err := m.dst.Write(out)
 	return err
-}
-
-// partialAt reports whether rest, in its entirety, is a proper prefix of some
-// secret, i.e. bytes still to come could complete a match. This deliberately
-// outranks a shorter complete match at the same position: holding is always
-// safe (the next Write or Flush resolves it), while emitting early could split
-// a longer secret in two and leak its tail.
-// rest is always non-empty here (the Write/Flush loops only call it with
-// buf[i:] for i < len(buf)), so rest[0] selects the only bucket that can match.
-func (m *Masker) partialAt(rest []byte) bool {
-	for _, p := range m.index[rest[0]] {
-		if len(rest) < len(p.value) && bytes.HasPrefix(p.value, rest) {
-			return true
-		}
-	}
-	return false
-}
-
-// completeAt reports the longest secret starting exactly at rest's head.
-func (m *Masker) completeAt(rest []byte) (int, []byte) {
-	for _, p := range m.index[rest[0]] { // longest first within the bucket
-		if len(rest) >= len(p.value) && bytes.HasPrefix(rest, p.value) {
-			return len(p.value), p.placeholder
-		}
-	}
-	return 0, nil
 }

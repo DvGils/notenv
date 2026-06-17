@@ -148,12 +148,13 @@ func longSecret(n int) string {
 	return b.String()
 }
 
-// BenchmarkMaskerLongSecret shows how cost scales with secret length, for a long
-// secret printed in one Write versus small chunks. The small-writes case is the
-// streaming-hold worst case: each chunk extends a partial match, so the matcher
-// holds the growing buffer and re-scans it from offset 0 every Write, making cost
-// quadratic in the secret length (the PEM concern). Compare the small-writes row's
-// growth across sizes against one-write's to read the quadratic off the numbers.
+// BenchmarkMaskerLongSecret guards against a regression of the streaming-hold cost.
+// A long secret (a PEM) printed in small chunks is the worst case: each chunk
+// extends a partial match. The old matcher held the growing buffer and re-scanned
+// it from offset 0 every Write, so the small-writes row grew quadratically in the
+// secret length; the maximal-munch matcher persists the window across Writes, so the
+// small-writes and one-write rows now track each other (both linear in size). A
+// regression would show up as small-writes growing super-linearly versus one-write.
 func BenchmarkMaskerLongSecret(b *testing.B) {
 	for _, kb := range []int{1, 8, 64} {
 		secret := longSecret(kb * 1024)
