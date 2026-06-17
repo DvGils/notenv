@@ -2,9 +2,12 @@ package runner
 
 import (
 	"bytes"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/url"
 	"strings"
@@ -52,6 +55,51 @@ func TestMaskerCatchesPercentEncoding(t *testing.T) {
 	}
 }
 
+// TestMaskerCatchesBase32: a value base32'd, both padded and not (TOTP seeds and
+// recovery tokens are commonly base32).
+func TestMaskerCatchesBase32(t *testing.T) {
+	secret := "supersecretvalue"
+	for _, enc := range []string{
+		base32.StdEncoding.EncodeToString([]byte(secret)),
+		base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret)),
+	} {
+		got := write(t, []Secret{{Name: "K", Value: secret}}, "otpauth seed="+enc+"\n")
+		if strings.Contains(got, enc) || !strings.Contains(got, "<notenv-masked:K>") {
+			t.Fatalf("base32 of the secret leaked: %q", got)
+		}
+	}
+}
+
+// TestMaskerCatchesJSONEscaped: a secret containing characters JSON escapes
+// (quote, backslash) is masked when logged inside a JSON string, where it appears
+// as its escaped bytes, not its literal ones.
+func TestMaskerCatchesJSONEscaped(t *testing.T) {
+	secret := `pa"ss\word`
+	quoted, _ := json.Marshal(secret)
+	enc := string(quoted[1 : len(quoted)-1]) // pa\"ss\\word
+	if enc == secret {
+		t.Fatal("test value must actually need JSON escaping")
+	}
+	got := write(t, []Secret{{Name: "K", Value: secret}}, `{"token":"`+enc+`"}`+"\n")
+	if strings.Contains(got, enc) || !strings.Contains(got, "<notenv-masked:K>") {
+		t.Fatalf("JSON-escaped secret leaked: %q", got)
+	}
+}
+
+// TestMaskerCatchesHTMLEscaped: a secret with HTML metacharacters is masked when
+// rendered into HTML/XML as its escaped entities.
+func TestMaskerCatchesHTMLEscaped(t *testing.T) {
+	secret := `secret<&>"x`
+	enc := html.EscapeString(secret) // secret&lt;&amp;&gt;&#34;x
+	if enc == secret {
+		t.Fatal("test value must actually need HTML escaping")
+	}
+	got := write(t, []Secret{{Name: "K", Value: secret}}, "<input value=\""+enc+"\">\n")
+	if strings.Contains(got, enc) || !strings.Contains(got, "<notenv-masked:K>") {
+		t.Fatalf("HTML-escaped secret leaked: %q", got)
+	}
+}
+
 // TestMaskerSkipsShortValueAndItsEncodings: a value below the floor passes
 // through, and so do its encodings (we never start masking a short secret via
 // the back door of an encoding).
@@ -86,5 +134,52 @@ func BenchmarkMaskerManySecrets(b *testing.B) {
 		m := NewMasker(io.Discard, secrets)
 		_, _ = m.Write(data)
 		_ = m.Flush()
+	}
+}
+
+// longSecret is a PEM-shaped value of about n bytes: notenv accepts
+// arbitrary-length secrets, and a full private key or cert bundle is kilobytes.
+func longSecret(n int) string {
+	var b strings.Builder
+	b.WriteString("-----BEGIN PRIVATE KEY-----\n")
+	for b.Len() < n {
+		b.WriteString("MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDh\n")
+	}
+	return b.String()
+}
+
+// BenchmarkMaskerLongSecret shows how cost scales with secret length, for a long
+// secret printed in one Write versus small chunks. The small-writes case is the
+// streaming-hold worst case: each chunk extends a partial match, so the matcher
+// holds the growing buffer and re-scans it from offset 0 every Write, making cost
+// quadratic in the secret length (the PEM concern). Compare the small-writes row's
+// growth across sizes against one-write's to read the quadratic off the numbers.
+func BenchmarkMaskerLongSecret(b *testing.B) {
+	for _, kb := range []int{1, 8, 64} {
+		secret := longSecret(kb * 1024)
+		secrets := []Secret{{Name: "KEY", Value: secret}}
+		data := []byte(secret)
+		var chunks [][]byte
+		for s := data; len(s) > 0; {
+			c := min(16, len(s))
+			chunks = append(chunks, s[:c])
+			s = s[c:]
+		}
+		b.Run(fmt.Sprintf("%dKB/one-write", kb), func(b *testing.B) {
+			for b.Loop() {
+				m := NewMasker(io.Discard, secrets)
+				_, _ = m.Write(data)
+				_ = m.Flush()
+			}
+		})
+		b.Run(fmt.Sprintf("%dKB/small-writes", kb), func(b *testing.B) {
+			for b.Loop() {
+				m := NewMasker(io.Discard, secrets)
+				for _, c := range chunks {
+					_, _ = m.Write(c)
+				}
+				_ = m.Flush()
+			}
+		})
 	}
 }

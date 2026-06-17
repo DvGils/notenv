@@ -2,9 +2,12 @@ package runner
 
 import (
 	"bytes"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/url"
 	"sort"
@@ -99,26 +102,42 @@ func NewMaskerFloor(dst io.Writer, secrets []Secret, minLen int) *Masker {
 
 // encodedForms returns the distinct byte forms of a secret value worth masking:
 // the literal plus the common single-transform encodings a program is likely to
-// apply before it reaches stdout (base64 into an auth header, hex, percent into a
-// logged URL). notenv knows the exact value, so masking its encodings carries
-// none of the false-positive risk a guessing scanner would. It deliberately does
-// NOT catch a value concatenated into a larger blob and then encoded, chained
-// transforms, or any egress notenv does not wrap (network, files); masking stays
-// accident-proofing, not containment. Duplicates (common for alphanumeric tokens,
-// whose percent-encoding equals the literal) are collapsed by the caller's seen.
+// apply before it reaches stdout. Each is one transform a value plausibly passes
+// through on the way to a log or response: base64 (an auth header or token blob),
+// base32 (a TOTP seed or recovery token), hex, percent-encoding (a logged URL),
+// JSON string-escaping (a value inside a JSON body), and HTML escaping (a value
+// rendered into a page). notenv knows the exact value, so masking its encodings
+// carries none of the false-positive risk a guessing scanner would. It deliberately
+// does NOT catch a value concatenated into a larger blob and then encoded, chained
+// transforms, escaping variants a different library would emit (a non-HTML-safe JSON
+// encoder, &quot; instead of &#34;), or any egress notenv does not wrap (network,
+// files); masking stays accident-proofing, not containment. Forms that coincide
+// (an alphanumeric token escapes to itself) are collapsed by the caller's seen set.
 func encodedForms(value string) [][]byte {
 	v := []byte(value)
 	hexLower := hex.EncodeToString(v)
+	// json.Marshal of a string never errors; it wraps the value in quotes and
+	// escapes it the way a program logging the secret inside JSON would (Go's
+	// default also escapes < > & as <…, the HTML-safe form). The surrounding
+	// quotes are JSON structure, not part of the value, so they are trimmed: the
+	// masker matches the escaped bytes wherever they appear. For an alphanumeric
+	// token this equals the literal and is dropped by the caller's dedup.
+	jsonQuoted, _ := json.Marshal(value)
+	jsonInner := jsonQuoted[1 : len(jsonQuoted)-1]
 	return [][]byte{
 		v,
 		[]byte(base64.StdEncoding.EncodeToString(v)),
 		[]byte(base64.RawStdEncoding.EncodeToString(v)),
 		[]byte(base64.URLEncoding.EncodeToString(v)),
 		[]byte(base64.RawURLEncoding.EncodeToString(v)),
+		[]byte(base32.StdEncoding.EncodeToString(v)),
+		[]byte(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(v)),
 		[]byte(hexLower),
 		[]byte(strings.ToUpper(hexLower)),
 		[]byte(url.QueryEscape(value)),
 		[]byte(url.PathEscape(value)),
+		jsonInner,
+		[]byte(html.EscapeString(value)),
 	}
 }
 
