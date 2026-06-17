@@ -130,9 +130,15 @@ jobs:
       - name: fuzz (short smoke)
         run: |
           set -uo pipefail
-          for tgt in FuzzWriteReadRoundTrip FuzzReadDecodeNeverPanics FuzzCommitSequence FuzzMultiWriterCommit; do
+          for entry in \
+            internal/secrets:FuzzWriteReadRoundTrip \
+            internal/secrets:FuzzReadDecodeNeverPanics \
+            internal/secrets:FuzzCommitSequence \
+            internal/secrets:FuzzMultiWriterCommit \
+            internal/runner:FuzzMaskerMatchesReference; do
+            pkg="${entry%%:*}"; tgt="${entry##*:}"
             echo "::group::$tgt"
-            out=$(go test -tags fastkdf -run='^$' -fuzz="^${tgt}\$" -fuzztime=30s -fuzzminimizetime=1x ./internal/secrets/ 2>&1)
+            out=$(go test -tags fastkdf -run='^$' -fuzz="^${tgt}\$" -fuzztime=30s -fuzzminimizetime=1x "./${pkg}/" 2>&1)
             status=$?
             echo "$out"
             echo "::endgroup::"
