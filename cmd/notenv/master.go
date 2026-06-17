@@ -229,12 +229,13 @@ func warnShortPassphrase(pass string) {
 }
 
 // cacheMaster stores best-effort: a cache failure must never fail the
-// command, the user just gets prompted again next time. A scope under an active
-// handoff no-cache lease is never cached: while a vault is handed off to an
-// agent, its master stays out of the shared per-uid cache, even when the user
-// unlocks the same vault in another terminal (see session.go).
+// command, the user just gets prompted again next time. While any handoff holds
+// the no-cache lease, NO master is cached: a handoff hands an agent your uid, and
+// the cache is the shared per-uid keyring, so every vault's master, not just the
+// handed-off one, must stay out of it for the session, even one unlocked in another
+// terminal (see session.go).
 func cacheMaster(cache keyring.Cache, scope string, mk *crypto.MasterKey, ttl time.Duration) {
-	if ttl > 0 && !leaseActive(scope) {
+	if ttl > 0 && !noCacheLeaseActive() {
 		_ = cache.Store(scope, mk.String(), ttl)
 	}
 }

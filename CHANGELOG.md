@@ -74,6 +74,17 @@ upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
 
 ### Fixed
 
+- **`handoff` now keeps every vault's master out of the agent's reach, not just the
+  handed-off one.** The session's no-cache lease and cache drop covered only the
+  source vault, so a sibling vault you had unlocked earlier sat warm in the shared
+  per-uid key cache, which the agent (running as you) could read directly to decrypt
+  it, outside the handed-off scope. Handoff now drops every cached master at startup
+  and holds a global no-cache lease for the session's lifetime, so while an agent
+  runs no notenv process on the machine caches any master, even one unlocked in
+  another terminal. The cost is that your other terminals re-prompt for those vaults
+  during a handoff; the upside is the "the agent can't get your master" guarantee now
+  holds for all your vaults, not just the one you handed off. (Single-vault setups are
+  unaffected: the one vault was already covered.)
 - **The handoff session guard now covers the `key` commands and `doctor` too.** Every
   other unlock path already refused, inside a handoff session, to open any vault but
   the handed-off one; the mutating `key` commands (which always prompt) and `doctor`

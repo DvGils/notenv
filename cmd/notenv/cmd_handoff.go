@@ -68,7 +68,7 @@ func runHandoff(cmd *cobra.Command, agentArgv []string) error {
 	if err != nil {
 		return err
 	}
-	namespace, srcSpec, srcScope := a.namespace, a.sourceSpec, a.cacheScope
+	namespace, srcSpec := a.namespace, a.sourceSpec
 
 	// Clean up after any earlier handoff that died without running its teardown
 	// (SIGKILL, power loss): remove its leftover ephemeral vault and forget its
@@ -117,20 +117,31 @@ func runHandoff(cmd *cobra.Command, agentArgv []string) error {
 		_ = os.RemoveAll(eDir)
 	}()
 
-	// Take the no-cache lease on the source for the session's lifetime: while the
-	// agent runs, the source master stays out of the shared cache even if you
-	// unlock the same vault in another terminal.
-	if release, err := takeLease(srcScope); err != nil {
-		ui.Warnf("couldn't fully isolate this session (%v); to be safe, don't unlock your main vault in another terminal while the agent is running", err)
+	// Take the global no-cache lease for the session's lifetime: while the agent
+	// runs, no notenv process on this machine caches ANY vault's master, even one
+	// unlocked in another terminal. The agent runs as you and could read a sibling
+	// vault's cached master straight from the per-uid keyring, so the whole cache,
+	// not just the handed-off vault, has to stay cold for the session.
+	if release, err := takeNoCacheLease(); err != nil {
+		ui.Warnf("couldn't fully isolate this session (%v); to be safe, don't unlock any vault in another terminal while the agent is running", err)
 	} else {
 		releaseLease = release
 	}
 
 	// Build E in a subprocess that unlocks the source and exits before the agent
-	// runs, so no live process holds your master while the agent is alive (R2).
+	// runs, so no live process holds your master while the agent is alive (R2). The
+	// builder reads the source warm if it was cached (the lease only blocks writing
+	// the cache, not reading it) and drops it on the way out.
 	if err := runBuilder(srcSpec, namespace, eDir, me.Recipient().String()); err != nil {
 		return err
 	}
+
+	// Clear every other master this machine has cached, so none is left in the
+	// agent-readable per-uid keyring when the agent starts. The builder already
+	// dropped the source; this clears any sibling vault unlocked earlier. The lease
+	// above keeps anything from being re-cached for the session, so by the time the
+	// agent runs the cache holds nothing it could read.
+	dropAllCachedMasters(keyring.DefaultCache())
 
 	// Spawn the agent pointed only at E.
 	env := handoffEnv(os.Environ(), eDir, eScope, me.String(), namespace)
@@ -175,6 +186,23 @@ func runBuilder(srcSpec, namespace, eDir, recipient string) error {
 		return errors.New("could not build the ephemeral vault (see the error above)")
 	}
 	return nil
+}
+
+// dropAllCachedMasters evicts every master this machine has cached. PinnedScopes
+// enumerates every vault this machine has touched (a cached master implies a pin),
+// so dropping each clears the per-uid keyring of anything an in-session agent could
+// read. Best-effort: a vault that turns out not to be cached is a harmless no-op,
+// and a failure to enumerate warns rather than aborts the handoff (the lease still
+// stops future caching; the residual risk is only a sibling master already warm).
+func dropAllCachedMasters(cache keyring.Cache) {
+	scopes, err := config.PinnedScopes()
+	if err != nil {
+		ui.Warnf("couldn't list cached vaults to clear them (%v); if you have other vaults unlocked, the agent's uid could read them. Run `notenv cache clear`, or lock them, to be safe", err)
+		return
+	}
+	for _, s := range scopes {
+		cache.Drop(s)
+	}
 }
 
 // handoffEnv builds the agent's environment: the user's, stripped of the real
