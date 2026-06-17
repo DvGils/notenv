@@ -65,6 +65,15 @@ upgrade (pre-1.0, no stable release): `notenv export` from the old binary and
 
 ### Fixed
 
+- **The handoff session guard now covers the `key` commands and `doctor` too.** Every
+  other unlock path already refused, inside a handoff session, to open any vault but
+  the handed-off one; the mutating `key` commands (which always prompt) and `doctor`
+  (which reads the warm session key to verify and decrypt blobs) did not. An
+  in-session `notenv key …`/`doctor`/`key restore-backup`/`key trust` pointed at a
+  different `--storage` would prompt for, or read a warm-cached master of, another
+  vault. The guard now sits at each of those entry points, so the whole header
+  surface fails closed in-session like the rest. As before this is
+  accident-and-master-protection, not agent containment.
 - **`handoff` no longer lets a compromised agent reach your real vault through the
   internal builder.** The hidden `__handoff-build` step unlocks the source vault to
   copy the handed-off namespace into the ephemeral one. A session guard refused

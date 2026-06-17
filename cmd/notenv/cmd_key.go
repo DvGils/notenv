@@ -319,6 +319,12 @@ write).`,
 		if err != nil {
 			return err
 		}
+		// A restore rewrites the header (and repinAfterRestore reads the warm cache),
+		// so it must obey the session boundary: inside a handoff session, refuse any
+		// vault but the handed-off one rather than roll back a foreign vault's header.
+		if err := sessionGuard(store.scope); err != nil {
+			return err
+		}
 		if store.readOnly != "" {
 			return fmt.Errorf("%s; refusing to restore the header (a recovery is still a storage write)", store.readOnly)
 		}
@@ -394,6 +400,15 @@ type unlocked struct {
 // gateProvisional runs the onboarding gate; `key rotate` skips it because the
 // rotation it is about to perform is exactly what the gate would force.
 func unlockHeader(ctx context.Context, store *headerTarget, gateProvisional bool) (*unlocked, error) {
+	// Inside a handoff session, refuse to unlock any vault but the handed-off one,
+	// before prompting. unlockHeader always prompts for the credential (it never
+	// reads the cache), so without this an in-session `key ...` pointed at another
+	// --storage would walk the operator to a passphrase prompt for their real
+	// vault, exactly what the session guard exists to prevent. Same rule every
+	// other unlock path enforces (master, ensureMaster, fetchSecrets, humanUnlock).
+	if err := sessionGuard(store.scope); err != nil {
+		return nil, err
+	}
 	if store.readOnly != "" {
 		return nil, fmt.Errorf("%s; refusing to modify the vault header", store.readOnly)
 	}
@@ -880,6 +895,12 @@ authentication tag must still verify.`,
 		}
 		header, err := crypto.ParseHeader(raw)
 		if err != nil {
+			return err
+		}
+		// Inside a handoff session, refuse any vault but the handed-off one: trust
+		// unlocks (resolveUnlock prompts) to recover the master, so it obeys the same
+		// boundary as every other unlock path.
+		if err := sessionGuard(store.scope); err != nil {
 			return err
 		}
 		// Unlock to recover the master, then require the tag to verify (trust

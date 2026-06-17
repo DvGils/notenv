@@ -123,6 +123,14 @@ func runDoctor(cmd *cobra.Command, store *headerTarget, c *checkup) {
 // limitation. It returns the master only when the header authenticates under it,
 // so callers can use it to verify object content too.
 func verifyWithSessionKey(c *checkup, cache keyring.Cache, scope string, header *crypto.Header) (*crypto.MasterKey, bool) {
+	// Inside a handoff session, never read the warm master of a vault other than the
+	// handed-off one: doing so would verify and decrypt a foreign vault's blobs from
+	// cache, the warm-path bypass the session guard exists to stop. doctor never
+	// prompts, so this degrades to the same unverified-header report as a cold cache.
+	if err := sessionGuard(scope); err != nil {
+		c.note("header not verified: inside a notenv handoff session, doctor won't touch another vault's cached key. The object checks below confirm presence only, against the unverified manifest, not content")
+		return nil, false
+	}
 	cached, hit := cache.Get(scope)
 	if !hit {
 		c.note("header not verified: no session key cached (any unlock verifies it). The object checks below confirm presence only, against the unverified manifest, not content")
