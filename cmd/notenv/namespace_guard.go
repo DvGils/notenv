@@ -40,7 +40,7 @@ func guardNamespace(ctx context.Context, store backend.HeaderStore, dir string, 
 		return nil
 	case config.NamespaceConfirm:
 		if err := confirmNamespace(resolved,
-			fmt.Sprintf("%s requests namespace %q, not this directory's name. Expose that namespace's secrets to commands run here?", contract.FileName, resolved),
+			fmt.Sprintf("%s requests namespace %q, not this directory's name. Use that namespace here?", contract.FileName, resolved),
 			fmt.Sprintf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)); err != nil {
 			return err
 		}
@@ -51,7 +51,7 @@ func guardNamespace(ctx context.Context, store backend.HeaderStore, dir string, 
 		}
 		if joining {
 			if err := confirmNamespace(resolved,
-				fmt.Sprintf("this checkout hasn't used notenv before, but namespace %q already holds secrets. Expose them to commands run here?", resolved),
+				fmt.Sprintf("this checkout hasn't used notenv before, but namespace %q already holds secrets. Use it here?", resolved),
 				fmt.Sprintf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)); err != nil {
 				return err
 			}
@@ -83,7 +83,7 @@ func guardFlagNamespace(ctx context.Context, store backend.HeaderStore, scope, n
 	}
 	if joining {
 		if err := confirmNamespace(namespace,
-			fmt.Sprintf("namespace %q already holds secrets. Expose them to commands run here?", namespace),
+			fmt.Sprintf("namespace %q already holds secrets. Use this namespace?", namespace),
 			fmt.Sprintf("namespace %q declined; check the --namespace value", namespace)); err != nil {
 			return err
 		}

@@ -4,6 +4,19 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.20.1
+
+### Fixed
+
+- **The namespace-acceptance prompt no longer talks about exposing secrets to a
+  command that runs nothing.** The one-time confirmation shown the first time you point
+  notenv at an existing namespace (a fresh checkout joining it, or a projectless
+  `--namespace`) asked whether to "expose them to commands run here", which made no
+  sense for a `set`, `unset`, `list`, or `inspect` that runs no command and shows no
+  value. It now asks whether to use the namespace, which reads correctly for every
+  command. The guard itself is unchanged: still one confirmation per (storage,
+  namespace), still fails closed where there is no terminal to prompt on.
+
 ## 0.20.0
 
 An input-integrity pass: notenv now defines exactly what a secret value may contain
