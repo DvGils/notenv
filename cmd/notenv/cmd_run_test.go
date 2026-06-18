@@ -175,6 +175,21 @@ func TestFlushMaskerNilIsNoop(t *testing.T) {
 	flushMasker(nil) // a passthrough stream has no masker; must not panic
 }
 
+// TestEmptyOnlyError: a --only that resolves to zero names must fail closed, so
+// an empty selector (a templated value that came out empty) never silently
+// widens to injecting the whole namespace.
+func TestEmptyOnlyError(t *testing.T) {
+	if err := emptyOnlyError(false, nil); err != nil {
+		t.Fatalf("flag absent must be fine: %v", err)
+	}
+	if err := emptyOnlyError(true, []string{"API_KEY"}); err != nil {
+		t.Fatalf("flag with names must be fine: %v", err)
+	}
+	if err := emptyOnlyError(true, nil); err == nil {
+		t.Fatal("--only given but empty must error (fail closed), not inject everything")
+	}
+}
+
 func TestFlushMaskerWarnsOnWriteError(t *testing.T) {
 	withMaskFlags(t, false, false)
 	secret := []runner.Secret{{Name: "API_KEY", Value: "supersecretvalue"}}

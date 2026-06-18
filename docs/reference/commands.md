@@ -19,6 +19,7 @@
 | `notenv inspect --all` | Summarize the whole vault: its namespaces, id, revision, and storage. Reads only the header, so no passphrase is needed. |
 | `notenv run -- cmd` | Run a command with secrets injected as environment variables. |
 | `notenv run --refresh -- cmd` | Same, but bypass the local cache and pull the latest secrets first. |
+| `notenv run --only VAR1,VAR2 -- cmd` | Inject only the named variables from the namespace (comma-separated or repeated), not the whole set. Lets you give one tool (an MCP server) just its own credential. |
 | `notenv export` | Print a namespace (or `--all` the whole vault) as `.env` to stdout, never a file. The inverse of `import`. Gated by the primary passphrase; `--json` emits a structured form. |
 | `notenv doctor` | Check a storage read-only for known problem states; exit 1 when there are findings. |
 | `notenv cache clear` | Remove all locally cached ciphertext on this machine. |
