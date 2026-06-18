@@ -43,6 +43,11 @@ jobs:
       # one, so every code path is still exercised.
       - name: test
         run: go test -tags fastkdf -race ./...
+      # govulncheck is a tool dependency in go.mod, so its version and hash are
+      # pinned by go.sum like every other module. It reports only vulnerabilities
+      # that reachable code actually calls, so a finding here is real, not advisory.
+      - name: govulncheck
+        run: go tool govulncheck ./...
 
   # The native key caches (Keychain, DPAPI) and everything platform-shaped
   # only prove themselves by running, not cross-compiling.

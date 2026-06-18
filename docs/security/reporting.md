@@ -2,7 +2,9 @@
 
 Please report security vulnerabilities **privately** through GitHub's
 [private vulnerability reporting](https://github.com/DvGils/notenv/security/advisories/new), not a
-public issue. Reports are acknowledged, investigated, and a fix and coordinated disclosure follow.
+public issue. Reports are acknowledged within **5 business days**, investigated, and a fix and
+coordinated disclosure follow. We aim to assess every report and report back on next steps within
+**14 days** of acknowledgement.
 
 ## Supported versions
 
