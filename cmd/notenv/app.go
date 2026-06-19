@@ -36,7 +36,7 @@ type app struct {
 	blobs        blobcache.Cache
 	cacheScope   string // length-prefixed remote+base (config.CacheScope): one key per storage base
 	cacheTTL     time.Duration
-	readOnly     string // non-empty: why mutating commands are refused (requireWritable)
+	readOnly     string   // non-empty: why mutating commands are refused (requireWritable)
 	salvage      bool     // read past untrustable recorded objects (--skip-corrupt); set only by read-only surfaces
 	only         []string // --only: inject just these namespace keys (nil = all); namespace-direct, the contract's declaration list is not consulted
 	sourceSpec   string   // this storage as a NOTENV_STORAGE spec, so handoff can re-open it in the builder subprocess
