@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -424,6 +425,15 @@ func confirmWipe(before *secrets.State, writes []secrets.Write, namespace string
 	return nil
 }
 
+// metaEqual reports whether two secrets' advisory metadata is identical. It is a
+// field-by-field compare because Meta now carries a slice (Egress), so the struct
+// is no longer comparable with ==; any remote write to a key changes its TS/By,
+// so this reliably detects a concurrent change.
+func metaEqual(a, b secrets.Meta) bool {
+	return a.Description == b.Description && a.TS == b.TS && a.By == b.By &&
+		a.Sensitivity == b.Sensitivity && slices.Equal(a.Egress, b.Egress)
+}
+
 // refuseConcurrentEdits stops the save when a key this edit touches also
 // changed remotely while the buffer was open: silently overwriting a write
 // the user never saw is the one wrong answer. Keys the edit does not touch
@@ -433,7 +443,7 @@ func refuseConcurrentEdits(before, fresh *secrets.State, writes []secrets.Write)
 	for _, w := range writes {
 		bv, bok := before.Secrets[w.Key]
 		fv, fok := fresh.Secrets[w.Key]
-		if bok != fok || bv != fv || before.Meta[w.Key] != fresh.Meta[w.Key] {
+		if bok != fok || bv != fv || !metaEqual(before.Meta[w.Key], fresh.Meta[w.Key]) {
 			clashed = append(clashed, w.Key)
 		}
 	}

@@ -89,7 +89,7 @@ func runChild(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
-	res, err := a.fetchSecrets(cmd.Context(), runRefresh)
+	res, err := a.fetchSecrets(cmd.Context(), runRefresh, false)
 	if err != nil {
 		return err
 	}

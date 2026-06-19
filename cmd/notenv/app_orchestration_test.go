@@ -150,11 +150,11 @@ func TestWithMasterRecoversFromStaleCache(t *testing.T) {
 func TestFetchSecretsWarmServesWithoutStorage(t *testing.T) {
 	ctx := context.Background()
 	a, _, _ := identityApp(t, map[string]string{"K": "vvvvvv"})
-	if res, err := a.fetchSecrets(ctx, false); err != nil || res.secrets["K"] != "vvvvvv" {
+	if res, err := a.fetchSecrets(ctx, false, false); err != nil || res.secrets["K"] != "vvvvvv" {
 		t.Fatalf("cold fetch: res=%v err=%v", res, err)
 	}
 	a.store = nil // a warm fetch must not reach for storage
-	res, err := a.fetchSecrets(ctx, false)
+	res, err := a.fetchSecrets(ctx, false, false)
 	if err != nil {
 		t.Fatalf("warm fetch touched storage or failed: %v", err)
 	}

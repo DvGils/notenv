@@ -4,6 +4,73 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## Unreleased (0.21.0)
+
+Namespaces become a first-class concept. Until now a namespace existed only while
+it held secrets: it appeared on the first `set` and vanished when its last secret
+was removed, with no command to create or remove one deliberately. This release
+makes a namespace a persistent container you manage on its own, and gives both
+namespaces and secrets committed metadata (descriptions, and who/when stamps).
+
+**Breaking, on purpose: the namespace blob format is now version 3 and an older
+(v2) vault is not read by this version.** Each blob now carries namespace-level
+metadata (a description, creation and last-modification stamps) and per-secret
+fields. The version bump is deliberate: an older notenv refuses a v3 blob (fail
+closed) rather than silently dropping the new metadata on a rewrite. There is no
+in-place upgrade (pre-1.0, no stable release): `notenv export` from the old binary
+and `notenv import` into a fresh 0.21.0 vault. Import reads `.env`, which carries
+no metadata, so a secret's description is not migrated (re-set it as needed) and
+the new who/when stamps begin at import time.
+
+### Added
+
+- **A `namespace` command group: `list`, `create`, `delete`.**
+  - `notenv namespace list` shows every namespace the vault holds, read from the
+    header with no passphrase (names only, with `--json`). It does not report
+    whether a namespace is empty, because that lives inside the encrypted blob;
+    `notenv doctor` surfaces empty namespaces when a key is cached. This is
+    distinct from `notenv list`, which lists the secret names inside one namespace.
+  - `notenv namespace create NAME` stands up an empty namespace deliberately,
+    before its first secret (setting a secret still creates one lazily too). It
+    fails if the namespace already exists and never touches an existing one.
+    Because creating a namespace is a deliberate, authenticated act, it also
+    records your acceptance of it, so the first `--namespace NAME` use is not
+    re-confirmed.
+  - `notenv namespace delete NAME` permanently removes a namespace and all of its
+    secrets. It requires the vault passphrase and a confirmation (`--yes` skips
+    only the confirmation), and works even on a namespace whose data is corrupt or
+    missing, so it also clears a namespace that can no longer be read.
+- **Namespace descriptions.** `notenv namespace create NAME --description "…"`
+  sets one at creation, and `notenv namespace edit NAME --description "…"` changes
+  it later (`--description ""` clears it). Descriptions show in `notenv inspect`.
+- **`notenv inspect` now shows who and when.** A secret reports who last wrote it
+  and when; a namespace reports its description and its creation and
+  last-modification stamps (each with the actor). The actor is `USER@hostname`,
+  advisory and forgeable (it is the local user, not a verified vault slot), so it
+  is a convenience for honest teams, never an audit trail. `inspect --json` gains
+  the matching fields, all omitted when unset.
+
+### Changed
+
+- **Namespaces are now persistent.** A namespace stays once it exists, even after
+  its last secret is removed, instead of silently disappearing. Removing the last
+  secret reports that the namespace is now empty and how to delete it; the
+  namespace itself goes away only with `notenv namespace delete`.
+- **`run` against an empty namespace now fails loudly** ("namespace X holds no
+  secrets") rather than injecting nothing, on both the cold read and the warm-cache
+  path: `run` is a deliberate inject-and-exec, so an empty injection is an error,
+  not a silent success. `list` instead shows an empty namespace as empty (and
+  `list --json` emits an empty secret set), since listing is a read-only inventory.
+- **`notenv doctor` names empty namespaces** (when a key is cached so it can read
+  them), with how to remove one, so empty namespaces stay discoverable.
+- **A lone `notenv.local.toml` with no `notenv.toml` above it now warns.** The
+  local binding pins a namespace, it does not select one, so without a committed
+  contract it was silently ignored; notenv now says so and points at `notenv init`
+  or `--namespace`.
+- The namespace first-use confirmation now reads "already exists in the vault"
+  rather than "already holds secrets", since a persistent namespace may exist
+  while holding none.
+
 ## 0.20.1
 
 ### Added

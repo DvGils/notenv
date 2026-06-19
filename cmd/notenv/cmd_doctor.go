@@ -12,6 +12,7 @@ import (
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keyring"
+	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
@@ -260,6 +261,11 @@ func checkNamespaceBlobs(ctx context.Context, store *headerTarget, c *checkup, h
 			// no session master: cannot check content; the header note already says so
 		case verifyNamespaceBlob(ctx, store, c, ns, e.Blob, e.MAC, mk):
 			corrupt++
+		default:
+			// Present, verified under the master, not corrupt: the only remaining
+			// thing worth surfacing is an empty namespace (persistence keeps these
+			// around, so they can accumulate).
+			noteEmptyNamespace(ctx, store, c, ns, e, mk)
 		}
 		if e.Prev != "" && mk != nil {
 			checkNamespaceBackup(ctx, store, c, ns, e, present, mk)
@@ -288,6 +294,27 @@ func verifyNamespaceBlob(ctx context.Context, store *headerTarget, c *checkup, n
 		return true
 	}
 	return false
+}
+
+// noteEmptyNamespace flags a namespace that verifies cleanly but holds no
+// secrets. A persistent namespace (kept after its last secret is removed, or
+// stood up empty with `namespace create`) is the one cost of persistence: these
+// can accumulate, so doctor surfaces them with the way to remove one. It needs
+// the master to decode the blob, so it runs only on the verified path; without a
+// session key an empty namespace is indistinguishable from a populated one.
+func noteEmptyNamespace(ctx context.Context, store *headerTarget, c *checkup, ns string, e crypto.ManifestEntry, mk *crypto.MasterKey) {
+	state, err := secrets.For(store, ns, mk).Read(ctx, e)
+	if err != nil {
+		// verifyNamespaceBlob already checked decrypt + MAC (and surfaced those
+		// failures), so the only error reaching here is one it does not cover: a
+		// payload that does not parse (e.g. a stranded older-format blob, which a v3
+		// vault should not hold). A real read fails loudly on it; this is only the
+		// empty-namespace note helper, so skip rather than double-report.
+		return
+	}
+	if len(state.Secrets) == 0 {
+		c.note("namespace %q holds no secrets (it persists empty). Remove it with `notenv namespace delete %s` if it is no longer needed", ns, ns)
+	}
 }
 
 // checkNamespaceBackup verifies a namespace's one-generation backup blob. A

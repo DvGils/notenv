@@ -31,7 +31,7 @@ var listCmd = &cobra.Command{
 			return err
 		}
 		a.salvage = listSalvage
-		res, err := a.fetchSecrets(cmd.Context(), listRefresh)
+		res, err := a.fetchSecrets(cmd.Context(), listRefresh, true)
 		if err != nil {
 			return err
 		}

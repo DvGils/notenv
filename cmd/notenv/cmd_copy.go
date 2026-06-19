@@ -114,9 +114,9 @@ func runCopy(ctx context.Context, a *app, key, from string, force bool) error {
 	meta := srcState.Meta[key]
 
 	now := time.Now().Unix()
-	// Carry the description forward; stamp a fresh write time (this is a new write
-	// into the destination, not a clone of the source's history).
-	w := secrets.Write{Key: key, Value: value, Description: meta.Description, TS: now}
+	// Carry the description forward; stamp a fresh write time and actor (this is a
+	// new write into the destination, not a clone of the source's history).
+	w := secrets.Write{Key: key, Value: value, Description: meta.Description, TS: now, By: userAtHost()}
 
 	apply := func(cur *secrets.State) (*secrets.State, error) {
 		// Refuse-if-exists decided against the state actually being committed: a

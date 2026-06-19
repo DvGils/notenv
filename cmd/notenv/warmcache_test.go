@@ -112,7 +112,7 @@ func TestFetchSecretsRefusesForeignSessionVault(t *testing.T) {
 	a.cacheState(mk, &secrets.State{Secrets: map[string]string{"K": "v"}, Meta: map[string]secrets.Meta{}})
 	t.Setenv(sessionEnv, "a-different-scope")
 
-	if _, err := a.fetchSecrets(context.Background(), false); err == nil {
+	if _, err := a.fetchSecrets(context.Background(), false, false); err == nil {
 		t.Fatal("a warm cache hit must not bypass the handoff session guard for a foreign vault")
 	}
 }
@@ -123,12 +123,46 @@ func TestFetchSecretsServesSessionVault(t *testing.T) {
 	a.cacheState(mk, &secrets.State{Secrets: map[string]string{"K": "v"}, Meta: map[string]secrets.Meta{}})
 	t.Setenv(sessionEnv, a.cacheScope) // the session is for this vault
 
-	got, err := a.fetchSecrets(context.Background(), false)
+	got, err := a.fetchSecrets(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("the session's own vault must serve from cache: %v", err)
 	}
 	if got.secrets["K"] != "v" {
 		t.Fatalf("K = %q, want v", got.secrets["K"])
+	}
+}
+
+// TestFetchSecretsRefusesEmptyWarm: a namespace whose cached state holds no
+// secrets (e.g. an unset that removed the last secret, which caches the empty
+// state) must make the warm path fail loudly rather than serve an empty
+// injection. The cold-read path applies the same len==0 refusal; this pins the
+// warm half so the two paths cannot diverge into a silent empty injection.
+func TestFetchSecretsRefusesEmptyWarm(t *testing.T) {
+	a, _, mk := warmApp(t)
+	a.cacheState(mk, &secrets.State{Secrets: map[string]string{}, Meta: map[string]secrets.Meta{}})
+
+	// Precondition: the empty state really is a warm hit (decodes, MAC verifies).
+	if _, ok := a.cachedSecrets(); !ok {
+		t.Fatal("setup: an empty state should round-trip as a warm cache hit")
+	}
+	if _, err := a.fetchSecrets(context.Background(), false, false); err == nil {
+		t.Fatal("fetchSecrets must refuse an empty namespace served warm, not return an empty injection")
+	}
+}
+
+// TestFetchSecretsAllowsEmptyForList: with allowEmpty true (the list path), an
+// empty namespace is a normal state to serve, not an error, so list can display
+// it (and `list --json` can emit an empty set) instead of refusing.
+func TestFetchSecretsAllowsEmptyForList(t *testing.T) {
+	a, _, mk := warmApp(t)
+	a.cacheState(mk, &secrets.State{Secrets: map[string]string{}, Meta: map[string]secrets.Meta{}})
+
+	got, err := a.fetchSecrets(context.Background(), false, true)
+	if err != nil {
+		t.Fatalf("list-mode fetch of an empty namespace must not error: %v", err)
+	}
+	if len(got.secrets) != 0 {
+		t.Fatalf("expected an empty secret set, got %v", got.secrets)
 	}
 }
 

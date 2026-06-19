@@ -1034,7 +1034,7 @@ what survives without changing anything.`,
 // the manifest entry the state was salvaged under, so a concurrent repair that
 // landed since aborts the evict rather than being clobbered.
 func evictNamespace(ctx context.Context, store *headerTarget, mk *crypto.MasterKey, ns string, state *secrets.State, expected crypto.ManifestEntry) error {
-	_, err := secrets.For(store, ns, mk).Rewrite(ctx, state, expected,
+	_, err := secrets.For(store, ns, mk).WithStamp(writeStamp()).Rewrite(ctx, state, expected,
 		func(h *crypto.Header) { pinCurrent(store.scope, h, mk) })
 	return err
 }
