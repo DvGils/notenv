@@ -21,11 +21,11 @@ import (
 
 var namespaceCmd = &cobra.Command{
 	Use:   "namespace",
-	Short: "Create, list, and remove the namespaces in your vault",
+	Short: "Create, list, update, and remove the namespaces in your vault",
 	Long: `A namespace is a named, independently encrypted group of secrets in your vault
 (a project's secrets, a machine's credentials). These commands operate on
 namespaces as containers: list what the vault holds, create one deliberately,
-or remove one along with its secrets.
+update its metadata, recover one from backup, or remove one along with its secrets.
 
 Reading and writing the secrets INSIDE a namespace uses the top-level commands
 (set, unset, list, run, ...), with the namespace chosen by your project's
@@ -270,12 +270,12 @@ func deleteNamespace(ctx context.Context, store *headerTarget, mk *crypto.Master
 	return err
 }
 
-var namespaceEditDescription string
+var namespaceUpdateDescription string
 
-var namespaceEditCmd = &cobra.Command{
-	Use:   "edit NAME",
-	Short: "Change a namespace's description",
-	Long: `Change a namespace's metadata. Today that is its description: pass
+var namespaceUpdateCmd = &cobra.Command{
+	Use:   "update NAME",
+	Short: "Update a namespace's metadata (today, its description)",
+	Long: `Update an existing namespace's metadata. Today that is its description: pass
 --description "new text" to set it, or --description "" to clear it. The
 namespace must already exist (create it with ` + "`notenv namespace create`" + `).`,
 	Args: cobra.ExactArgs(1),
@@ -283,10 +283,10 @@ namespace must already exist (create it with ` + "`notenv namespace create`" + `
 		ctx := cmd.Context()
 		name := args[0]
 		// Tri-state like `set --description`: only an explicitly-passed --description
-		// changes anything, so editing without it is a no-op error rather than a
+		// changes anything, so updating without it is a no-op error rather than a
 		// silent clear.
 		if !cmd.Flags().Changed("description") {
-			return errors.New("nothing to edit; pass --description (the only editable field today)")
+			return errors.New("nothing to update; pass --description (the only field today)")
 		}
 		store, err := loadHeaderStore()
 		if err != nil {
@@ -299,7 +299,7 @@ namespace must already exist (create it with ` + "`notenv namespace create`" + `
 		if _, exists := u.header.NamespaceEntry(name); !exists {
 			return fmt.Errorf("namespace %q is not in the vault; create it first with `notenv namespace create %s`", name, name)
 		}
-		if err := editNamespaceDescription(ctx, store, u.mk, name, namespaceEditDescription); err != nil {
+		if err := updateNamespaceDescription(ctx, store, u.mk, name, namespaceUpdateDescription); err != nil {
 			return err
 		}
 		ui.Successf("updated namespace %q", name)
@@ -307,10 +307,10 @@ namespace must already exist (create it with ` + "`notenv namespace create`" + `
 	},
 }
 
-// editNamespaceDescription rewrites a namespace's blob with a new description,
+// updateNamespaceDescription rewrites a namespace's blob with a new description,
 // preserving its secrets and created stamp (WriteBlob keeps Created and advances
 // Updated). It works on an empty namespace too, since the blob persists.
-func editNamespaceDescription(ctx context.Context, store *headerTarget, mk *crypto.MasterKey, name, description string) error {
+func updateNamespaceDescription(ctx context.Context, store *headerTarget, mk *crypto.MasterKey, name, description string) error {
 	_, _, err := secrets.For(store, name, mk).WithStamp(writeStamp()).Commit(ctx,
 		func(cur *secrets.State) (*secrets.State, error) {
 			cur.Namespace.Description = description
@@ -319,10 +319,111 @@ func editNamespaceDescription(ctx context.Context, store *headerTarget, mk *cryp
 		func(h *crypto.Header) { pinCurrent(store.scope, h, mk) })
 	switch {
 	case errors.Is(err, backend.ErrCommitUncertain):
-		return fmt.Errorf("%w; the edit may have landed. Run `notenv doctor` to check before relying on it", err)
+		return fmt.Errorf("%w; the update may have landed. Run `notenv doctor` to check before relying on it", err)
 	case errors.Is(err, keymgmt.ErrEpochChanged):
 		return fmt.Errorf("%w; nothing was changed. Re-unlock under the current key and re-run", err)
 	}
+	return err
+}
+
+var namespaceRecoverYes bool
+
+var namespaceRecoverCmd = &cobra.Command{
+	Use:   "recover NAME",
+	Short: "Rebuild a namespace whose blob is unreadable from its last good backup (accepts data loss)",
+	Long: `Recover a namespace a normal read refuses because its current blob is missing or
+corrupt (bit-rot, a truncated upload, an unrecoverable remote). notenv rebuilds
+the namespace from its one-generation backup, losing only the most recent
+write(s), and drops the corrupt blobs.
+
+If nothing readable survives (the backup is gone or corrupt too), recover cannot
+rebuild the namespace and stops without changing anything; remove it with
+"notenv namespace delete NAME" if you want it gone. This is a last resort for
+honest media loss: prefer your remote's version history if it keeps one, or
+"notenv run --skip-corrupt" to read what survives without changing anything.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
+		name := args[0]
+		store, err := loadHeaderStore()
+		if err != nil {
+			return err
+		}
+		u, err := unlockHeader(ctx, store, true)
+		if err != nil {
+			return err
+		}
+		entry, recorded := u.header.NamespaceEntry(name)
+		if !recorded {
+			return fmt.Errorf("namespace %q is not in the vault; nothing to recover", name)
+		}
+		state, err := secrets.For(store, name, u.mk).ReadSalvage(ctx, entry)
+		if err != nil {
+			return err
+		}
+		if len(state.Corrupt) == 0 {
+			return fmt.Errorf("namespace %q reads cleanly; nothing to recover", name)
+		}
+		for _, c := range state.Corrupt {
+			ui.Warnf("unreadable blob %s: %s", c.Blob, c.Reason)
+		}
+		// Nothing readable survives (both generations are gone or corrupt), so there
+		// is no older version to restore. Refuse before prompting rather than rewrite
+		// an empty namespace: clearing it is a separate, explicit decision the
+		// operator makes with `namespace delete`.
+		if len(state.Secrets) == 0 {
+			return fmt.Errorf("cannot recover namespace %q: no readable data survives (its current blob and one-generation backup are both unreadable). To remove it entirely, run `notenv namespace delete %s`", name, name)
+		}
+		survivors := len(state.Secrets)
+		ui.Warnf("recover rebuilds namespace %q from its last good backup (%d secret(s)); the most recent write(s) are lost", name, survivors)
+		if !namespaceRecoverYes {
+			if !ui.Interactive() {
+				return errors.New("refusing to recover non-interactively without --yes")
+			}
+			ok, err := ui.Confirm("Rebuild this namespace from its last good backup?", false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errors.New("aborted; nothing was changed")
+			}
+		}
+		err = recoverNamespace(ctx, store, u.mk, name, state, entry)
+		// Drop any stale warm cache whenever the rewrite may have landed (clean
+		// success OR an uncertain commit): the master is unchanged by a recover, so a
+		// later read on this machine could otherwise pass the cache's master-keyed MAC
+		// check and serve the pre-recovery content, re-surfacing the very write the
+		// rebuild just dropped.
+		if err == nil || errors.Is(err, backend.ErrCommitUncertain) {
+			invalidateNamespaceCache(store.scope, name)
+		}
+		switch {
+		case err == nil:
+		case errors.Is(err, backend.ErrCommitUncertain):
+			return fmt.Errorf("%w; the rebuild may have landed. Run `notenv doctor` to check before relying on it", err)
+		case errors.Is(err, keymgmt.ErrEpochChanged):
+			return fmt.Errorf("%w; nothing was changed. Re-unlock under the current key (verify the rotation is legitimate) and re-run", err)
+		default:
+			return err
+		}
+		ui.Successf("recovered namespace %q to its last good state (%d secret(s))", name, survivors)
+		return nil
+	},
+}
+
+// recoverNamespace rewrites a namespace from its salvaged survivors, dropping the
+// corrupt blobs it replaces as part of the same commit (secrets.Rewrite handles
+// the header swap and blob cleanup). expected is the manifest entry the state was
+// salvaged under, so a concurrent repair that landed since aborts this one rather
+// than being clobbered. It must be called only with surviving secrets: an empty
+// state would make Rewrite drop the namespace entry entirely, which is
+// `namespace delete`, a separate explicit decision, so it refuses instead.
+func recoverNamespace(ctx context.Context, store *headerTarget, mk *crypto.MasterKey, name string, state *secrets.State, expected crypto.ManifestEntry) error {
+	if len(state.Secrets) == 0 {
+		return fmt.Errorf("refusing to recover namespace %q to empty: nothing survives to rebuild from (use `notenv namespace delete` to remove it)", name)
+	}
+	_, err := secrets.For(store, name, mk).WithStamp(writeStamp()).Rewrite(ctx, state, expected,
+		func(h *crypto.Header) { pinCurrent(store.scope, h, mk) })
 	return err
 }
 
@@ -338,8 +439,9 @@ func invalidateNamespaceCache(scope, name string) {
 func init() {
 	namespaceListCmd.Flags().BoolVar(&namespaceListJSON, "json", false, "machine-readable output: a versioned object listing namespace names")
 	namespaceCreateCmd.Flags().StringVar(&namespaceCreateDescription, "description", "", "a description for the namespace, shown by `notenv inspect`")
-	namespaceEditCmd.Flags().StringVar(&namespaceEditDescription, "description", "", "set the namespace's description (\"\" clears it)")
+	namespaceUpdateCmd.Flags().StringVar(&namespaceUpdateDescription, "description", "", "set the namespace's description (\"\" clears it)")
 	namespaceDeleteCmd.Flags().BoolVar(&namespaceDeleteYes, "yes", false, "skip the confirmation (the passphrase is still required)")
-	namespaceCmd.AddCommand(namespaceListCmd, namespaceCreateCmd, namespaceDeleteCmd, namespaceEditCmd)
+	namespaceRecoverCmd.Flags().BoolVar(&namespaceRecoverYes, "yes", false, "rebuild without the interactive confirmation (you have accepted the data loss)")
+	namespaceCmd.AddCommand(namespaceListCmd, namespaceCreateCmd, namespaceDeleteCmd, namespaceUpdateCmd, namespaceRecoverCmd)
 	rootCmd.AddCommand(namespaceCmd)
 }

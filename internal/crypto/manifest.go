@@ -57,8 +57,8 @@ func (h *Header) SetNamespace(ns string, e ManifestEntry) {
 	h.Manifest[ns] = e
 }
 
-// RemoveNamespace drops a namespace's entry (its secrets were deleted, or an
-// unrecoverable blob was evicted).
+// RemoveNamespace drops a namespace's entry from the manifest (for example, on
+// `namespace delete`).
 func (h *Header) RemoveNamespace(ns string) {
 	delete(h.Manifest, ns)
 }

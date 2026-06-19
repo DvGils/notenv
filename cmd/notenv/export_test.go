@@ -100,6 +100,46 @@ func TestWriteExportRoundTrips(t *testing.T) {
 	}
 }
 
+// TestWriteExportJSONShape pins the frozen, versioned `export --json` envelopes:
+// a single namespace and the whole-vault `--all` form.
+func TestWriteExportJSONShape(t *testing.T) {
+	var buf bytes.Buffer
+	single := &secrets.State{Secrets: map[string]string{"A": "alpha", "B": "beta"}}
+	if err := writeExport(&buf, map[string]*secrets.State{"proj": single}, true, false); err != nil {
+		t.Fatal(err)
+	}
+	wantSingle := `{
+  "version": 1,
+  "namespace": "proj",
+  "secrets": {
+    "A": "alpha",
+    "B": "beta"
+  }
+}
+`
+	if buf.String() != wantSingle {
+		t.Fatalf("export --json shape drifted:\n%s\nwant:\n%s", buf.String(), wantSingle)
+	}
+
+	buf.Reset()
+	all := map[string]*secrets.State{"proj": {Secrets: map[string]string{"A": "alpha"}}}
+	if err := writeExport(&buf, all, true, true); err != nil {
+		t.Fatal(err)
+	}
+	wantAll := `{
+  "version": 1,
+  "namespaces": {
+    "proj": {
+      "A": "alpha"
+    }
+  }
+}
+`
+	if buf.String() != wantAll {
+		t.Fatalf("export --all --json shape drifted:\n%s\nwant:\n%s", buf.String(), wantAll)
+	}
+}
+
 // TestRequirePrimarySlot: export and delete refuse a non-primary unlock.
 func TestRequirePrimarySlot(t *testing.T) {
 	h, _, err := crypto.NewHeader("pass", "owner")

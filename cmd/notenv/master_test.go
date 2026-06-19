@@ -29,7 +29,7 @@ func TestEnsureMasterAlarmsOnVanishedHeader(t *testing.T) {
 	if created {
 		t.Fatal("nothing may be created on this path")
 	}
-	if !strings.Contains(err.Error(), "key forget") {
+	if !strings.Contains(err.Error(), "credential forget") {
 		t.Fatalf("the alarm should name the deliberate-reset escape hatch, got: %v", err)
 	}
 	if store.Header() != nil {

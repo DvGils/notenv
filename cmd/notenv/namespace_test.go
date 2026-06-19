@@ -157,8 +157,8 @@ func readNamespaceMeta(t *testing.T, target *headerTarget, mk *crypto.MasterKey,
 }
 
 // TestNamespaceDescription: create stamps an initial description and a creation
-// time; edit changes the description (and clears it on "") while preserving the
-// creation stamp; the namespace's secrets survive an edit.
+// time; update changes the description (and clears it on "") while preserving the
+// creation stamp; the namespace's secrets survive an update.
 func TestNamespaceDescription(t *testing.T) {
 	ctx := context.Background()
 	target, mk := freshVault(t)
@@ -174,7 +174,7 @@ func TestNamespaceDescription(t *testing.T) {
 		t.Fatalf("create must stamp created (got %d/%q)", created.Created, created.CreatedBy)
 	}
 
-	// A secret in the namespace must survive a description edit.
+	// A secret in the namespace must survive a description update.
 	if _, _, err := secrets.For(target, "proj", mk).WithStamp(writeStamp()).Commit(ctx,
 		func(cur *secrets.State) (*secrets.State, error) {
 			return cur.Apply([]secrets.Write{{Key: "K", Value: "v"}}), nil
@@ -182,24 +182,24 @@ func TestNamespaceDescription(t *testing.T) {
 		t.Fatalf("seed secret: %v", err)
 	}
 
-	if err := editNamespaceDescription(ctx, target, mk, "proj", "staging secrets"); err != nil {
-		t.Fatalf("edit: %v", err)
+	if err := updateNamespaceDescription(ctx, target, mk, "proj", "staging secrets"); err != nil {
+		t.Fatalf("update: %v", err)
 	}
-	edited := readNamespaceMeta(t, target, mk, "proj")
-	if edited.Description != "staging secrets" {
-		t.Fatalf("edited description = %q, want 'staging secrets'", edited.Description)
+	updated := readNamespaceMeta(t, target, mk, "proj")
+	if updated.Description != "staging secrets" {
+		t.Fatalf("updated description = %q, want 'staging secrets'", updated.Description)
 	}
-	if edited.Created != created.Created || edited.CreatedBy != created.CreatedBy {
-		t.Fatalf("edit must preserve created: %d/%q -> %d/%q", created.Created, created.CreatedBy, edited.Created, edited.CreatedBy)
+	if updated.Created != created.Created || updated.CreatedBy != created.CreatedBy {
+		t.Fatalf("update must preserve created: %d/%q -> %d/%q", created.Created, created.CreatedBy, updated.Created, updated.CreatedBy)
 	}
 	entry, _ := headerEntry(t, target, "proj")
 	st, _ := secrets.For(target, "proj", mk).Read(ctx, entry)
 	if st.Secrets["K"] != "v" {
-		t.Fatalf("edit dropped the namespace's secret: K = %q, want v", st.Secrets["K"])
+		t.Fatalf("update dropped the namespace's secret: K = %q, want v", st.Secrets["K"])
 	}
 
 	// Clearing round-trips to empty.
-	if err := editNamespaceDescription(ctx, target, mk, "proj", ""); err != nil {
+	if err := updateNamespaceDescription(ctx, target, mk, "proj", ""); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	if got := readNamespaceMeta(t, target, mk, "proj").Description; got != "" {

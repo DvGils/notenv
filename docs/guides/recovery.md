@@ -25,15 +25,17 @@ one-generation backup of each namespace, so there are two moves:
     It serves the previous generation and reports exactly what it dropped; the most
     recent write may be lost.
 
-- **Repair the namespace.** Rebuild it from what survives so ordinary writes work
-  again:
+- **Recover the namespace.** Rebuild it from its last good backup so ordinary
+  writes work again:
 
     ```sh
-    notenv key evict <namespace>
+    notenv namespace recover <namespace>
     ```
 
-    This rewrites the namespace from its backup (or empty, if that is gone too) and
-    drops the corrupt blobs. It is a last resort and acknowledges the loss.
+    This rewrites the namespace from its one-generation backup and drops the corrupt
+    blobs (the most recent write is lost). It is a last resort and acknowledges the
+    loss. If nothing readable survives (the backup is gone too) it refuses rather
+    than empty the namespace; remove it with `notenv namespace delete <namespace>`.
 
 ## A write did not finish
 
@@ -42,7 +44,7 @@ may not have landed, restore the header from the backup notenv keeps before ever
 write:
 
 ```sh
-notenv key restore-backup
+notenv credential restore-backup
 ```
 
 ## "The vault changed" (rollback or substitution alarm)
@@ -52,14 +54,14 @@ or its header vanished, it is protecting you from a rollback or a swapped-in vau
 If you know the change is legitimate and it carries no signed proof:
 
 ```sh
-notenv key trust       # shows what changed, then asks before re-pinning
+notenv credential trust       # shows what changed, then asks before re-pinning
 ```
 
 If you deliberately reset or abandoned a vault and want this machine to forget its
 pin and cached key for that storage:
 
 ```sh
-notenv key forget
+notenv credential forget
 ```
 
 ---

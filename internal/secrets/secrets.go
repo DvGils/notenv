@@ -598,7 +598,7 @@ func (n *Namespace) Delete(ctx context.Context, pin func(*crypto.Header)) error 
 
 // ErrNamespaceChanged reports that a namespace's current blob moved between the
 // read an operation planned against and the swap it tried to commit: another
-// writer landed in between. Rewrite (the evict recovery path) returns it rather
+// writer landed in between. Rewrite (the recovery path) returns it rather
 // than clobber that concurrent write.
 var ErrNamespaceChanged = errors.New("the namespace changed since it was read")
 

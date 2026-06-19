@@ -48,7 +48,7 @@ you can prove you own.
     A versioned remote's history and any backups you made are the provider's to
     purge. If you have lost the passphrase, delete the storage yourself (a local
     vault is its directory; a remote's objects are yours to remove) and run
-    `notenv key forget` to clear this machine's trust state.
+    `notenv credential forget` to clear this machine's trust state.
 
 ---
 

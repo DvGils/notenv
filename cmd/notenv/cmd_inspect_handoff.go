@@ -60,6 +60,7 @@ also the exit code, so a script can branch without parsing:
 // single scope the agent was handed (what it already knows it holds), never an
 // enumeration of the real vault's other namespaces; no secret value ever appears.
 type handoffInspect struct {
+	Version   int    `json:"version"`
 	Handoff   bool   `json:"handoff"`
 	Namespace string `json:"namespace,omitempty"`
 }
@@ -82,7 +83,7 @@ func detectHandoff() handoffInspect {
 // harmless nag to restart), while a "yes" requires an actual live handoff behind
 // the variables, so it cannot misfire into a false sense of being scoped.
 func evalHandoff(session, storage, namespace string, alive func(int) bool) handoffInspect {
-	out := handoffInspect{}
+	out := handoffInspect{Version: 1}
 	if session == "" {
 		return out
 	}

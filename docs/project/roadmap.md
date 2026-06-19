@@ -12,7 +12,7 @@ and what is deliberately out of scope.
   on the header swap without losing each other, plus a one-generation backup per namespace and an
   authenticated, version-pinned header with a manifest binding every stored object (so storage-level
   tampering with any single secret alarms by name).
-- **Keys and teams.** Full key and slot management (`notenv key ...`): team access by age recipient,
+- **Keys and teams.** Full key and slot management (`notenv credential ...`): team access by age recipient,
   passphrase and master-key rotation, offboarding by re-key, advisory primary governance, and signed
   rotation transitions so legitimate re-keys propagate to every machine without prompts.
 - **Agents and CI.** A scoped, ephemeral [`handoff`](../guides/ai-agents.md) that runs an agent with

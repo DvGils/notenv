@@ -88,7 +88,7 @@ func identityRecipients(ids []age.Identity) []string {
 // unlockResult is what resolveUnlock returns: the master key, the slot that
 // opened, a reverify closure (re-unlocks a possibly-rewritten header with the
 // same credential, for SafePut's post-write check), and, for a passphrase
-// unlock, the slot private key (needed by `key rotate`). fingerprint carries
+// unlock, the slot private key (needed by `credential rotate`). fingerprint carries
 // the vault code parsed off an onboarding string, for the caller to verify
 // against the served header before trusting it.
 type unlockResult struct {
@@ -104,7 +104,7 @@ type unlockResult struct {
 // interactive passphrase prompt (the human path). joinHint controls whether a
 // non-matching identity prints the enrollment hint; it is useful on the read
 // path (a machine running `run` before being enrolled) but misleading on the
-// admin path (`key …`), where the operator is managing the vault.
+// admin path (`credential …`), where the operator is managing the vault.
 func resolveUnlock(header *crypto.Header, joinHint bool) (*unlockResult, error) {
 	ids, err := configuredIdentities()
 	if err != nil {
@@ -135,7 +135,7 @@ func resolveUnlock(header *crypto.Header, joinHint bool) (*unlockResult, error) 
 			// case a human holds one.
 			ui.Warnf("the %s identity matches no slot in this vault", identityEnv)
 			for _, r := range identityRecipients(ids) {
-				ui.Notef("to enroll this machine, the vault owner runs: notenv key add --machine <name> --recipient %s", r)
+				ui.Notef("to enroll this machine, the vault owner runs: notenv credential add --machine <name> --recipient %s", r)
 			}
 			ui.Infof("otherwise, enter your passphrase")
 		} else {

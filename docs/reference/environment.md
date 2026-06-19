@@ -14,8 +14,8 @@ export NOTENV_IDENTITY="$CI_SECRET_NOTENV_IDENTITY"
 notenv run -- ./deploy.sh
 ```
 
-Enroll a machine with `notenv key add --machine NAME`, which prints a new identity exactly once for
-the platform's secret store, or `notenv key add --machine NAME --recipient age1...` to enroll a key
+Enroll a machine with `notenv credential add --machine NAME`, which prints a new identity exactly once for
+the platform's secret store, or `notenv credential add --machine NAME --recipient age1...` to enroll a key
 the machine generated itself. On virgin storage, a supplied identity also creates the vault
 promptless, with that identity's recipient as the only slot.
 

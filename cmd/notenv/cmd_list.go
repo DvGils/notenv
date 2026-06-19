@@ -41,7 +41,7 @@ var listCmd = &cobra.Command{
 		}
 		sort.Strings(names)
 		if listJSON {
-			return printJSON(listOutput{Namespace: a.namespace, Secrets: listedSecrets(names, res.meta)})
+			return printJSON(listOutput{Version: 1, Namespace: a.namespace, Secrets: listedSecrets(names, res.meta)})
 		}
 		// Piped output is the stable scripting surface: one name per line,
 		// nothing else. The table with descriptions is for human eyes only.
@@ -60,6 +60,7 @@ var listCmd = &cobra.Command{
 // metadata fields are omitted when absent so consumers need no sentinel
 // handling. Extensions are additive fields only.
 type listOutput struct {
+	Version   int            `json:"version"`
 	Namespace string         `json:"namespace"`
 	Secrets   []listedSecret `json:"secrets"`
 }

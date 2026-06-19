@@ -18,18 +18,18 @@ import (
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keymgmt"
 	"github.com/DvGils/notenv/internal/keyring"
-	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
 
-var keyCmd = &cobra.Command{
-	Use:   "key",
-	Short: "Inspect and manage the key slots in your storage header",
-	Long: `Manage the key-slot header that wraps your master key.
+var credentialCmd = &cobra.Command{
+	Use:   "credential",
+	Short: "Inspect and manage the credentials that can unlock your vault",
+	Long: `Manage the credentials that unlock your vault: the key slots in the storage header.
 
 The header lives next to your secrets and stores the master key wrapped under
-one or more slots: a person's passphrase, or a machine's age public key. These
-commands operate on the storage as a whole, independent of any single project.`,
+one or more slots, each opened by a credential: a person's passphrase, or a
+machine's age public key. These commands operate on the storage as a whole,
+independent of any single project.`,
 }
 
 // headerTarget is a storage opened for header operations together with its
@@ -92,17 +92,17 @@ func headerTargetFor(storageName string) (*headerTarget, error) {
 // it. A master change is accepted silently when a chain of signed transitions
 // proves the pinned master authorized it; otherwise (and for a rollback or a
 // wholesale vault replacement) it is refused, recoverable with
-// `notenv key trust` after out-of-band verification.
+// `notenv credential trust` after out-of-band verification.
 func trustHeader(scope string, h *crypto.Header, mk *crypto.MasterKey) error {
 	if err := h.Verify(mk); err != nil {
-		return fmt.Errorf("%w; refusing to use this vault. If a teammate changed it legitimately, run `notenv key trust`; otherwise treat the storage as compromised", err)
+		return fmt.Errorf("%w; refusing to use this vault. If a teammate changed it legitimately, run `notenv credential trust`; otherwise treat the storage as compromised", err)
 	}
 	boundVault, bound, err := config.ScopeVault(scope)
 	if err != nil {
 		return err
 	}
 	if bound && boundVault != h.VaultID {
-		return fmt.Errorf("this storage previously held vault %s but now presents vault %s: the vault was replaced wholesale. If you deliberately re-initialized it, run `notenv key forget` and set up again; otherwise treat the storage as compromised", boundVault, h.VaultID)
+		return fmt.Errorf("this storage previously held vault %s but now presents vault %s: the vault was replaced wholesale. If you deliberately re-initialized it, run `notenv credential forget` and set up again; otherwise treat the storage as compromised", boundVault, h.VaultID)
 	}
 	stored, have, err := config.ReadPin(h.VaultID)
 	if err != nil {
@@ -166,9 +166,9 @@ func recacheMaster(store *headerTarget, mk *crypto.MasterKey) {
 	cacheMaster(cache, scope, mk, ttl)
 }
 
-var keyListJSON bool
+var credentialListJSON bool
 
-var keyListCmd = &cobra.Command{
+var credentialListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List the key slots in the storage header",
 	Args:  cobra.NoArgs,
@@ -192,19 +192,20 @@ var keyListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if keyListJSON {
-			return printJSON(keyListOutput(header))
+		if credentialListJSON {
+			return printJSON(credentialListOutput(header))
 		}
 		printSlots(header)
 		return nil
 	},
 }
 
-// keyListJSONOutput is the frozen shape of `key list --json`. Slots carry
+// credentialListJSONOutput is the frozen shape of `credential list --json`. Slots carry
 // their index because the rm/set-primary selectors accept one; public_key
 // appears only on recipient slots (a passphrase slot's key is internal).
 // Extensions are additive fields only.
-type keyListJSONOutput struct {
+type credentialListJSONOutput struct {
+	Version  int          `json:"version"`
 	VaultID  string       `json:"vault_id"`
 	Revision int          `json:"revision"`
 	Slots    []slotOutput `json:"slots"`
@@ -220,8 +221,8 @@ type slotOutput struct {
 	PublicKey   string `json:"public_key,omitempty"`
 }
 
-func keyListOutput(h *crypto.Header) keyListJSONOutput {
-	out := keyListJSONOutput{VaultID: h.VaultID, Revision: h.Revision, Slots: make([]slotOutput, 0, len(h.Slots))}
+func credentialListOutput(h *crypto.Header) credentialListJSONOutput {
+	out := credentialListJSONOutput{Version: 1, VaultID: h.VaultID, Revision: h.Revision, Slots: make([]slotOutput, 0, len(h.Slots))}
 	for i, slot := range h.Slots {
 		s := slotOutput{Index: i, Name: slot.Name, Type: slot.Type, Primary: slot.Primary, Provisional: slot.Provisional}
 		if s.Type == "" {
@@ -303,7 +304,7 @@ func dashIfEmpty(s string) string {
 	return s
 }
 
-var keyRestoreBackupCmd = &cobra.Command{
+var credentialRestoreBackupCmd = &cobra.Command{
 	Use:   "restore-backup",
 	Short: "Restore the key header from its backup after a failed write",
 	Long: `Restore the header from the backup taken before the last write.
@@ -364,7 +365,7 @@ func repinAfterRestore(ctx context.Context, store *headerTarget) {
 		ui.Notef("rollback pin moved to the restored revision %d", header.Revision)
 		return
 	}
-	ui.Warnf("the restored header is at revision %d; if this machine pinned a higher one, the next unlock raises a rollback alarm. After confirming this restore is what you intended, run `notenv key trust` to accept it", header.Revision)
+	ui.Warnf("the restored header is at revision %d; if this machine pinned a higher one, the next unlock raises a rollback alarm. After confirming this restore is what you intended, run `notenv credential trust` to accept it", header.Revision)
 }
 
 // repinRestored pins header for scope when mk verifies it, the safety gate that
@@ -397,12 +398,12 @@ type unlocked struct {
 // know which slot the caller holds and to hold the credential itself for the
 // post-write verification, so it always prompts. Every mutating key command
 // funnels through here, so this is also where read-only policy refuses them.
-// gateProvisional runs the onboarding gate; `key rotate` skips it because the
+// gateProvisional runs the onboarding gate; `credential rotate` skips it because the
 // rotation it is about to perform is exactly what the gate would force.
 func unlockHeader(ctx context.Context, store *headerTarget, gateProvisional bool) (*unlocked, error) {
 	// Inside a handoff session, refuse to unlock any vault but the handed-off one,
 	// before prompting. unlockHeader always prompts for the credential (it never
-	// reads the cache), so without this an in-session `key ...` pointed at another
+	// reads the cache), so without this an in-session `credential ...` pointed at another
 	// --storage would walk the operator to a passphrase prompt for their real
 	// vault, exactly what the session guard exists to prevent. Same rule every
 	// other unlock path enforces (master, ensureMaster, fetchSecrets, humanUnlock).
@@ -478,7 +479,7 @@ func writeHeader(ctx context.Context, store *headerTarget, u *unlocked, verify f
 	return nil
 }
 
-var keyRotateCmd = &cobra.Command{
+var credentialRotateCmd = &cobra.Command{
 	Use:   "rotate",
 	Short: "Re-wrap the master key under a new passphrase for your slot",
 	Long: `Change the passphrase on the slot you unlock with.
@@ -496,7 +497,7 @@ untouched, so other slots keep working. Escrow the new passphrase.`,
 			return err
 		}
 		if u.slotKey == nil {
-			return errors.New("`key rotate` changes a passphrase; unlock with a passphrase slot, not an identity")
+			return errors.New("`credential rotate` changes a passphrase; unlock with a passphrase slot, not an identity")
 		}
 		newPass, err := keyring.PromptNewPassphrase("Choose a new passphrase for your slot: ")
 		if err != nil {
@@ -517,7 +518,7 @@ untouched, so other slots keep working. Escrow the new passphrase.`,
 	},
 }
 
-var keyRotateMasterCmd = &cobra.Command{
+var credentialRotateMasterCmd = &cobra.Command{
 	Use:   "rotate-master",
 	Short: "Re-key the vault: fresh master key, re-encrypt every secret",
 	Long: `Generate a new master key and re-encrypt every secret under it, keeping all
@@ -555,19 +556,19 @@ the header-only operations.`,
 	},
 }
 
-var keyAddMachine bool
-var keyAddRecipient string
+var credentialAddMachine bool
+var credentialAddRecipient string
 
-var keyAddCmd = &cobra.Command{
+var credentialAddCmd = &cobra.Command{
 	Use:   "add <name>",
 	Short: "Add a key slot: onboard a teammate or enroll a machine",
 	Long: `Add a key slot to the header.
 
-  notenv key add alice          onboard a teammate: prints a one-time
+  notenv credential add alice          onboard a teammate: prints a one-time
                                 onboarding passphrase to send them; their
                                 first notenv command replaces it with a
                                 passphrase only they know
-  notenv key add --machine ci   enroll a machine (CI, an agent): prints a
+  notenv credential add --machine ci   enroll a machine (CI, an agent): prints a
                                 new identity exactly once, for the platform's
                                 secret store; nothing is written to disk
 
@@ -579,7 +580,7 @@ an existing public key is enrolled instead of generating a new identity (the
 private key stays wherever it was made).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if keyAddRecipient != "" && !keyAddMachine {
+		if credentialAddRecipient != "" && !credentialAddMachine {
 			return errors.New("--recipient enrolls a machine key; use it together with --machine")
 		}
 		name := args[0]
@@ -597,7 +598,7 @@ private key stays wherever it was made).`,
 			}
 		}
 
-		if keyAddMachine {
+		if credentialAddMachine {
 			return addMachineSlot(cmd.Context(), store, u, name)
 		}
 
@@ -619,7 +620,7 @@ private key stays wherever it was made).`,
 		ui.Successf("added slot %q with a one-time onboarding string", name)
 		ui.Infof("send this string to them over a private channel:")
 		fmt.Println(temp + "/" + crypto.Fingerprint(u.header.VaultID, u.header.SignPub))
-		ui.Infof("it bundles their first passphrase with a code proving they reached the real vault. Their first notenv command replaces the passphrase with one only they know; until then `notenv key list` shows the slot as provisional")
+		ui.Infof("it bundles their first passphrase with a code proving they reached the real vault. Their first notenv command replaces the passphrase with one only they know; until then `notenv credential list` shows the slot as provisional")
 		return nil
 	},
 }
@@ -631,11 +632,11 @@ private key stays wherever it was made).`,
 func addMachineSlot(ctx context.Context, store *headerTarget, u *unlocked, name string) error {
 	var recipient *age.X25519Recipient
 	var generated *age.X25519Identity
-	if keyAddRecipient != "" {
+	if credentialAddRecipient != "" {
 		var err error
-		recipient, err = age.ParseX25519Recipient(keyAddRecipient)
+		recipient, err = age.ParseX25519Recipient(credentialAddRecipient)
 		if err != nil {
-			return fmt.Errorf("invalid recipient %q: %w", keyAddRecipient, err)
+			return fmt.Errorf("invalid recipient %q: %w", credentialAddRecipient, err)
 		}
 	} else {
 		var err error
@@ -672,7 +673,7 @@ func refuseRecipientPrimary(h *crypto.Header, target int) error {
 	return nil
 }
 
-var keySetPrimaryCmd = &cobra.Command{
+var credentialSetPrimaryCmd = &cobra.Command{
 	Use:   "set-primary <name | index>",
 	Short: "Transfer the primary slot to another slot",
 	Long: `Make another slot the primary slot.
@@ -726,15 +727,18 @@ func slotLabel(s crypto.Slot) string {
 	return "(unnamed slot)"
 }
 
-var keyRmCmd = &cobra.Command{
-	Use:   "rm <name | index>",
+var credentialDeleteCmd = &cobra.Command{
+	Use:   "delete <name | index>",
 	Short: "Remove a key slot and re-key the vault (offboarding)",
-	Long: `Remove a key slot by name or by its zero-based index in 'key list', then
+	Long: `Remove a key slot by name or by its zero-based index in 'credential list', then
 re-key the vault so the removed credential can no longer decrypt anything.
 
 This re-encrypts every secret under a fresh master key (see 'rotate-master'),
 which is what makes removal real revocation rather than just deleting a
-credential. The primary slot and the last remaining slot cannot be removed.`,
+credential. The primary slot and the last remaining slot cannot be removed.
+
+This is destructive (it re-keys the whole vault), so it asks for confirmation;
+pass --yes to skip it (the credential unlock is still required).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := loadHeaderStore()
@@ -747,7 +751,7 @@ credential. The primary slot and the last remaining slot cannot be removed.`,
 		}
 		target, err := resolveSlot(u.header, args[0])
 		if err != nil {
-			return fmt.Errorf("%w (if a previous `key rm` was interrupted, the slot may already be gone; run `notenv key rotate-master` to finish re-keying)", err)
+			return fmt.Errorf("%w (if a previous `credential delete` was interrupted, the slot may already be gone; run `notenv credential rotate-master` to finish re-keying)", err)
 		}
 		if u.header.Slots[target].Primary {
 			return errors.New("refusing to remove the primary slot")
@@ -756,6 +760,19 @@ credential. The primary slot and the last remaining slot cannot be removed.`,
 			return errors.New("that is the slot you just unlocked with; remove it using a different credential")
 		}
 		name := u.header.Slots[target].Name
+		ui.Warnf("about to remove slot %q and re-key the vault (every secret re-encrypted under a fresh master); the removed credential can no longer decrypt", name)
+		if !credentialDeleteYes {
+			if !ui.Interactive() {
+				return errors.New("refusing to remove a slot non-interactively without --yes")
+			}
+			ok, err := ui.Confirm(fmt.Sprintf("Remove slot %q and re-key the vault?", name), false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errors.New("aborted; nothing was changed")
+			}
+		}
 		if err := u.header.RemoveSlot(target, u.mk); err != nil {
 			return err
 		}
@@ -775,7 +792,7 @@ credential. The primary slot and the last remaining slot cannot be removed.`,
 				// not-yet-re-keyed namespaces. This is incomplete revocation: say so
 				// plainly rather than let the operator read "error" as "nothing
 				// happened, the slot is still there".
-				return fmt.Errorf("slot %q is removed and the vault re-keyed, but re-encryption did not finish: that credential can STILL read the namespaces not yet re-keyed. Treat it as NOT revoked and re-run `notenv key rotate-master` until it succeeds: %w", name, err)
+				return fmt.Errorf("slot %q is removed and the vault re-keyed, but re-encryption did not finish: that credential can STILL read the namespaces not yet re-keyed. Treat it as NOT revoked and re-run `notenv credential rotate-master` until it succeeds: %w", name, err)
 			}
 			return err
 		}
@@ -812,12 +829,12 @@ func resolveSlot(h *crypto.Header, sel string) (int, error) {
 }
 
 var (
-	keyTrustYes    bool
-	keyForgetForce bool
-	keyEvictYes    bool
+	credentialTrustYes  bool
+	credentialForgetYes bool
+	credentialDeleteYes bool
 )
 
-var keyForgetCmd = &cobra.Command{
+var credentialForgetCmd = &cobra.Command{
 	Use:   "forget",
 	Short: "Forget this machine's local trust state for a storage (pin + cached key)",
 	Long: `Remove this machine's rollback pin and cached master key for a storage.
@@ -825,7 +842,7 @@ var keyForgetCmd = &cobra.Command{
 Use it ONLY after you have deliberately deleted or re-initialized the vault on
 that storage, so the next setup starts from a clean trust-on-first-use state.
 If the header vanished and you did NOT delete it, do not run this: that absence
-is the alarm. Restore the header instead ('notenv key restore-backup' or the
+is the alarm. Restore the header instead ('notenv credential restore-backup' or the
 remote's version history).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -845,9 +862,9 @@ remote's version history).`,
 		}
 		pin, _, _ := config.ReadPin(vaultID)
 		ui.Warnf("this forgets vault %s (pinned revision %d, master %s); a substituted vault would then be trusted on next contact", vaultID, pin.Revision, pin.MasterPub)
-		if !keyForgetForce {
+		if !credentialForgetYes {
 			if !ui.Interactive() {
-				return errors.New("refusing to forget non-interactively without --force")
+				return errors.New("refusing to forget non-interactively without --yes")
 			}
 			ok, err := ui.Confirm("Forget this storage's trust state?", false)
 			if err != nil {
@@ -866,7 +883,7 @@ remote's version history).`,
 	},
 }
 
-var keyTrustCmd = &cobra.Command{
+var credentialTrustCmd = &cobra.Command{
 	Use:   "trust",
 	Short: "Trust the vault's current header (clear a rollback / master-change alarm)",
 	Long: `Pin this machine to the vault's current header revision and master key,
@@ -938,7 +955,7 @@ authentication tag must still verify.`,
 		} else if !bound {
 			ui.Notef("no pin recorded yet; this is this machine's first pin for the vault")
 		}
-		if !keyTrustYes {
+		if !credentialTrustYes {
 			if !ui.Interactive() {
 				return errors.New("refusing to trust non-interactively without --yes")
 			}
@@ -956,95 +973,12 @@ authentication tag must still verify.`,
 	},
 }
 
-var keyEvictCmd = &cobra.Command{
-	Use:   "evict <namespace>",
-	Short: "Repair a namespace with an unreadable blob by rewriting it from what survives (accepts data loss)",
-	Long: `Repair a namespace a normal read refuses because its current blob is missing or
-corrupt (bit-rot, a truncated upload, an unrecoverable remote). notenv rewrites
-the namespace from what survives: its one-generation backup if that is intact
-(losing only the most recent write), or, if the backup is gone too, an empty
-namespace. The corrupt blobs are then dropped.
-
-This is a last resort for honest media loss. Prefer recovering the blob from your
-remote's version history if it keeps one, or 'notenv run --skip-corrupt' to read
-what survives without changing anything.`,
-	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := cmd.Context()
-		ns := args[0]
-		store, err := loadHeaderStore()
-		if err != nil {
-			return err
-		}
-		u, err := unlockHeader(ctx, store, true)
-		if err != nil {
-			return err
-		}
-		entry, recorded := u.header.Manifest[ns]
-		if !recorded {
-			return fmt.Errorf("namespace %q is not in the vault manifest; nothing to evict", ns)
-		}
-		state, err := secrets.For(store, ns, u.mk).ReadSalvage(ctx, entry)
-		if err != nil {
-			return err
-		}
-		if len(state.Corrupt) == 0 {
-			return fmt.Errorf("namespace %q reads cleanly; nothing to evict", ns)
-		}
-		for _, c := range state.Corrupt {
-			ui.Warnf("unreadable blob %s: %s", c.Blob, c.Reason)
-		}
-		survivors := len(state.Secrets)
-		if survivors > 0 {
-			ui.Warnf("evicting rewrites namespace %q from its last good backup (%d secret(s)); the most recent write(s) are lost", ns, survivors)
-		} else {
-			ui.Warnf("nothing survives for namespace %q; evicting clears it (it will hold no secrets)", ns)
-		}
-		if !keyEvictYes {
-			if !ui.Interactive() {
-				return errors.New("refusing to evict non-interactively without --yes")
-			}
-			ok, err := ui.Confirm("Evict and rewrite this namespace?", false)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return errors.New("aborted; nothing was changed")
-			}
-		}
-		if err := evictNamespace(ctx, store, u.mk, ns, state, entry); err != nil {
-			if errors.Is(err, keymgmt.ErrEpochChanged) {
-				return fmt.Errorf("%w; nothing was changed. Re-unlock under the current key (verify the rotation is legitimate) and re-run", err)
-			}
-			return err
-		}
-		if survivors > 0 {
-			ui.Successf("recovered namespace %q to its last good state (%d secret(s))", ns, survivors)
-		} else {
-			ui.Successf("cleared namespace %q; it now holds no secrets", ns)
-		}
-		return nil
-	},
-}
-
-// evictNamespace rewrites a namespace from the salvaged state: a fresh blob (no
-// backup yet) when anything survives, or the namespace entry dropped when
-// nothing does. The corrupt blobs it replaces are dropped as part of the same
-// commit (secrets.Rewrite handles the header swap and blob cleanup). expected is
-// the manifest entry the state was salvaged under, so a concurrent repair that
-// landed since aborts the evict rather than being clobbered.
-func evictNamespace(ctx context.Context, store *headerTarget, mk *crypto.MasterKey, ns string, state *secrets.State, expected crypto.ManifestEntry) error {
-	_, err := secrets.For(store, ns, mk).WithStamp(writeStamp()).Rewrite(ctx, state, expected,
-		func(h *crypto.Header) { pinCurrent(store.scope, h, mk) })
-	return err
-}
-
 func init() {
-	keyAddCmd.Flags().BoolVar(&keyAddMachine, "machine", false, "enroll a machine (CI, an agent) instead of onboarding a teammate")
-	keyAddCmd.Flags().StringVar(&keyAddRecipient, "recipient", "", "with --machine: enroll an existing age1... public key instead of generating an identity")
-	keyListCmd.Flags().BoolVar(&keyListJSON, "json", false, "machine-readable output: vault id, revision, slots")
-	keyTrustCmd.Flags().BoolVar(&keyTrustYes, "yes", false, "pin without the interactive confirmation (for scripts; you have verified the change out of band)")
-	keyForgetCmd.Flags().BoolVar(&keyForgetForce, "force", false, "forget without the interactive confirmation")
-	keyEvictCmd.Flags().BoolVar(&keyEvictYes, "yes", false, "evict without the interactive confirmation (you have accepted the data loss)")
-	keyCmd.AddCommand(keyListCmd, keyRotateCmd, keyRotateMasterCmd, keyAddCmd, keyRmCmd, keySetPrimaryCmd, keyTrustCmd, keyForgetCmd, keyRestoreBackupCmd, keyEvictCmd)
+	credentialAddCmd.Flags().BoolVar(&credentialAddMachine, "machine", false, "enroll a machine (CI, an agent) instead of onboarding a teammate")
+	credentialAddCmd.Flags().StringVar(&credentialAddRecipient, "recipient", "", "with --machine: enroll an existing age1... public key instead of generating an identity")
+	credentialListCmd.Flags().BoolVar(&credentialListJSON, "json", false, "machine-readable output: vault id, revision, slots")
+	credentialTrustCmd.Flags().BoolVar(&credentialTrustYes, "yes", false, "pin without the interactive confirmation (for scripts; you have verified the change out of band)")
+	credentialForgetCmd.Flags().BoolVar(&credentialForgetYes, "yes", false, "forget without the interactive confirmation")
+	credentialDeleteCmd.Flags().BoolVar(&credentialDeleteYes, "yes", false, "remove the slot and re-key without the interactive confirmation")
+	credentialCmd.AddCommand(credentialListCmd, credentialRotateCmd, credentialRotateMasterCmd, credentialAddCmd, credentialDeleteCmd, credentialSetPrimaryCmd, credentialTrustCmd, credentialForgetCmd, credentialRestoreBackupCmd)
 }

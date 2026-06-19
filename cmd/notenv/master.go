@@ -93,7 +93,7 @@ func ensureMaster(ctx context.Context, store keymgmt.Vault, cache keyring.Cache,
 		return nil, false, err
 	} else if bound {
 		pin, _, _ := config.ReadPin(vaultID)
-		return nil, false, fmt.Errorf("no key header found, but this machine pinned vault %s at this storage (revision %d, master %s): the vault may have been wiped or replaced. Restore the header (`notenv key restore-backup`, or the remote's version history), or, ONLY if you deliberately reset this storage, run `notenv key forget` and set up again", vaultID, pin.Revision, pin.MasterPub)
+		return nil, false, fmt.Errorf("no key header found, but this machine pinned vault %s at this storage (revision %d, master %s): the vault may have been wiped or replaced. Restore the header (`notenv credential restore-backup`, or the remote's version history), or, ONLY if you deliberately reset this storage, run `notenv credential forget` and set up again", vaultID, pin.Revision, pin.MasterPub)
 	}
 
 	mk, header, err := createMaster(ctx, store)

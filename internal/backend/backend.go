@@ -68,7 +68,7 @@ var ErrHeaderChanged = errors.New("the header changed since this operation start
 // header must NOT roll that object back on ErrCommitUncertain: the header may
 // already reference it, so deleting it would strand the committed header. The
 // write is durable; the right response is to surface "written but unverified,
-// recover with `notenv key restore-backup` if a later read fails".
+// recover with `notenv credential restore-backup` if a later read fails".
 var ErrCommitUncertain = errors.New("the header write may have taken effect but could not be verified")
 
 // Reserved object names are storage plumbing, not user blobs: the key-slot

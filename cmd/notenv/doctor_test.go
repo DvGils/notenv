@@ -149,6 +149,43 @@ func TestDoctorVerifiesBlobContent(t *testing.T) {
 	}
 }
 
+// TestDoctorReportJSONShape pins the frozen, versioned `doctor --json` envelope:
+// findings (level + text) and a problem count, with an empty array (never null)
+// when there are no findings.
+func TestDoctorReportJSONShape(t *testing.T) {
+	c := &checkup{}
+	c.ok("header present")
+	c.problem("rollback detected")
+	got := mustJSON(t, newDoctorReport(c))
+	want := `{
+  "version": 1,
+  "findings": [
+    {
+      "level": "ok",
+      "text": "header present"
+    },
+    {
+      "level": "problem",
+      "text": "rollback detected"
+    }
+  ],
+  "problems": 1
+}`
+	if got != want {
+		t.Fatalf("doctor --json shape drifted:\n%s\nwant:\n%s", got, want)
+	}
+
+	empty := mustJSON(t, newDoctorReport(&checkup{}))
+	wantEmpty := `{
+  "version": 1,
+  "findings": [],
+  "problems": 0
+}`
+	if empty != wantEmpty {
+		t.Fatalf("empty doctor --json must emit [] findings:\n%s\nwant:\n%s", empty, wantEmpty)
+	}
+}
+
 func countLevel(c *checkup, level string) int {
 	n := 0
 	for _, f := range c.findings {

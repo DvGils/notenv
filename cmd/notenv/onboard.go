@@ -13,7 +13,7 @@ import (
 	"github.com/DvGils/notenv/internal/ui"
 )
 
-// onboardingStringRe matches the string `key add` prints: the generated
+// onboardingStringRe matches the string `credential add` prints: the generated
 // eight-word passphrase, a slash, and the vault fingerprint. Only generated
 // passphrases have this shape (the wordlist is pure lowercase letters), so a
 // prompt entry matching it is split; a chosen passphrase that happens to
@@ -33,7 +33,7 @@ func splitOnboardingString(s string) (pass, fingerprint string) {
 // verifyOnboardingFingerprint checks the header storage served against the
 // code from the onboarding string: it must digest the vault's identity and
 // current signing key, or an ancestor signing key connected to the unlocked
-// master by valid signed transitions (a rotation between `key add` and first
+// master by valid signed transitions (a rotation between `credential add` and first
 // contact is legitimate and proves itself). Runs before the first pin is
 // written, so a substituted vault is refused instead of trusted on first use.
 func verifyOnboardingFingerprint(h *crypto.Header, mk *crypto.MasterKey, code string) error {

@@ -9,7 +9,7 @@ onboarding, offboarding, and the everyday key tasks.
 1. Add them by name:
 
     ```sh
-    notenv key add alice
+    notenv credential add alice
     ```
 
     notenv prints a **one-time onboarding string**: a generated passphrase plus a
@@ -23,7 +23,7 @@ onboarding, offboarding, and the everyday key tasks.
    only she knows; the one-time string stops working then.
 
 Until Alice sets her own passphrase her slot shows as **provisional** in
-`notenv key list` and no command runs for her, so you can see when onboarding is
+`notenv credential list` and no command runs for her, so you can see when onboarding is
 done. After that you know none of her credentials, and nothing key-equivalent sits
 on her disk.
 
@@ -36,7 +36,7 @@ on her disk.
 ## Remove a teammate
 
 ```sh
-notenv key rm alice
+notenv credential delete alice
 ```
 
 This removes Alice's slot and re-keys the vault (a fresh master key, every secret
@@ -47,17 +47,17 @@ working and pick up the change automatically.
 
     notenv cannot revoke someone's access to the storage itself. For a complete
     offboard, also rotate that storage's credential at your provider, or a former
-    member who kept write access could still tamper with the vault. `notenv key rm`
+    member who kept write access could still tamper with the vault. `notenv credential delete`
     reminds you.
 
 ## Everyday key tasks
 
 | Task | Command |
 |---|---|
-| Change your own passphrase | `notenv key rotate` |
-| Re-key the vault as a precaution | `notenv key rotate-master` |
-| Move the primary (governance) slot | `notenv key set-primary <name>` |
-| List who has access | `notenv key list` |
+| Change your own passphrase | `notenv credential rotate` |
+| Re-key the vault as a precaution | `notenv credential rotate-master` |
+| Move the primary (governance) slot | `notenv credential set-primary <name>` |
+| List who has access | `notenv credential list` |
 
 ---
 

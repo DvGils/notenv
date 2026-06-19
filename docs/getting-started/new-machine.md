@@ -21,7 +21,7 @@ Nothing else to restore. The committed `notenv.toml` and your password manager a
 If you are joining a vault someone else owns (rather than restoring your own), you still end up
 with a passphrase only you know; the owner just opens the door:
 
-1. The owner runs `notenv key add you` and sends you the **one-time onboarding string** it
+1. The owner runs `notenv credential add you` and sends you the **one-time onboarding string** it
    prints (a generated passphrase plus a code that fingerprints the vault), over a private
    channel.
 
@@ -38,4 +38,4 @@ with a passphrase only you know; the owner just opens the door:
 3. Escrow your new passphrase in your password manager and you are ready: `notenv run -- ...`
 
 See [Teams and keys](../guides/teams-and-keys.md) for the full model and the
-[command reference](../reference/commands.md) for every `notenv key` operation.
+[command reference](../reference/commands.md) for every `notenv credential` operation.

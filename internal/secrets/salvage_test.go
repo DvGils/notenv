@@ -97,7 +97,7 @@ func TestSalvageDoesNotMaskVersionSkew(t *testing.T) {
 
 // TestSalvageCleanReadHasNoCorrupt: salvage on a healthy namespace returns the
 // same state with nothing reported, so the command layer can tell "nothing to
-// evict" from a real fallback.
+// recover" from a real fallback.
 func TestSalvageCleanReadHasNoCorrupt(t *testing.T) {
 	ctx := context.Background()
 	v := newVault(t)

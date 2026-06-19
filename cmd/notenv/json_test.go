@@ -28,8 +28,9 @@ func TestListJSONShape(t *testing.T) {
 	meta := map[string]secrets.Meta{
 		"DB_URL": {Description: "primary DSN", TS: 1765900800}, // 2025-12-16T16:00:00Z
 	}
-	got := mustJSON(t, listOutput{Namespace: "ops", Secrets: listedSecrets([]string{"API_KEY", "DB_URL"}, meta)})
+	got := mustJSON(t, listOutput{Version: 1, Namespace: "ops", Secrets: listedSecrets([]string{"API_KEY", "DB_URL"}, meta)})
 	want := `{
+  "version": 1,
   "namespace": "ops",
   "secrets": [
     {
@@ -47,10 +48,10 @@ func TestListJSONShape(t *testing.T) {
 	}
 }
 
-// TestKeyListJSONShape pins the frozen `key list --json` shape: indexed
-// slots, normalized type, public_key only on recipient slots, provisional
-// and added only when set.
-func TestKeyListJSONShape(t *testing.T) {
+// TestCredentialListJSONShape pins the frozen `credential list --json` shape:
+// indexed slots, normalized type, public_key only on recipient slots,
+// provisional and added only when set.
+func TestCredentialListJSONShape(t *testing.T) {
 	h := &crypto.Header{
 		VaultID:  "vault-1",
 		Revision: 7,
@@ -60,8 +61,9 @@ func TestKeyListJSONShape(t *testing.T) {
 			{Name: "ci", Type: crypto.SlotRecipient, PublicKey: "age1ci", TS: 1765900800},
 		},
 	}
-	got := mustJSON(t, keyListOutput(h))
+	got := mustJSON(t, credentialListOutput(h))
 	want := `{
+  "version": 1,
   "vault_id": "vault-1",
   "revision": 7,
   "slots": [
@@ -88,7 +90,7 @@ func TestKeyListJSONShape(t *testing.T) {
   ]
 }`
 	if got != want {
-		t.Fatalf("key list --json shape drifted:\n%s\nwant:\n%s", got, want)
+		t.Fatalf("credential list --json shape drifted:\n%s\nwant:\n%s", got, want)
 	}
 }
 

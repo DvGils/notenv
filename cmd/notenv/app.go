@@ -338,7 +338,7 @@ func (a *app) view(ctx context.Context, mk *crypto.MasterKey) (*vaultView, error
 	}
 	raw, err := v.GetHeader(ctx)
 	if errors.Is(err, backend.ErrNotFound) {
-		return nil, errors.New("the vault's key header is gone from storage; refusing to proceed (recover it, e.g. `notenv key restore-backup`)")
+		return nil, errors.New("the vault's key header is gone from storage; refusing to proceed (recover it, e.g. `notenv credential restore-backup`)")
 	}
 	if err != nil {
 		return nil, err
@@ -413,7 +413,7 @@ func (a *app) commitNamespace(ctx context.Context, view *vaultView, apply func(*
 			// The write may have landed; do not claim a rollback, and drop the warm
 			// blob cache since the namespace state is now uncertain.
 			a.blobs.Drop(a.cacheScope, a.namespace)
-			return nil, fmt.Errorf("%w; it may have landed. Run `notenv doctor` to check, or `notenv key restore-backup` to revert, before relying on it", err)
+			return nil, fmt.Errorf("%w; it may have landed. Run `notenv doctor` to check, or `notenv credential restore-backup` to revert, before relying on it", err)
 		}
 		if errors.Is(err, keymgmt.ErrEpochChanged) {
 			a.cache.Drop(a.cacheScope)
@@ -494,7 +494,7 @@ func (a *app) readState(ctx context.Context) (*secrets.State, *vaultView, error)
 // lost.
 func (a *app) reportCorrupt(state *secrets.State) {
 	for _, c := range state.Corrupt {
-		ui.Warnf("salvage: read past untrustable blob %s (%s); namespace %q reverted to its last good backup or, if that is gone too, resolved empty. Recover from your remote's version history if it keeps one, or `notenv key evict %s` to rewrite the namespace from what survives", c.Blob, c.Reason, a.namespace, a.namespace)
+		ui.Warnf("salvage: read past untrustable blob %s (%s); namespace %q reverted to its last good backup or, if that is gone too, resolved empty. Recover from your remote's version history if it keeps one, or `notenv namespace recover %s` to rebuild it from its last good backup", c.Blob, c.Reason, a.namespace, a.namespace)
 	}
 }
 

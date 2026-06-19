@@ -188,20 +188,44 @@ func writeExport(w io.Writer, byNS map[string]*secrets.State, asJSON, all bool) 
 	return nil
 }
 
+// exportSingleJSON is the frozen `export --json` shape for one namespace, and
+// exportAllJSON the shape for `export --all --json`. Both carry a version so the
+// envelope can grow without breaking consumers (the bare maps they replaced
+// could not). secrets values are emitted literally, as in the .env form.
+type exportSingleJSON struct {
+	Version   int               `json:"version"`
+	Namespace string            `json:"namespace"`
+	Secrets   map[string]string `json:"secrets"`
+}
+
+type exportAllJSON struct {
+	Version    int                          `json:"version"`
+	Namespaces map[string]map[string]string `json:"namespaces"`
+}
+
 func writeExportJSON(w io.Writer, byNS map[string]*secrets.State, all bool) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if all {
-		out := map[string]map[string]string{}
+		out := exportAllJSON{Version: 1, Namespaces: map[string]map[string]string{}}
 		for ns, st := range byNS {
-			out[ns] = st.Secrets
+			out.Namespaces[ns] = nonNilSecrets(st.Secrets)
 		}
 		return enc.Encode(out)
 	}
-	for _, st := range byNS { // exactly one namespace in the non-all case
-		return enc.Encode(st.Secrets)
+	for ns, st := range byNS { // exactly one namespace in the non-all case
+		return enc.Encode(exportSingleJSON{Version: 1, Namespace: ns, Secrets: nonNilSecrets(st.Secrets)})
 	}
-	return enc.Encode(map[string]string{})
+	return enc.Encode(exportSingleJSON{Version: 1, Secrets: map[string]string{}})
+}
+
+// nonNilSecrets returns m, or an empty map when m is nil, so the JSON emits {}
+// rather than null for an empty namespace.
+func nonNilSecrets(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
+	}
+	return m
 }
 
 // bareEnvValue matches values safe to write unquoted in a .env line: no

@@ -53,7 +53,7 @@ An agent or job with no checkout points at a vault directly with `NOTENV_STORAGE
 - **`NOTENV_ACCEPT_NAMESPACE=name`** approves a namespace's first headless use (otherwise
   notenv refuses, since nobody is at a prompt).
 - **`NOTENV_READONLY=1`** refuses every mutating command.
-- **`NOTENV_IDENTITY`** unlocks promptlessly for an enrolled machine (`notenv key add --machine`).
+- **`NOTENV_IDENTITY`** unlocks promptlessly for an enrolled machine (`notenv credential add --machine`).
 
 See [Environment variables](../reference/environment.md) for the rest.
 

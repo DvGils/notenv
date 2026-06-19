@@ -292,7 +292,7 @@ func TestExists(t *testing.T) {
 	}
 }
 
-// TestRewriteAbortsOnConcurrentChange: evict's Rewrite must refuse if the
+// TestRewriteAbortsOnConcurrentChange: recover's Rewrite must refuse if the
 // namespace's current blob moved since the state was salvaged (a concurrent
 // repair landed), rather than clobber that write with the older salvaged state.
 func TestRewriteAbortsOnConcurrentChange(t *testing.T) {
@@ -306,7 +306,7 @@ func TestRewriteAbortsOnConcurrentChange(t *testing.T) {
 		}, nil); err != nil {
 		t.Fatal(err)
 	}
-	stale, _ := mustEntryFor(t, mem, "proj") // the entry an evict would salvage under
+	stale, _ := mustEntryFor(t, mem, "proj") // the entry a recover would salvage under
 	salvaged, err := ns.Read(ctx, stale)
 	if err != nil {
 		t.Fatal(err)
