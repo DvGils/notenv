@@ -33,15 +33,15 @@ notenv init          # writes notenv.toml, which you commit
 Have a `.env` already? Import it whole (every value encrypted, every key declared), then delete it:
 
 ```sh
-notenv import .env && rm .env
+notenv namespace import .env && rm .env
 ```
 
 Or add values one at a time, prompted hidden:
 
 ```sh
-notenv set DATABASE_URL
-notenv set STRIPE_KEY
-notenv list          # shows key names only, never values
+notenv secret set DATABASE_URL
+notenv secret set STRIPE_KEY
+notenv namespace inspect          # shows key names only, never values
 ```
 
 ## 4. Run anything

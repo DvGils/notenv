@@ -12,7 +12,7 @@ No accounts, no rclone, one passphrase.
 ```sh
 notenv setup                   # local vault (the default)
 cd my-project && notenv init   # writes notenv.toml (commit it)
-notenv import .env && rm .env  # or: notenv set KEY one at a time
+notenv namespace import .env && rm .env  # or: notenv secret set KEY one at a time
 notenv run -- npm run dev      # secrets injected for this process only
 ```
 
@@ -135,7 +135,7 @@ notenv credential rotate-master       # fresh master; anything captured stops de
 ### Export your secrets, or delete a vault
 
 ```sh
-notenv export > backup.env     # one namespace; --all for the whole vault
+notenv namespace export > backup.env     # one namespace; `notenv vault export` for the whole vault
 notenv vault delete <name>     # destroy a vault you no longer want (asks the passphrase)
 ```
 

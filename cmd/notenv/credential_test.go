@@ -11,8 +11,8 @@ import (
 )
 
 // TestLoadHeaderStoreHonorsNotenvStorage guards the v0.19.1 fix: the header path
-// behind `key`, `export --all`, and `vault copy` must resolve storage the same way
-// the rest of the CLI does (--storage, then NOTENV_STORAGE, then binding/default),
+// behind `credential`, `vault export`, and `vault copy` must resolve storage the
+// same way the rest of the CLI does (--storage, then NOTENV_STORAGE, then binding/default),
 // so an agent or CI pointed at a vault only via NOTENV_STORAGE is not silently sent
 // to the machine default.
 func TestLoadHeaderStoreHonorsNotenvStorage(t *testing.T) {

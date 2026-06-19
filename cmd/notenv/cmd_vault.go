@@ -499,8 +499,8 @@ storage, plus whether writes are refused here. It reads only the authenticated
 header, so it decrypts nothing and asks for no passphrase.
 
 The storage is selected the usual way (--storage, NOTENV_STORAGE, or the project
-binding). No secret value is ever printed; to inspect one namespace or one secret,
-use "notenv inspect".`,
+binding). No secret value is ever printed; to inspect one namespace use "notenv
+namespace inspect", and one secret "notenv secret inspect KEY".`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -515,7 +515,7 @@ use "notenv inspect".`,
 		// Honor the handoff session guard: an agent in a session must not enumerate
 		// another vault's namespaces (or its id/revision) via a stray --storage. The
 		// header read touches no secret, but the guard governs which vault a session
-		// may address at all, the same rule `namespace list` follows.
+		// may address at all, the same rule every other header-only read follows.
 		if err := sessionGuard(eff.Scope()); err != nil {
 			return err
 		}

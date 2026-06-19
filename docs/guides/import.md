@@ -1,10 +1,10 @@
 # Import an existing `.env`
 
-If you already have a `.env` file, `notenv import` encrypts every value and declares every key in
+If you already have a `.env` file, `notenv namespace import` encrypts every value and declares every key in
 one command, so you do not retype anything.
 
 ```sh
-notenv import .env && rm .env
+notenv namespace import .env && rm .env
 ```
 
 The whole file is parsed and validated before anything is written, and all values land in a single
@@ -17,14 +17,14 @@ once the import succeeds, deleting it is safe and the point.
 values):
 
 ```sh
-notenv import .env --dry-run
+notenv namespace import .env --dry-run
 ```
 
 ## What gets imported
 
 - Every valid `KEY=value` assignment becomes an encrypted secret, declared in `notenv.toml`.
 - Duplicate keys resolve last-wins.
-- Empty values are skipped (`notenv set` refuses those, so import does too).
+- Empty values are skipped (`notenv secret set` refuses those, so import does too).
 - Existing descriptions on keys are preserved; an import overwrites values, not what the keys mean.
 
 ## Accepted dotenv syntax
@@ -45,4 +45,4 @@ interpreted:
 !!! tip "Multiline or piped values"
 
     To set a single multiline value (a PEM key, a JSON blob) outside of an import, use
-    `notenv set KEY --stdin` and pipe the value in.
+    `notenv secret set KEY --stdin` and pipe the value in.

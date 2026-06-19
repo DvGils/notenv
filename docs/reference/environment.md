@@ -83,7 +83,7 @@ Set by `notenv handoff` on the agent it launches; you do not set this yourself. 
 as running inside a handoff session and carries the scope of the one ephemeral vault it may unlock, so
 an attempt to unlock any other vault from inside the session fails closed instead of prompting for
 your real passphrase. A launched program does not read this variable directly to learn whether it is
-scoped: it runs `notenv inspect handoff` (exit 0 = inside a handoff, exit 1 = not), which confirms the
+scoped: it runs `notenv handoff inspect` (exit 0 = inside a handoff, exit 1 = not), which confirms the
 claim against the live ephemeral vault and so fails safe to "no" on a stale or clobbered value. See
 [Agent handoff](../concepts/agent-handoff.md#telling-whether-you-are-in-a-handoff).
 

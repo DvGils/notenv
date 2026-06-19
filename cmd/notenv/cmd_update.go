@@ -15,14 +15,14 @@ import (
 
 var updateDescription string
 
-var updateCmd = &cobra.Command{
+var secretUpdateCmd = &cobra.Command{
 	Use:   "update KEY",
 	Short: "Update an existing secret's metadata (today, its description) without changing its value",
 	Long: `Change what a secret is for without touching its value.
 
 Pass --description "new text" to set the description, or --description "" to
 clear it. The secret must already exist; create one (with a value) using
-"notenv set KEY".
+"notenv secret set KEY".
 
 This is the metadata-only counterpart to "set" (which sets a value) and "edit"
 (which bulk-edits values and descriptions in $EDITOR). The value is re-sealed
@@ -66,7 +66,7 @@ func runUpdate(ctx context.Context, a *app, key, description string) error {
 	storageKey := a.storageKey(key)
 	if _, ok := state.Secrets[storageKey]; !ok {
 		// update amends an existing secret; it never creates one (that is `set`).
-		return fmt.Errorf("secret %q does not exist in namespace %q; set it first with `notenv set %s`", key, a.namespace, key)
+		return fmt.Errorf("secret %q does not exist in namespace %q; set it first with `notenv secret set %s`", key, a.namespace, key)
 	}
 
 	var updated *secrets.State
@@ -97,6 +97,5 @@ func runUpdate(ctx context.Context, a *app, key, description string) error {
 }
 
 func init() {
-	updateCmd.Flags().StringVar(&updateDescription, "description", "", "what this secret is and how to use it, shown by `list` (\"\" clears it)")
-	rootCmd.AddCommand(updateCmd)
+	secretUpdateCmd.Flags().StringVar(&updateDescription, "description", "", "what this secret is and how to use it, shown by 'notenv secret inspect' (\"\" clears it)")
 }

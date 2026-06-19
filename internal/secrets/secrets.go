@@ -59,7 +59,7 @@ import (
 // additive struct extension: an older reader must refuse a v3 blob (fail closed)
 // rather than silently drop the new metadata on a rewrite, so the version is
 // exact-match. There is no in-place upgrade from v2 (pre-1.0, no stable
-// release): `notenv export` from the old binary and `notenv import` into v3.
+// release): export from the old binary and import into a fresh v3 vault.
 const blobVersion = 3
 
 // blob is a namespace's whole state: its namespace-level metadata plus every
@@ -408,7 +408,7 @@ func (s *State) Apply(writes []Write) *State {
 // callers (set, import, edit) reuse it for friendly errors, WriteBlob enforces it.
 func ValidateValue(value string) error {
 	if !utf8.ValidString(value) {
-		return errors.New("value is not valid UTF-8 text; an environment variable holds text. If this is binary (a key, a cert bundle), base64-encode it first, e.g. `base64 -w0 file | notenv set KEY --stdin`")
+		return errors.New("value is not valid UTF-8 text; an environment variable holds text. If this is binary (a key, a cert bundle), base64-encode it first, e.g. `base64 -w0 file | notenv secret set KEY --stdin`")
 	}
 	for _, r := range value {
 		if r == '\n' || r == '\t' || r == '\r' {

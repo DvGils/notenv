@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -43,47 +42,6 @@ func headerEntry(t *testing.T, store *headerTarget, ns string) (crypto.ManifestE
 		t.Fatal(err)
 	}
 	return h.NamespaceEntry(ns)
-}
-
-// TestListNamespaceNames: the names come from the header manifest (sorted, no
-// master), and virgin storage is a friendly error rather than a crash.
-func TestListNamespaceNames(t *testing.T) {
-	ctx := context.Background()
-	store := memstore.New()
-	seedNamespaceHeader(t, store, "beta", "alpha") // recorded out of order
-	target := &headerTarget{vaultStorage: doctorStore{store}, scope: "scope", cache: newMapCache()}
-
-	names, err := listNamespaceNames(ctx, target)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(names) != 2 || names[0] != "alpha" || names[1] != "beta" {
-		t.Fatalf("names = %v, want [alpha beta] sorted", names)
-	}
-
-	empty := &headerTarget{vaultStorage: doctorStore{memstore.New()}, scope: "scope", cache: newMapCache()}
-	if _, err := listNamespaceNames(ctx, empty); err == nil || !strings.Contains(err.Error(), "no vault") {
-		t.Fatalf("virgin storage: err = %v, want a 'no vault' error", err)
-	}
-}
-
-// TestNamespaceListJSONShape pins the frozen `namespace list --json` shape: a
-// versioned envelope around named-field objects.
-func TestNamespaceListJSONShape(t *testing.T) {
-	data, err := json.Marshal(newNamespaceList([]string{"a", "b"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	const want = `{"version":1,"namespaces":[{"name":"a"},{"name":"b"}]}`
-	if string(data) != want {
-		t.Fatalf("json = %s, want %s", data, want)
-	}
-	// An empty vault still emits an array, never null, so consumers need no
-	// sentinel handling.
-	data, _ = json.Marshal(newNamespaceList(nil))
-	if string(data) != `{"version":1,"namespaces":[]}` {
-		t.Fatalf("empty json = %s, want an empty array", data)
-	}
 }
 
 // TestCreateNamespace: create stands up an empty, persistent namespace, and a

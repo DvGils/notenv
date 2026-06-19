@@ -18,7 +18,7 @@ var (
 	copyForce bool
 )
 
-// copyCmd moves one secret between two namespaces of the SAME vault without ever
+// secretCopyCmd moves one secret between two namespaces of the SAME vault without ever
 // surfacing its plaintext: the value is read under the master and written back
 // under the same master in one process, never printed, never put on disk. It is
 // deliberately within-vault only (no source/target storage flags): a copy across
@@ -27,7 +27,7 @@ var (
 // master", which only makes sense inside one vault. Both namespaces resolve
 // through one app bound to a single storage, so the within-vault property is
 // structural, not a runtime check.
-var copyCmd = &cobra.Command{
+var secretCopyCmd = &cobra.Command{
 	Use:   "copy KEY --from NS1 --to NS2",
 	Short: "Copy one secret from one namespace to another in the same vault, without exposing its value",
 	Args:  cobra.ExactArgs(1),
@@ -141,7 +141,7 @@ func runCopy(ctx context.Context, a *app, key, from string, force bool) error {
 }
 
 func init() {
-	copyCmd.Flags().StringVar(&copyFrom, "from", "", "source namespace to copy the secret from")
-	copyCmd.Flags().StringVar(&copyTo, "to", "", "destination namespace to copy the secret into (same vault)")
-	copyCmd.Flags().BoolVar(&copyForce, "force", false, "overwrite the key if it already exists in the destination")
+	secretCopyCmd.Flags().StringVar(&copyFrom, "from", "", "source namespace to copy the secret from")
+	secretCopyCmd.Flags().StringVar(&copyTo, "to", "", "destination namespace to copy the secret into (same vault)")
+	secretCopyCmd.Flags().BoolVar(&copyForce, "force", false, "overwrite the key if it already exists in the destination")
 }

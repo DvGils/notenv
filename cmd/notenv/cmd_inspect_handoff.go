@@ -15,7 +15,7 @@ import (
 var handoffInspectJSON bool
 
 var handoffInspectCmd = &cobra.Command{
-	Use:   "handoff",
+	Use:   "inspect",
 	Short: "Report whether this process is inside a scoped notenv handoff session",
 	Long: `Answer one question for a program notenv launched: am I running against a
 scoped, ephemeral handoff vault, or not?
@@ -31,7 +31,7 @@ It reads only its own environment and the ephemeral vault on disk: no vault is
 unlocked, no passphrase is asked, and no secret value is ever printed. The answer is
 also the exit code, so a script can branch without parsing:
 
-  notenv inspect handoff   exit 0 = inside a handoff session, exit 1 = not.`,
+  notenv handoff inspect   exit 0 = inside a handoff session, exit 1 = not.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		info := detectHandoff()
@@ -56,7 +56,7 @@ also the exit code, so a script can branch without parsing:
 	},
 }
 
-// handoffInspect is the frozen `inspect handoff --json` shape. Namespace is the
+// handoffInspect is the frozen `handoff inspect --json` shape. Namespace is the
 // single scope the agent was handed (what it already knows it holds), never an
 // enumeration of the real vault's other namespaces; no secret value ever appears.
 type handoffInspect struct {
@@ -137,5 +137,5 @@ func firstNamespace(list string) string {
 
 func init() {
 	handoffInspectCmd.Flags().BoolVar(&handoffInspectJSON, "json", false, "machine-readable output (handoff yes/no and the scoped namespace, never a secret value)")
-	inspectCmd.AddCommand(handoffInspectCmd)
+	handoffCmd.AddCommand(handoffInspectCmd)
 }

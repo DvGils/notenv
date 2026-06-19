@@ -21,36 +21,49 @@ import (
 )
 
 var (
-	exportAll  bool
-	exportJSON bool
+	namespaceExportJSON bool
+	vaultExportJSON     bool
 )
 
-var exportCmd = &cobra.Command{
+var namespaceExportCmd = &cobra.Command{
 	Use:   "export",
-	Short: "Print secrets as .env to stdout for backup or offboarding (never writes a file)",
-	Long: `Print a namespace's secrets (or, with --all, the whole vault) as .env to
-standard output, so you can move to another tool or keep a copy. It is the
-inverse of import: ` + "`notenv export | notenv import`" + ` round-trips a namespace.
+	Short: "Print this namespace's secrets as .env to stdout (never writes a file)",
+	Long: `Print the selected namespace's secrets as .env to standard output, so you can
+move to another tool or keep a copy. It is the inverse of import:
+` + "`notenv namespace export | notenv namespace import`" + ` round-trips a namespace.
 
-notenv never writes the plaintext to a file itself; it only writes to stdout.
-If you want a file, redirect it yourself (` + "`notenv export > .env`" + `), which is
-your deliberate act. There is deliberately no --output flag: opening a plaintext
-file is exactly what the rest of notenv exists to avoid.
+notenv never writes the plaintext to a file itself; it only writes to stdout. If
+you want a file, redirect it yourself (` + "`notenv namespace export > .env`" + `), your
+deliberate act. There is deliberately no --output flag: opening a plaintext file
+is exactly what the rest of notenv exists to avoid.
 
-The output is meant for ` + "`notenv import`" + `, not for ` + "`source`" + `: values are emitted
-literally, so a value containing ` + "`$(...)`" + ` or backticks is just data here, but a
-POSIX shell would execute it on ` + "`source`" + `. Feed it to ` + "`notenv import`" + ` (or load it
-with a parser that does no expansion).
+The output is meant for ` + "`notenv namespace import`" + `, not for ` + "`source`" + `: values are
+emitted literally, so a value containing ` + "`$(...)`" + ` or backticks is just data here,
+but a POSIX shell would execute it on ` + "`source`" + `. Feed it to ` + "`notenv namespace import`" + `
+(or load it with a parser that does no expansion).
 
 Bulk plaintext egress is gated like ` + "`run --no-mask`" + `: it asks for the vault's
 primary passphrase even when the session key is cached, and refuses without a
 terminal. A machine identity cannot export.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if exportAll {
-			return exportWholeVault(cmd.Context())
-		}
 		return exportOneNamespace(cmd.Context())
+	},
+}
+
+var vaultExportCmd = &cobra.Command{
+	Use:   "export",
+	Short: "Print every secret in the vault as .env to stdout (offboarding; never writes a file)",
+	Long: `Print every namespace's secrets in the vault as .env to standard output: the
+offboarding path. It works at the storage level (no project needed) and is gated
+by the vault's primary passphrase even when the session key is cached, refusing
+without a terminal. A machine identity cannot export.
+
+notenv only writes to stdout; redirect to a file yourself if you want one. The
+output is meant for ` + "`notenv namespace import`" + ` (per namespace), not for ` + "`source`" + `.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return exportWholeVault(cmd.Context())
 	},
 }
 
@@ -69,7 +82,7 @@ func exportOneNamespace(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := requirePrimarySlot(header, slot, "export"); err != nil {
+	if err := requirePrimarySlot(header, slot, "namespace export"); err != nil {
 		return err
 	}
 	state, err := readNamespaceUnder(ctx, a.store, a.namespace, mk, header)
@@ -77,7 +90,7 @@ func exportOneNamespace(ctx context.Context) error {
 		return err
 	}
 	warnExportScrollback()
-	return writeExport(os.Stdout, map[string]*secrets.State{a.namespace: state}, exportJSON, false)
+	return writeExport(os.Stdout, map[string]*secrets.State{a.namespace: state}, namespaceExportJSON, false)
 }
 
 // exportWholeVault exports every namespace, gated by the primary passphrase. It
@@ -92,7 +105,7 @@ func exportWholeVault(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := requirePrimarySlot(header, slot, "export --all"); err != nil {
+	if err := requirePrimarySlot(header, slot, "vault export"); err != nil {
 		return err
 	}
 	names := vaultNamespaces(header)
@@ -108,7 +121,7 @@ func exportWholeVault(ctx context.Context) error {
 		out[ns] = state
 	}
 	warnExportScrollback()
-	return writeExport(os.Stdout, out, exportJSON, true)
+	return writeExport(os.Stdout, out, vaultExportJSON, true)
 }
 
 // requirePrimarySlot refuses an owner operation unlocked with a non-primary
@@ -149,10 +162,10 @@ func writeExport(w io.Writer, byNS map[string]*secrets.State, asJSON, all bool) 
 		return writeExportJSON(w, byNS, all)
 	}
 	// A warning at the point a human would see the file: this is for
-	// `notenv import`, not for `source`. Values are literal here, but a POSIX
-	// shell would execute `$(...)`/backticks in a value on `source`. The dotenv
+	// `notenv namespace import`, not for `source`. Values are literal here, but a
+	// POSIX shell would execute `$(...)`/backticks in a value on `source`. The dotenv
 	// parser ignores these comment lines, so the import round-trip is unaffected.
-	fmt.Fprintln(w, "# notenv export: import with `notenv import`. Do NOT `source` this in a shell;")
+	fmt.Fprintln(w, "# notenv export: import with `notenv namespace import`. Do NOT `source` this in a shell;")
 	fmt.Fprintln(w, "# values are literal and may contain characters a shell would execute.")
 	names := make([]string, 0, len(byNS))
 	for ns := range byNS {
@@ -188,8 +201,8 @@ func writeExport(w io.Writer, byNS map[string]*secrets.State, asJSON, all bool) 
 	return nil
 }
 
-// exportSingleJSON is the frozen `export --json` shape for one namespace, and
-// exportAllJSON the shape for `export --all --json`. Both carry a version so the
+// exportSingleJSON is the frozen `namespace export --json` shape, and
+// exportAllJSON the `vault export --json` shape. Both carry a version so the
 // envelope can grow without breaking consumers (the bare maps they replaced
 // could not). secrets values are emitted literally, as in the .env form.
 type exportSingleJSON struct {
@@ -245,7 +258,8 @@ func formatEnvValue(v string) string {
 }
 
 func init() {
-	exportCmd.Flags().BoolVar(&exportAll, "all", false, "export every namespace in the vault (the offboarding path)")
-	exportCmd.Flags().BoolVar(&exportJSON, "json", false, "emit JSON instead of .env")
-	rootCmd.AddCommand(exportCmd)
+	namespaceExportCmd.Flags().BoolVar(&namespaceExportJSON, "json", false, "emit JSON instead of .env")
+	namespaceCmd.AddCommand(namespaceExportCmd)
+	vaultExportCmd.Flags().BoolVar(&vaultExportJSON, "json", false, "emit JSON instead of .env")
+	vaultCmd.AddCommand(vaultExportCmd)
 }

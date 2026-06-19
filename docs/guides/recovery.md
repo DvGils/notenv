@@ -19,7 +19,7 @@ one-generation backup of each namespace, so there are two moves:
 
     ```sh
     notenv run --skip-corrupt -- ...
-    notenv list --skip-corrupt
+    notenv namespace inspect --skip-corrupt
     ```
 
     It serves the previous generation and reports exactly what it dropped; the most

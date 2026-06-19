@@ -51,8 +51,8 @@ func loadHeaderStore() (*headerTarget, error) {
 	// pointed at), then the project's local binding if we are inside one, then the
 	// machine default / sole storage. This must match the rest of the CLI's
 	// selection (storageSelector); resolving headers by a different rule is how
-	// `key`, `export --all`, and `vault copy` ended up ignoring NOTENV_STORAGE and
-	// silently targeting the default vault. A corrupt binding is a hard error only
+	// `credential`, `vault export`, and `vault copy` ended up ignoring NOTENV_STORAGE
+	// and silently targeting the default vault. A corrupt binding is a hard error only
 	// when we fall through to it (no flag, no env): these commands are destructive,
 	// so we must never silently retarget the default vault.
 	storageName := storageSelector("")
@@ -166,15 +166,22 @@ func recacheMaster(store *headerTarget, mk *crypto.MasterKey) {
 	cacheMaster(cache, scope, mk, ttl)
 }
 
-var credentialListJSON bool
+var credentialInspectJSON bool
 
-var credentialListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List the key slots in the storage header",
+var credentialInspectCmd = &cobra.Command{
+	Use:   "inspect",
+	Short: "Inspect the credentials that can unlock the vault (the key slots)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := loadHeaderStore()
 		if err != nil {
+			return err
+		}
+		// Honor the handoff session guard: an agent in a session must not enumerate
+		// another vault's key slots (or its id/revision) via a stray --storage. This
+		// reads only the cleartext header, but the guard governs which vault a session
+		// may address at all, the same rule `vault inspect` follows.
+		if err := sessionGuard(store.scope); err != nil {
 			return err
 		}
 		var raw []byte
@@ -192,19 +199,19 @@ var credentialListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if credentialListJSON {
-			return printJSON(credentialListOutput(header))
+		if credentialInspectJSON {
+			return printJSON(credentialInspectOutput(header))
 		}
 		printSlots(header)
 		return nil
 	},
 }
 
-// credentialListJSONOutput is the frozen shape of `credential list --json`. Slots carry
+// credentialInspectJSONOutput is the frozen shape of `credential inspect --json`. Slots carry
 // their index because the rm/set-primary selectors accept one; public_key
 // appears only on recipient slots (a passphrase slot's key is internal).
 // Extensions are additive fields only.
-type credentialListJSONOutput struct {
+type credentialInspectJSONOutput struct {
 	Version  int          `json:"version"`
 	VaultID  string       `json:"vault_id"`
 	Revision int          `json:"revision"`
@@ -221,8 +228,8 @@ type slotOutput struct {
 	PublicKey   string `json:"public_key,omitempty"`
 }
 
-func credentialListOutput(h *crypto.Header) credentialListJSONOutput {
-	out := credentialListJSONOutput{Version: 1, VaultID: h.VaultID, Revision: h.Revision, Slots: make([]slotOutput, 0, len(h.Slots))}
+func credentialInspectOutput(h *crypto.Header) credentialInspectJSONOutput {
+	out := credentialInspectJSONOutput{Version: 1, VaultID: h.VaultID, Revision: h.Revision, Slots: make([]slotOutput, 0, len(h.Slots))}
 	for i, slot := range h.Slots {
 		s := slotOutput{Index: i, Name: slot.Name, Type: slot.Type, Primary: slot.Primary, Provisional: slot.Provisional}
 		if s.Type == "" {
@@ -620,7 +627,7 @@ private key stays wherever it was made).`,
 		ui.Successf("added slot %q with a one-time onboarding string", name)
 		ui.Infof("send this string to them over a private channel:")
 		fmt.Println(temp + "/" + crypto.Fingerprint(u.header.VaultID, u.header.SignPub))
-		ui.Infof("it bundles their first passphrase with a code proving they reached the real vault. Their first notenv command replaces the passphrase with one only they know; until then `notenv credential list` shows the slot as provisional")
+		ui.Infof("it bundles their first passphrase with a code proving they reached the real vault. Their first notenv command replaces the passphrase with one only they know; until then `notenv credential inspect` shows the slot as provisional")
 		return nil
 	},
 }
@@ -730,7 +737,7 @@ func slotLabel(s crypto.Slot) string {
 var credentialDeleteCmd = &cobra.Command{
 	Use:   "delete <name | index>",
 	Short: "Remove a key slot and re-key the vault (offboarding)",
-	Long: `Remove a key slot by name or by its zero-based index in 'credential list', then
+	Long: `Remove a key slot by name or by its zero-based index in 'credential inspect', then
 re-key the vault so the removed credential can no longer decrypt anything.
 
 This re-encrypts every secret under a fresh master key (see 'rotate-master'),
@@ -976,9 +983,9 @@ authentication tag must still verify.`,
 func init() {
 	credentialAddCmd.Flags().BoolVar(&credentialAddMachine, "machine", false, "enroll a machine (CI, an agent) instead of onboarding a teammate")
 	credentialAddCmd.Flags().StringVar(&credentialAddRecipient, "recipient", "", "with --machine: enroll an existing age1... public key instead of generating an identity")
-	credentialListCmd.Flags().BoolVar(&credentialListJSON, "json", false, "machine-readable output: vault id, revision, slots")
+	credentialInspectCmd.Flags().BoolVar(&credentialInspectJSON, "json", false, "machine-readable output: vault id, revision, slots")
 	credentialTrustCmd.Flags().BoolVar(&credentialTrustYes, "yes", false, "pin without the interactive confirmation (for scripts; you have verified the change out of band)")
 	credentialForgetCmd.Flags().BoolVar(&credentialForgetYes, "yes", false, "forget without the interactive confirmation")
 	credentialDeleteCmd.Flags().BoolVar(&credentialDeleteYes, "yes", false, "remove the slot and re-key without the interactive confirmation")
-	credentialCmd.AddCommand(credentialListCmd, credentialRotateCmd, credentialRotateMasterCmd, credentialAddCmd, credentialDeleteCmd, credentialSetPrimaryCmd, credentialTrustCmd, credentialForgetCmd, credentialRestoreBackupCmd)
+	credentialCmd.AddCommand(credentialInspectCmd, credentialRotateCmd, credentialRotateMasterCmd, credentialAddCmd, credentialDeleteCmd, credentialSetPrimaryCmd, credentialTrustCmd, credentialForgetCmd, credentialRestoreBackupCmd)
 }

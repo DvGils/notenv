@@ -7,7 +7,7 @@ and what is deliberately out of scope.
 
 - **Onboarding.** `setup`, `init`, and `import`; local vaults as the zero-account default, with
   one-command replication to a cloud remote (`vault copy`).
-- **The core loop.** `set`, `unset`, `list`, and `run`, with `cache` and `doctor` for housekeeping.
+- **The core loop.** `secret set`, `secret unset`, `secret inspect`, and `run`, with `cache` and `doctor` for housekeeping.
 - **Storage.** One encrypted blob per namespace under last-write-wins, so concurrent writers serialize
   on the header swap without losing each other, plus a one-generation backup per namespace and an
   authenticated, version-pinned header with a manifest binding every stored object (so storage-level

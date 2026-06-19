@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/blobcache"
@@ -21,107 +19,17 @@ import (
 
 var namespaceCmd = &cobra.Command{
 	Use:   "namespace",
-	Short: "Create, list, update, and remove the namespaces in your vault",
+	Short: "Inspect, create, update, recover, and remove the namespaces in your vault",
 	Long: `A namespace is a named, independently encrypted group of secrets in your vault
 (a project's secrets, a machine's credentials). These commands operate on
-namespaces as containers: list what the vault holds, create one deliberately,
+namespaces as containers: inspect what one holds, create one deliberately,
 update its metadata, recover one from backup, or remove one along with its secrets.
+To see every namespace the vault holds, use "notenv vault inspect".
 
-Reading and writing the secrets INSIDE a namespace uses the top-level commands
-(set, unset, list, run, ...), with the namespace chosen by your project's
-notenv.toml or the --namespace flag. A namespace persists once it exists, even
-after its last secret is removed; "namespace delete" is how it goes away.`,
-}
-
-var namespaceListJSON bool
-
-var namespaceListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List the namespaces the vault holds (names only, no passphrase needed)",
-	Long: `List every namespace recorded in the vault header, read with no passphrase.
-
-It shows names only: never values, and never whether a namespace is empty, since
-emptiness lives inside the encrypted blob and reading it needs the master key.
-Run "notenv doctor" (with a key cached) to surface empty namespaces.
-
-This differs from "notenv list", which lists the secret NAMES inside a single
-selected namespace.`,
-	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := cmd.Context()
-		store, err := loadHeaderStore()
-		if err != nil {
-			return err
-		}
-		// Honor the handoff session guard: an agent in a session must not enumerate
-		// another vault's namespaces via a stray --storage, the same rule every other
-		// vault-touching command follows. The listing reads no secret, but the guard
-		// is about which vault a session may address at all.
-		if err := sessionGuard(store.scope); err != nil {
-			return err
-		}
-		names, err := listNamespaceNames(ctx, store)
-		if err != nil {
-			return err
-		}
-		if namespaceListJSON {
-			return printJSON(newNamespaceList(names))
-		}
-		if len(names) == 0 {
-			if term.IsTerminal(int(os.Stdout.Fd())) {
-				ui.Infof("the vault holds no namespaces yet")
-			}
-			return nil
-		}
-		// Piped output is the stable scripting surface: one name per line, nothing
-		// else. A header is added only for a human terminal.
-		if term.IsTerminal(int(os.Stdout.Fd())) {
-			fmt.Println("NAMESPACE")
-		}
-		for _, n := range names {
-			fmt.Println(n)
-		}
-		return nil
-	},
-}
-
-// listNamespaceNames reads the vault's namespace names from the header manifest.
-// It needs no master: the names are cleartext in the manifest. A missing header
-// (virgin storage) is a friendly error, not a crash.
-func listNamespaceNames(ctx context.Context, store *headerTarget) ([]string, error) {
-	raw, err := store.GetHeader(ctx)
-	if errors.Is(err, backend.ErrNotFound) {
-		return nil, errors.New("no vault on this storage yet; run `notenv setup` to create one")
-	}
-	if err != nil {
-		return nil, err
-	}
-	header, err := crypto.ParseHeader(raw)
-	if err != nil {
-		return nil, err
-	}
-	return vaultNamespaces(header), nil
-}
-
-// namespaceListOutput is the frozen shape of `namespace list --json`: a versioned
-// envelope around an array of named-field objects, so the per-namespace shape can
-// grow additively (a count or a created time, once metadata lands) without a
-// breaking change.
-type namespaceListOutput struct {
-	Version    int                  `json:"version"`
-	Namespaces []namespaceListEntry `json:"namespaces"`
-}
-
-type namespaceListEntry struct {
-	Name string `json:"name"`
-}
-
-func newNamespaceList(names []string) namespaceListOutput {
-	out := namespaceListOutput{Version: 1, Namespaces: make([]namespaceListEntry, 0, len(names))}
-	for _, n := range names {
-		out.Namespaces = append(out.Namespaces, namespaceListEntry{Name: n})
-	}
-	return out
+Reading and writing the secrets INSIDE a namespace uses the secret commands
+(notenv secret set/unset/inspect, notenv run, ...), with the namespace chosen by
+your project's notenv.toml or the --namespace flag. A namespace persists once it
+exists, even after its last secret is removed; "namespace delete" is how it goes away.`,
 }
 
 var namespaceCreateDescription string
@@ -437,11 +345,10 @@ func invalidateNamespaceCache(scope, name string) {
 }
 
 func init() {
-	namespaceListCmd.Flags().BoolVar(&namespaceListJSON, "json", false, "machine-readable output: a versioned object listing namespace names")
-	namespaceCreateCmd.Flags().StringVar(&namespaceCreateDescription, "description", "", "a description for the namespace, shown by `notenv inspect`")
+	namespaceCreateCmd.Flags().StringVar(&namespaceCreateDescription, "description", "", "a description for the namespace, shown by 'notenv namespace inspect'")
 	namespaceUpdateCmd.Flags().StringVar(&namespaceUpdateDescription, "description", "", "set the namespace's description (\"\" clears it)")
 	namespaceDeleteCmd.Flags().BoolVar(&namespaceDeleteYes, "yes", false, "skip the confirmation (the passphrase is still required)")
 	namespaceRecoverCmd.Flags().BoolVar(&namespaceRecoverYes, "yes", false, "rebuild without the interactive confirmation (you have accepted the data loss)")
-	namespaceCmd.AddCommand(namespaceListCmd, namespaceCreateCmd, namespaceDeleteCmd, namespaceUpdateCmd, namespaceRecoverCmd)
+	namespaceCmd.AddCommand(namespaceCreateCmd, namespaceDeleteCmd, namespaceUpdateCmd, namespaceRecoverCmd)
 	rootCmd.AddCommand(namespaceCmd)
 }

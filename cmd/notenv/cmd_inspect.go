@@ -13,31 +13,45 @@ import (
 	"github.com/DvGils/notenv/internal/secrets"
 )
 
-var inspectJSON bool
+var secretInspectJSON bool
 
-var inspectCmd = &cobra.Command{
-	Use:   "inspect [KEY]",
-	Short: "Show metadata about a secret or the current namespace (never values)",
-	Long: `Report on what a namespace holds without revealing any secret value.
+var secretInspectCmd = &cobra.Command{
+	Use:   "inspect KEY",
+	Short: "Show one secret's metadata: existence, length, description, last write (never the value)",
+	Long: `Report on one secret without revealing its value: whether it exists, its byte
+length, its description, and when and by whom it last changed. Exit code 1 when
+the secret does not exist, so scripts and agents can branch without parsing output.
 
-  notenv inspect KEY     one secret: whether it exists, its length, description,
-                         and when it last changed (exit 1 if it does not exist).
-  notenv inspect         the current namespace: its secrets with lengths, and a count.
+The namespace is selected the usual way (the project, or --namespace).`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return inspectKey(cmd.Context(), args[0])
+	},
+}
+
+var (
+	namespaceInspectJSON    bool
+	namespaceInspectSalvage bool
+)
+
+var namespaceInspectCmd = &cobra.Command{
+	Use:   "inspect",
+	Short: "Summarize the current namespace: its metadata and the secrets it holds (never values)",
+	Long: `Report what the selected namespace holds without revealing any secret value: the
+namespace's own description and who/when stamps, then each secret's name, byte
+length, description, and last write, with a count.
 
 The namespace is selected the usual way (the project, or --namespace). No value is
-ever printed. To inspect the whole vault (its namespaces, id, revision, storage),
+ever printed. For one secret use "notenv secret inspect KEY"; for the whole vault
 use "notenv vault inspect".`,
-	Args: cobra.MaximumNArgs(1),
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 1 {
-			return inspectKey(cmd.Context(), args[0])
-		}
 		return inspectNamespace(cmd.Context())
 	},
 }
 
-// keyInspect is the frozen `inspect KEY --json` shape; a value never appears.
-// When the key is absent only namespace/name/exists are present.
+// keyInspect is the frozen `secret inspect KEY --json` shape; a value never
+// appears. When the key is absent only namespace/name/exists are present.
 type keyInspect struct {
 	Version     int    `json:"version"`
 	Namespace   string `json:"namespace"`
@@ -76,7 +90,7 @@ func inspectKey(ctx context.Context, name string) error {
 	}
 	info := keyInspectOf(a.namespace, name, a.storageKey(name), state)
 
-	if inspectJSON {
+	if secretInspectJSON {
 		if err := printJSON(info); err != nil {
 			return err
 		}
@@ -102,7 +116,7 @@ func inspectKey(ctx context.Context, name string) error {
 	return nil
 }
 
-// namespaceInspect is the frozen `inspect --json` shape (no key argument). The
+// namespaceInspect is the frozen `namespace inspect --json` shape. The
 // namespace-level metadata fields are omitted when unset (a vault written before
 // they existed, or never stamped).
 type namespaceInspect struct {
@@ -178,13 +192,14 @@ func inspectNamespace(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	a.salvage = namespaceInspectSalvage
 	state, _, err := a.readState(ctx)
 	if err != nil {
 		return err
 	}
 	out := namespaceInspectOf(a.namespace, state)
 
-	if inspectJSON {
+	if namespaceInspectJSON {
 		return printJSON(out)
 	}
 	nm := state.Namespace
@@ -221,5 +236,9 @@ func yesNo(b bool) string {
 }
 
 func init() {
-	inspectCmd.Flags().BoolVar(&inspectJSON, "json", false, "machine-readable output (never a secret value)")
+	secretInspectCmd.Flags().BoolVar(&secretInspectJSON, "json", false, "machine-readable output (never a secret value)")
+	secretCmd.AddCommand(secretInspectCmd)
+	namespaceInspectCmd.Flags().BoolVar(&namespaceInspectJSON, "json", false, "machine-readable output (never a secret value)")
+	namespaceInspectCmd.Flags().BoolVar(&namespaceInspectSalvage, "skip-corrupt", false, "use the previous backup when the current data is missing or corrupt, instead of stopping (the most recent change may be lost; notenv will tell you if so)")
+	namespaceCmd.AddCommand(namespaceInspectCmd)
 }

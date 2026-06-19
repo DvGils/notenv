@@ -248,7 +248,7 @@ func (a *app) buildEnvOnly(base []string, secretMap map[string]string) ([]string
 		for i, m := range missing {
 			quoted[i] = fmt.Sprintf("%q", m)
 		}
-		return nil, fmt.Errorf("--only names %s, which namespace %q does not hold; check the name or run `notenv list`",
+		return nil, fmt.Errorf("--only names %s, which namespace %q does not hold; check the name or run `notenv namespace inspect`",
 			strings.Join(quoted, ", "), a.namespace)
 	}
 	return env, nil
@@ -498,21 +498,21 @@ func (a *app) reportCorrupt(state *secrets.State) {
 	}
 }
 
-// resolved is a namespace's secrets as run/list consume them: the values plus
+// resolved is a namespace's secrets as run/inspect consume them: the values plus
 // each live key's advisory metadata.
 type resolved struct {
 	secrets map[string]string
 	meta    map[string]secrets.Meta
 }
 
-// fetchSecrets resolves the namespace's secrets for run/list. It serves a warm,
+// fetchSecrets resolves the namespace's secrets for run. It serves a warm,
 // fully-local copy from the cached blob when both the blob and the master are
 // cached; otherwise it reads from storage and repopulates the cache. refresh
-// skips the cache to pull another machine's changes. allowEmpty decides what an
-// empty namespace means to the caller: run passes false (an empty namespace is an
-// error, since run is a deliberate inject-and-exec and a silent empty injection
-// is wrong); list passes true (an empty namespace is a normal state to display).
-func (a *app) fetchSecrets(ctx context.Context, refresh, allowEmpty bool) (*resolved, error) {
+// skips the cache to pull another machine's changes. A namespace that holds no
+// secrets is an error: run is a deliberate inject-and-exec, so a silent empty
+// injection is wrong (introspection of an empty namespace is `namespace inspect`,
+// which reads cold and tolerates empty).
+func (a *app) fetchSecrets(ctx context.Context, refresh bool) (*resolved, error) {
 	// Honor the handoff session guard on the warm path too. The cold path enforces
 	// it via master(), but a warm cache hit returns before reaching it, so without
 	// this an in-session run could serve a vault other than the session's straight
@@ -527,7 +527,7 @@ func (a *app) fetchSecrets(ctx context.Context, refresh, allowEmpty bool) (*reso
 	// reads a state missing its dropped keys.
 	if !refresh && !a.salvage {
 		if cached, ok := a.cachedSecrets(); ok {
-			if !allowEmpty && len(cached.secrets) == 0 {
+			if len(cached.secrets) == 0 {
 				return nil, a.errEmptyNamespace()
 			}
 			return cached, nil
@@ -537,15 +537,13 @@ func (a *app) fetchSecrets(ctx context.Context, refresh, allowEmpty bool) (*reso
 	if err != nil {
 		return nil, err
 	}
-	// Refuse a namespace with nothing to inject unless the caller tolerates empty.
-	// Since namespaces are now persistent (an emptied or freshly created one keeps
-	// a blob rather than vanishing), "exists but holds zero secrets" is a real
-	// state: run rejects it (allowEmpty false) so it never execs a child with a
-	// silent empty injection, while list displays it (allowEmpty true). This keys
-	// off the resolved secret count, not HasHistory, precisely because an empty
-	// namespace now has history. The check is applied identically on the warm and
-	// cold paths so the two cannot diverge.
-	if !allowEmpty && len(state.Secrets) == 0 {
+	// Refuse a namespace with nothing to inject. Since namespaces are now persistent
+	// (an emptied or freshly created one keeps a blob rather than vanishing), "exists
+	// but holds zero secrets" is a real state run must reject so it never execs a
+	// child with a silent empty injection. This keys off the resolved secret count,
+	// not HasHistory, precisely because an empty namespace now has history, and is
+	// applied identically on the warm and cold paths so the two cannot diverge.
+	if len(state.Secrets) == 0 {
 		return nil, a.errEmptyNamespace()
 	}
 	if !a.salvage {
@@ -559,7 +557,7 @@ func (a *app) fetchSecrets(ctx context.Context, refresh, allowEmpty bool) (*reso
 // never diverge (an unset that empties the namespace caches an empty state, so
 // the warm path can hit this too).
 func (a *app) errEmptyNamespace() error {
-	return fmt.Errorf("namespace %q holds no secrets; set one with `notenv set KEY` first (or check you selected the right namespace)", a.namespace)
+	return fmt.Errorf("namespace %q holds no secrets; set one with `notenv secret set KEY` first (or check you selected the right namespace)", a.namespace)
 }
 
 // cacheEnvelope is what the warm cache stores: the sealed blob plus a MAC of it

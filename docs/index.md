@@ -10,7 +10,7 @@ you run**. Plaintext never touches your disk.
 
 ```sh
 notenv setup                   # a local vault: no accounts, no dependencies, one passphrase
-notenv import .env             # your existing secrets, encrypted; delete the .env after
+notenv namespace import .env             # your existing secrets, encrypted; delete the .env after
 notenv run -- npm run dev      # secrets injected as env vars, gone when the process exits
 ```
 

@@ -11,7 +11,7 @@ import (
 	"github.com/DvGils/notenv/internal/ui"
 )
 
-var unsetCmd = &cobra.Command{
+var secretUnsetCmd = &cobra.Command{
 	Use:   "unset KEY",
 	Short: "Remove a stored secret value",
 	Args:  cobra.ExactArgs(1),

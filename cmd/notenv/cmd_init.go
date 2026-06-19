@@ -132,7 +132,7 @@ namespace for other commands and is not used here.`,
 			return nil
 		}
 
-		ui.Infof("next: `notenv set KEY` stores the value encrypted and declares the key in %s", contract.FileName)
+		ui.Infof("next: `notenv secret set KEY` stores the value encrypted and declares the key in %s", contract.FileName)
 		return nil
 	},
 }

@@ -54,7 +54,7 @@ func TestFormatEnvValueNoRawControlBytes(t *testing.T) {
 }
 
 // TestSanitizeDisplay: descriptions render with every control byte as a visible
-// escape, so a description cannot break the list/inspect columns or inject a
+// escape, so a description cannot break the inspect columns or inject a
 // terminal escape sequence; ordinary text (including multibyte UTF-8) is untouched.
 func TestSanitizeDisplay(t *testing.T) {
 	cases := map[string]string{
@@ -100,8 +100,8 @@ func TestWriteExportRoundTrips(t *testing.T) {
 	}
 }
 
-// TestWriteExportJSONShape pins the frozen, versioned `export --json` envelopes:
-// a single namespace and the whole-vault `--all` form.
+// TestWriteExportJSONShape pins the frozen, versioned export --json envelopes:
+// `namespace export` (a single namespace) and `vault export` (the whole vault).
 func TestWriteExportJSONShape(t *testing.T) {
 	var buf bytes.Buffer
 	single := &secrets.State{Secrets: map[string]string{"A": "alpha", "B": "beta"}}
@@ -136,7 +136,7 @@ func TestWriteExportJSONShape(t *testing.T) {
 }
 `
 	if buf.String() != wantAll {
-		t.Fatalf("export --all --json shape drifted:\n%s\nwant:\n%s", buf.String(), wantAll)
+		t.Fatalf("vault export --json shape drifted:\n%s\nwant:\n%s", buf.String(), wantAll)
 	}
 }
 

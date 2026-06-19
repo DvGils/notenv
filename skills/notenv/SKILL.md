@@ -23,15 +23,15 @@ values are not yours to see; your job is to run things that need them, by name.
 
 ## Finding your way around
 
-- `notenv list` shows the secret names available here and what each is for.
-  `notenv list --json` is the stable shape.
-- `notenv inspect KEY` reports whether a secret exists, its length, and what it is
-  for, without revealing the value (exit 1 if it does not exist, so you can branch
-  on it). `notenv inspect` summarizes the namespace and `notenv inspect --all` the
-  vault; all take `--json`. Use this to check a secret is set before running.
+- `notenv namespace inspect` shows the namespace's secrets (names, descriptions,
+  last write; never values) and the namespace's own metadata; `--json` is the
+  stable shape. `notenv secret inspect KEY` reports one secret (whether it exists,
+  its length, what it is for; exit 1 if it does not exist, so you can branch on it).
+  `notenv vault inspect` summarizes the whole vault. Use these to check a secret is
+  set before running.
 - For anything else, ask the tool: `notenv --help`, and `notenv <command> --help`
-  for a specific command (`run`, `list`, `set`, `doctor`, ...). Prefer reading
-  `--help` over guessing flags.
+  for a specific command (`run`, `secret set`, `secret inspect`, `doctor`, ...).
+  Prefer reading `--help` over guessing flags.
 - `notenv doctor` (read-only) explains a vault that is misbehaving and names the
   fix; run it before assuming a bug. Exit codes from `run` follow docker's
   convention: the child's code passes through, `125` is notenv's own failure,
@@ -40,7 +40,7 @@ values are not yours to see; your job is to run things that need them, by name.
 
 ## Inside a handoff session
 
-**Check at startup with `notenv inspect handoff`** (exit `0` = you are in a scoped
+**Check at startup with `notenv handoff inspect`** (exit `0` = you are in a scoped
 handoff, `1` = you are not; `--json` adds the namespace). If you are not, the user
 likely started you with `notenv run` instead of `notenv handoff`: tell them, and ask
 how they want to proceed before using any credentials. The command reads no vault and
@@ -48,16 +48,16 @@ prints no secret, so it is always safe to run.
 
 If you were started with `notenv handoff`, you are pointed at an ephemeral vault
 holding only the namespace you were handed. Work normally: `notenv run -- <cmd>`
-and `notenv list` resolve against it and give you the real values. Do not try to
+and `notenv namespace inspect` resolve against it and give you the real values. Do not try to
 reach another vault or storage (a different `--storage`, the user's real vault);
 it is refused on purpose, and is never needed for your task.
 
 ## Changing secrets (only when asked, with a value the user gave you)
 
-- `notenv set KEY` reads the new value from stdin
-  (`printf '%s' "$VALUE" | notenv set KEY --stdin`); add `--description "..."` so
-  others know what it is for. Never invent or display a value.
-- `notenv unset KEY` deletes one. `notenv edit` is for humans, not you.
+- `notenv secret set KEY` reads the new value from stdin
+  (`printf '%s' "$VALUE" | notenv secret set KEY --stdin`); add `--description "..."`
+  so others know what it is for. Never invent or display a value.
+- `notenv secret unset KEY` deletes one. `notenv edit` is for humans, not you.
 
 ## Environment knobs (set by the user or harness, never by you)
 

@@ -34,8 +34,8 @@ Drop this into your project's `AGENTS.md` (or `CLAUDE.md`):
 This project manages secrets with notenv (https://github.com/DvGils/notenv).
 - Run anything needing credentials via `notenv run -- <cmd>`; the variables in
   notenv.toml are injected automatically. Use `notenv --help` for anything else.
-- `notenv list` shows which secret names exist and what they're for, and
-  `notenv inspect KEY` whether one is set (without revealing it). Never print,
+- `notenv namespace inspect` shows which secret names exist and what they're for, and
+  `notenv secret inspect KEY` whether one is set (without revealing it). Never print,
   ask for, or store a secret value; never create .env files.
 ```
 

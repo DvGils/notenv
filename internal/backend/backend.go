@@ -21,7 +21,7 @@ var ErrNotFound = errors.New("object not found")
 // into memory. Storage is treated as dumb and possibly hostile, so a read is
 // bounded before the bytes are trusted: the header in particular is fetched and
 // JSON-parsed before its master-keyed tag can be checked, on paths that never
-// unlock (inspect --all, the namespace first-use check), so an unbounded read
+// unlock (vault inspect, the namespace first-use check), so an unbounded read
 // would let a remote OOM the machine pre-auth. Reads fail closed with this error
 // instead.
 var ErrObjectTooLarge = errors.New("stored object exceeds the maximum size notenv will read")

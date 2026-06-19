@@ -54,7 +54,7 @@ verify a download.
 ```sh
 notenv setup                   # 1. set up this machine once (local vault by default)
 cd my-project && notenv init   # 2. declare the project (writes notenv.toml, which you commit)
-notenv import .env && rm .env  # 3. import existing secrets (or `notenv set KEY` one at a time)
+notenv namespace import .env && rm .env  # 3. import existing secrets (or `notenv secret set KEY` one at a time)
 notenv run -- npm run dev      # 4. run anything with the secrets injected
 ```
 
@@ -103,7 +103,7 @@ in [Concepts](https://dvgils.github.io/notenv/concepts/how-it-works/).
 A `.env` on disk eventually lands in a coding agent's context. `notenv handoff -- <agent>` runs the
 agent against an ephemeral vault holding only one namespace, so it can use your secrets but never
 holds the key to the rest of your vault, and injected values are masked out of its output. Inside the
-session it uses `notenv run -- cmd` and `notenv list`, never touching a raw value. Its MCP servers can
+session it uses `notenv run -- cmd` and `notenv namespace inspect`, never touching a raw value. Its MCP servers can
 draw their own credentials from notenv too, so a token never sits in plaintext in your shell or
 `.mcp.json`. An installable agent skill (`skills/notenv/`) teaches it the commands. See the
 [AI agents guide](https://dvgils.github.io/notenv/guides/ai-agents/) and

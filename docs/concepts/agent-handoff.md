@@ -30,7 +30,7 @@ notenv handoff -- claude
    format, created in a RAM-backed directory where the platform has one.
 3. **Spawn the agent pointed only at `E`** (`NOTENV_STORAGE` and `NOTENV_IDENTITY`
    are set to `E` and its fresh key). The agent's normal `notenv run` and
-   `notenv list` resolve against `E` and get the real values.
+   `notenv namespace inspect` resolve against `E` and get the real values.
 4. **Tear down at exit.** `E` and its key are destroyed on exit and on Ctrl-C.
 
 ## Why your master key is out of reach
@@ -64,8 +64,8 @@ A launched agent can ask notenv, at startup, whether it is actually inside a sco
 handoff session:
 
 ```text
-notenv inspect handoff   # exit 0 = inside a handoff, exit 1 = not
-notenv inspect handoff --json   # {"handoff": true, "namespace": "api"}
+notenv handoff inspect   # exit 0 = inside a handoff, exit 1 = not
+notenv handoff inspect --json   # {"handoff": true, "namespace": "api"}
 ```
 
 The answer is the exit code, so an agent can branch without parsing, and `--json` adds

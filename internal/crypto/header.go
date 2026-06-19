@@ -112,7 +112,7 @@ type Slot struct {
 	// like Primary.
 	Provisional bool `json:"provisional,omitempty"`
 	// TS is the slot's creation time in Unix seconds. Advisory display data
-	// (clocks lie): it feeds `credential list` and the stale-provisional warning and
+	// (clocks lie): it feeds `credential inspect` and the stale-provisional warning and
 	// is never load-bearing. Stamped by the command layer; this package reads
 	// no clock.
 	TS int64 `json:"ts,omitempty"`
@@ -512,7 +512,7 @@ func (m *MasterKey) Decrypt(ciphertext []byte) ([]byte, error) {
 	if err != nil {
 		var noMatch *age.NoIdentityMatchError
 		if errors.As(err, &noMatch) {
-			return nil, fmt.Errorf("%w. Was the storage re-initialized or re-keyed? Re-create the value with `notenv set`", ErrNotRecipient)
+			return nil, fmt.Errorf("%w. Was the storage re-initialized or re-keyed? Re-create the value with `notenv secret set`", ErrNotRecipient)
 		}
 		return nil, err
 	}
