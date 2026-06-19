@@ -19,6 +19,7 @@ var (
 	runMask    bool
 	runNoMask  bool
 	runSalvage bool
+	runOnly    []string
 )
 
 var runCmd = &cobra.Command{
@@ -79,6 +80,10 @@ func runChild(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	a.salvage = runSalvage
+	a.only = runOnly
+	if err := emptyOnlyError(cmd.Flags().Changed("only"), a.onlyKeys()); err != nil {
+		return err
+	}
 	if runNoMask {
 		if err := a.requireHumanPassphrase(cmd.Context(), "--no-mask sends raw secret values to a captured stream"); err != nil {
 			return err
@@ -105,6 +110,17 @@ func runChild(cmd *cobra.Command, args []string) error {
 	}
 	if code != 0 {
 		return &exitCodeError{code: code}
+	}
+	return nil
+}
+
+// emptyOnlyError fails closed when --only was given but, after dropping blanks
+// and duplicates, names nothing (`--only ""`, `--only ,`, or a templated value
+// that came out empty). A scoping flag must never let an empty selection fall
+// through to injecting the whole namespace, the opposite of what --only is for.
+func emptyOnlyError(given bool, keys []string) error {
+	if given && len(keys) == 0 {
+		return errors.New("--only was given but names no variables; name the keys to inject, or drop --only to inject the whole namespace")
 	}
 	return nil
 }
@@ -153,4 +169,5 @@ func init() {
 	runCmd.Flags().BoolVar(&runMask, "mask", false, "mask secret values in output even on a live terminal")
 	runCmd.Flags().BoolVar(&runNoMask, "no-mask", false, "never mask output (asks for your passphrase: raw values may reach a captured stream)")
 	runCmd.Flags().BoolVar(&runSalvage, "skip-corrupt", false, "use the previous backup when the current data is missing or corrupt, instead of stopping (the most recent change may be lost; notenv will tell you if so)")
+	runCmd.Flags().StringSliceVar(&runOnly, "only", nil, "inject only the named variables from the namespace (comma-separated or repeated), instead of all of them")
 }

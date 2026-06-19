@@ -1,31 +1,30 @@
 # AI agents
 
-Coding agents read everything they touch: files, command output, logs. A `.env` on
-disk ends up in the model's context sooner or later, and from there in transcripts.
-notenv keeps secrets off disk and lets an agent *use* them without *seeing* them,
-scoped to just what you hand it.
+A coding agent reads everything it touches: files, command output, logs. A `.env` on
+disk ends up in the model's context sooner or later. notenv hands the agent a scoped
+session instead, so it can use your secrets without ever holding the key to the rest of
+your vault.
 
-## Hand a scoped session to an agent
+## Hand off a session
 
 ```sh
 notenv handoff -- claude        # or codex, or any agent command
 ```
 
 Run that from your project and the agent gets an ephemeral vault holding only this
-project's secrets. It works normally (`notenv run -- pytest` gets the real values); when
-it exits, the ephemeral vault is gone. Use `--namespace NAME` to hand off a different
-namespace.
+project's secrets. It works normally (`notenv run -- pytest` gets the real values), and
+when it exits the ephemeral vault is gone. Hand off a different namespace with
+`--namespace NAME`.
 
-!!! warning "This scopes what the agent can decrypt; it does not sandbox the agent"
+That is the whole setup. Two things worth knowing:
 
-    The agent **cannot reach any secret outside the namespace you hand it**, because your
-    master key is never in its reach, so the worst a rogue or prompt-injected agent can
-    leak is that one namespace. But it still runs as you: it can use, store, or leak the
-    secrets it was given, and reach your files and the network. Hand off only to an agent
-    you trust, and use the OS (a sandbox, egress rules) to contain what it *does*.
-
-While a session is live, notenv keeps your real vault's key uncached, so another terminal
-working that *same* vault will re-prompt for your passphrase until the session ends.
+- **It scopes, it does not sandbox.** The agent cannot decrypt anything outside the
+  namespace you hand it, so the worst a prompt-injected agent can leak is that one
+  namespace. But it runs as you, so it can still use, store, or send onward the secrets
+  you gave it. Contain what it *does* with the OS (a sandbox, egress rules). The full
+  account is in [Agent handoff](../concepts/agent-handoff.md).
+- **Another terminal on the same vault re-prompts** while a session is live, because
+  notenv keeps your real key uncached for the duration.
 
 ## Tell the agent how to use notenv
 
@@ -43,17 +42,8 @@ This project manages secrets with notenv (https://github.com/DvGils/notenv).
 For the full rules in installable form, use the
 [notenv agent skill](https://github.com/DvGils/notenv/tree/main/skills/notenv).
 
-
-## What `notenv handoff` does and does not do
-
-| | | |
-|---|:--:|---|
-| Limits the agent to one namespace | ✓ | It runs against an ephemeral vault holding only the namespace you hand off. The key to the rest of your vault is never given to it. |
-| Withholds your real key | ✓ | The agent gets a fresh, throwaway key. It cannot unlock or write your full vault. |
-| Masks injected values out of the agent's captured output | ✓ | Values notenv injected are masked from stdout/stderr. This is accident-proofing: it catches a value printed by mistake, not a deliberate transform around it. |
-| Allows and agent to *use* secrets when it needs to | ✓ | Unlike injecting variables straight into the agent's process, where the values live in its environment the whole time, handoff keeps the agent one step removed: it gets the ability to run commands with the secrets, not the secrets themselves. |
-| Stop the agent from sending those values elsewhere | ✗ | A process holding a secret can transmit it anywhere it reaches. That is sandbox and network-policy territory, not notenv's. |
-| Contain a deliberately malicious agent | ✗ | Code running as you can read the session cache or work around the mask on purpose. The mask and the session marker reduce accidents, they are not a cage. |
+Your agent's MCP servers can pull their own credentials from notenv too, so a token never
+sits in plaintext in `.mcp.json` or your shell. See [MCP servers](mcp-servers.md).
 
 ## Without a project
 

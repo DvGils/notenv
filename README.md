@@ -21,17 +21,15 @@ A `.env` file is plaintext: everything on your machine can read it, and sharing 
 somewhere it will outlive. notenv removes the file instead of guarding it.
 
 - **You hold the key, not a provider.** Secrets are age-encrypted locally; storage only ever sees
-  ciphertext. There is no account to create, no SaaS to trust, no vendor that can read, lock, or lose
-  your data.
-- **Storage you already have.** A local folder, a home NAS, B2, S3, Drive, SFTP, WebDAV, dozens more.
-  Move a vault from a folder to a cloud remote in one command when syncing starts to matter.
-- **Nothing on disk to leak.** A test runner, a package postinstall script, or a coding agent in your
-  checkout cannot read a secret that exists only inside the process you ran, only while it runs.
-- **Joining and leaving are one command.** Onboard a teammate with a string sent over chat; their first
-  run swaps it for a credential only they know. `notenv key rm` re-encrypts everything, so offboarding
-  actually revokes, not just "please delete your copy."
-- **Nothing to operate.** `notenv setup` is one passphrase and zero accounts. No server to stand up,
-  patch, or pay for.
+  ciphertext. No account to create, no SaaS to trust, no vendor that can read, lock, or lose your data.
+- **Storage you already own.** A local folder, the NAS under your desk, B2, S3, Drive, SFTP, WebDAV,
+  dozens more, and you can move between them when syncing across machines starts to matter.
+- **Nothing on disk to leak.** A test runner, a package's postinstall script, or a coding agent in
+  your checkout cannot read a secret that exists only inside the process you ran, only while it runs.
+- **Easy to share, clean to leave.** Share a vault with a collaborator in seconds, and when they
+  leave, they can no longer read it, instead of you just hoping they deleted their copy. No lock-in either; you can leave with your secrets for a different solution easily.
+- **Nothing to operate.** Setup is one passphrase and zero accounts. No server to stand up, patch, or
+  pay for.
 
 **Not this if** you want a platform: there is no web console or SSO, and access is scoped per vault,
 not per secret (everyone in a vault can read that vault). If a platform team already runs Vault, keep
@@ -102,17 +100,14 @@ in [Concepts](https://dvgils.github.io/notenv/concepts/how-it-works/).
 
 ## For AI agents
 
-A `.env` on disk eventually lands in a coding agent's context. notenv gives the agent a verb that
-separates *using* a credential from *knowing* it:
-
-- `notenv run -- cmd` injects secrets into the child only; the value never appears in what the model
-  reads, and captured output is masked.
-- `notenv list` shows which secrets exist and what they are for, never their values.
-
-For a scoped session, `notenv handoff -- <agent>` runs the agent against an ephemeral vault holding
-only one namespace, so it never holds the key to the rest of your vault. An installable agent skill
-(`skills/notenv/`) teaches it the commands. See the
-[AI agents guide](https://dvgils.github.io/notenv/guides/ai-agents/).
+A `.env` on disk eventually lands in a coding agent's context. `notenv handoff -- <agent>` runs the
+agent against an ephemeral vault holding only one namespace, so it can use your secrets but never
+holds the key to the rest of your vault, and injected values are masked out of its output. Inside the
+session it uses `notenv run -- cmd` and `notenv list`, never touching a raw value. Its MCP servers can
+draw their own credentials from notenv too, so a token never sits in plaintext in your shell or
+`.mcp.json`. An installable agent skill (`skills/notenv/`) teaches it the commands. See the
+[AI agents guide](https://dvgils.github.io/notenv/guides/ai-agents/) and
+[MCP servers](https://dvgils.github.io/notenv/guides/mcp-servers/).
 
 ## How it compares
 

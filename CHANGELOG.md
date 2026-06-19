@@ -4,6 +4,39 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.20.1
+
+### Added
+
+- **`notenv run --only VAR[,VAR...]` injects only the named variables from the
+  namespace, instead of all of them.** It takes a comma-separated list or repeats
+  (`--only A,B` or `--only A --only B`), and reads the names straight from the
+  namespace, so a credential that lives there but is not declared in `notenv.toml`
+  (an MCP server's token, typically) can still be scoped into one command. A named
+  variable the namespace does not hold is a hard error, never a silent empty
+  injection, and an empty selection (`--only ""`) fails closed rather than falling
+  through to the whole namespace. Pairs with `handoff`: inside a session each MCP
+  server can pull just its own credential from the ephemeral vault.
+
+### Fixed
+
+- **The namespace-acceptance prompt no longer talks about exposing secrets to a
+  command that runs nothing.** The one-time confirmation shown the first time you point
+  notenv at an existing namespace (a fresh checkout joining it, or a projectless
+  `--namespace`) asked whether to "expose them to commands run here", which made no
+  sense for a `set`, `unset`, `list`, or `inspect` that runs no command and shows no
+  value. It now asks whether to use the namespace, which reads correctly for every
+  command. The guard itself is unchanged: still one confirmation per (storage,
+  namespace), still fails closed where there is no terminal to prompt on.
+
+### Documentation
+
+- **Agent and MCP guidance reworked around `handoff`.** A new MCP servers guide
+  covers wrapping a stdio MCP server's launch command with `notenv run` so its
+  credential comes from the vault instead of plaintext in `.mcp.json` or your shell.
+  The AI agents guide is leaner and leads with `notenv handoff -- <agent>`, and the
+  README and docs landing page no longer frame running an agent through `notenv run`.
+
 ## 0.20.0
 
 An input-integrity pass: notenv now defines exactly what a secret value may contain

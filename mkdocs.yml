@@ -105,6 +105,7 @@ nav:
       - Export or delete a vault: guides/export-and-delete.md
       - Recover from problems: guides/recovery.md
       - AI agents: guides/ai-agents.md
+      - MCP servers: guides/mcp-servers.md
   - Reference:
       - Commands: reference/commands.md
       - Configuration files: reference/configuration.md

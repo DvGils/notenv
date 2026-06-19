@@ -8,6 +8,7 @@ import (
 
 	"github.com/DvGils/notenv/internal/backend/memstore"
 	"github.com/DvGils/notenv/internal/config"
+	"github.com/DvGils/notenv/internal/contract"
 	"github.com/DvGils/notenv/internal/crypto"
 )
 
@@ -155,5 +156,54 @@ func TestProjectlessEnv(t *testing.T) {
 	slices.Sort(names)
 	if !slices.Equal(names, []string{"API_KEY", "DB_URL"}) {
 		t.Fatalf("injected = %v, want the two valid env names", names)
+	}
+}
+
+// TestOnlyInjectsNamedKeys: --only selects keys straight from the namespace,
+// bypassing the contract's declaration list (so an undeclared credential can be
+// scoped into one command), injects and masks only the named set, deduplicates
+// and orders stably, and errors on a name the namespace does not hold.
+func TestOnlyInjectsNamedKeys(t *testing.T) {
+	secretMap := map[string]string{
+		"GITHUB_TOKEN": "ght",
+		"DB_URL":       "postgres://x",
+		"API_KEY":      "k",
+	}
+
+	// A contract declaring only DB_URL must not constrain --only: naming an
+	// undeclared key still resolves it straight from the namespace.
+	cf := &contract.File{Secrets: map[string]contract.Spec{"DB_URL": {}}}
+	a := &app{contract: cf, only: []string{"GITHUB_TOKEN"}, namespace: "ns"}
+
+	env, err := a.buildEnv([]string{"HOME=/home/u"}, secretMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(env, []string{"HOME=/home/u", "GITHUB_TOKEN=ght"}) {
+		t.Fatalf("env = %v, want only GITHUB_TOKEN injected (undeclared key, contract bypassed)", env)
+	}
+
+	injected := a.injectedSecrets(secretMap)
+	if len(injected) != 1 || injected[0].Name != "GITHUB_TOKEN" || injected[0].Value != "ght" {
+		t.Fatalf("injected = %v, want only GITHUB_TOKEN for masking", injected)
+	}
+
+	// Comma/repeat both land as multiple keys; a repeat is injected once and the
+	// order is stable regardless of how the flag was typed.
+	multi := &app{only: []string{"API_KEY", "DB_URL", "API_KEY"}, namespace: "ns"}
+	env, err = multi.buildEnv(nil, secretMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(env, []string{"API_KEY=k", "DB_URL=postgres://x"}) {
+		t.Fatalf("env = %v, want API_KEY and DB_URL once each, sorted", env)
+	}
+
+	// A named key the namespace does not hold is a hard error, not a silent empty
+	// injection that would launch a process missing its credential.
+	miss := &app{only: []string{"GITHUB_TOKEN", "NOPE"}, namespace: "ns"}
+	if _, err := miss.buildEnv(nil, secretMap); err == nil ||
+		!strings.Contains(err.Error(), "NOPE") || !strings.Contains(err.Error(), "ns") {
+		t.Fatalf("missing --only key: err = %v, want an error naming NOPE and the namespace", err)
 	}
 }

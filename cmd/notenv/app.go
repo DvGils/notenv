@@ -36,9 +36,10 @@ type app struct {
 	blobs        blobcache.Cache
 	cacheScope   string // length-prefixed remote+base (config.CacheScope): one key per storage base
 	cacheTTL     time.Duration
-	readOnly     string // non-empty: why mutating commands are refused (requireWritable)
-	salvage      bool   // read past untrustable recorded objects (--skip-corrupt); set only by read-only surfaces
-	sourceSpec   string // this storage as a NOTENV_STORAGE spec, so handoff can re-open it in the builder subprocess
+	readOnly     string   // non-empty: why mutating commands are refused (requireWritable)
+	salvage      bool     // read past untrustable recorded objects (--skip-corrupt); set only by read-only surfaces
+	only         []string // --only: inject just these namespace keys (nil = all); namespace-direct, the contract's declaration list is not consulted
+	sourceSpec   string   // this storage as a NOTENV_STORAGE spec, so handoff can re-open it in the builder subprocess
 }
 
 // readOnlyReason returns why writes to a storage are refused, or "" when
@@ -178,6 +179,9 @@ func (a *app) storageKey(key string) string {
 // child notenv spawns.
 func (a *app) buildEnv(base []string, secretMap map[string]string) ([]string, error) {
 	base = stripCredentialEnv(base)
+	if len(a.only) > 0 {
+		return a.buildEnvOnly(base, secretMap)
+	}
 	if a.contract != nil {
 		return a.contract.BuildEnv(base, secretMap)
 	}
@@ -190,6 +194,52 @@ func (a *app) buildEnv(base []string, secretMap map[string]string) ([]string, er
 		env = append(env, key+"="+secretMap[key])
 	}
 	return env, nil
+}
+
+// buildEnvOnly injects only the variables named by --only, taken straight from
+// the namespace's stored secrets. The contract's declaration list is not
+// consulted, so a credential that lives in the namespace but is not declared in
+// notenv.toml (an MCP server's token, typically) can still be scoped into one
+// command. A named key the namespace does not hold is an error, never a silent
+// empty injection: a process launched with a missing credential fails in
+// confusing ways, so fail here where the cause is clear.
+func (a *app) buildEnvOnly(base []string, secretMap map[string]string) ([]string, error) {
+	env := base
+	var missing []string
+	for _, key := range a.onlyKeys() {
+		value, ok := secretMap[key]
+		if !ok {
+			missing = append(missing, key)
+			continue
+		}
+		env = append(env, key+"="+value)
+	}
+	if len(missing) > 0 {
+		quoted := make([]string, len(missing))
+		for i, m := range missing {
+			quoted[i] = fmt.Sprintf("%q", m)
+		}
+		return nil, fmt.Errorf("--only names %s, which namespace %q does not hold; check the name or run `notenv list`",
+			strings.Join(quoted, ", "), a.namespace)
+	}
+	return env, nil
+}
+
+// onlyKeys returns the --only names with blanks and duplicates removed and a
+// stable order, so a repeated name is injected once and the env order does not
+// depend on how the flag was typed.
+func (a *app) onlyKeys() []string {
+	seen := make(map[string]bool, len(a.only))
+	keys := make([]string, 0, len(a.only))
+	for _, k := range a.only {
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // stripCredentialEnv removes notenv's own credential (NOTENV_IDENTITY) from an
@@ -212,11 +262,19 @@ func stripCredentialEnv(env []string) []string {
 }
 
 // injectedSecrets pairs each env var notenv injects with its value, the exact
-// strings the output masker scrubs. With a contract, only resolved declared
-// vars count (required-but-missing ones already failed buildEnv); without one,
-// everything buildEnv injects.
+// strings the output masker scrubs. It mirrors buildEnv: with --only, just the
+// named keys; with a contract, only resolved declared vars (required-but-missing
+// ones already failed buildEnv); without one, everything buildEnv injects.
 func (a *app) injectedSecrets(secretMap map[string]string) []runner.Secret {
 	var out []runner.Secret
+	if len(a.only) > 0 {
+		for _, key := range a.onlyKeys() {
+			if value, ok := secretMap[key]; ok {
+				out = append(out, runner.Secret{Name: key, Value: value})
+			}
+		}
+		return out
+	}
 	if a.contract != nil {
 		for envKey := range a.contract.Secrets {
 			if value, ok := secretMap[a.contract.StorageKey(envKey)]; ok {
