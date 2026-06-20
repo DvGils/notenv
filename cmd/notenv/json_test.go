@@ -9,7 +9,6 @@ import (
 
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/runner"
-	"github.com/DvGils/notenv/internal/secrets"
 )
 
 // mustJSON marshals exactly as printJSON does, minus the trailing newline.
@@ -22,35 +21,10 @@ func mustJSON(t *testing.T, v any) string {
 	return string(data)
 }
 
-// TestListJSONShape pins the frozen `list --json` shape: sorted secrets,
-// metadata omitted when absent, modified as RFC 3339 UTC, never values.
-func TestListJSONShape(t *testing.T) {
-	meta := map[string]secrets.Meta{
-		"DB_URL": {Description: "primary DSN", TS: 1765900800}, // 2025-12-16T16:00:00Z
-	}
-	got := mustJSON(t, listOutput{Namespace: "ops", Secrets: listedSecrets([]string{"API_KEY", "DB_URL"}, meta)})
-	want := `{
-  "namespace": "ops",
-  "secrets": [
-    {
-      "name": "API_KEY"
-    },
-    {
-      "name": "DB_URL",
-      "description": "primary DSN",
-      "modified": "2025-12-16T16:00:00Z"
-    }
-  ]
-}`
-	if got != want {
-		t.Fatalf("list --json shape drifted:\n%s\nwant:\n%s", got, want)
-	}
-}
-
-// TestKeyListJSONShape pins the frozen `key list --json` shape: indexed
-// slots, normalized type, public_key only on recipient slots, provisional
-// and added only when set.
-func TestKeyListJSONShape(t *testing.T) {
+// TestCredentialInspectJSONShape pins the frozen `credential inspect --json`
+// shape: indexed slots, normalized type, public_key only on recipient slots,
+// provisional and added only when set.
+func TestCredentialInspectJSONShape(t *testing.T) {
 	h := &crypto.Header{
 		VaultID:  "vault-1",
 		Revision: 7,
@@ -60,8 +34,9 @@ func TestKeyListJSONShape(t *testing.T) {
 			{Name: "ci", Type: crypto.SlotRecipient, PublicKey: "age1ci", TS: 1765900800},
 		},
 	}
-	got := mustJSON(t, keyListOutput(h))
+	got := mustJSON(t, credentialInspectOutput(h))
 	want := `{
+  "version": 1,
   "vault_id": "vault-1",
   "revision": 7,
   "slots": [
@@ -88,7 +63,7 @@ func TestKeyListJSONShape(t *testing.T) {
   ]
 }`
 	if got != want {
-		t.Fatalf("key list --json shape drifted:\n%s\nwant:\n%s", got, want)
+		t.Fatalf("credential inspect --json shape drifted:\n%s\nwant:\n%s", got, want)
 	}
 }
 

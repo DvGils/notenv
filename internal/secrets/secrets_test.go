@@ -292,7 +292,7 @@ func TestExists(t *testing.T) {
 	}
 }
 
-// TestRewriteAbortsOnConcurrentChange: evict's Rewrite must refuse if the
+// TestRewriteAbortsOnConcurrentChange: recover's Rewrite must refuse if the
 // namespace's current blob moved since the state was salvaged (a concurrent
 // repair landed), rather than clobber that write with the older salvaged state.
 func TestRewriteAbortsOnConcurrentChange(t *testing.T) {
@@ -306,7 +306,7 @@ func TestRewriteAbortsOnConcurrentChange(t *testing.T) {
 		}, nil); err != nil {
 		t.Fatal(err)
 	}
-	stale, _ := mustEntryFor(t, mem, "proj") // the entry an evict would salvage under
+	stale, _ := mustEntryFor(t, mem, "proj") // the entry a recover would salvage under
 	salvaged, err := ns.Read(ctx, stale)
 	if err != nil {
 		t.Fatal(err)
@@ -503,10 +503,12 @@ func TestCommitKeepsBlobWhenSwapUncertain(t *testing.T) {
 	}
 }
 
-// TestCommitDropsEmptiedNamespace: removing the last secret drops the namespace's
-// manifest entry instead of recording an empty blob, so Exists reports false and
-// the first-use prompt does not treat an emptied namespace as still populated.
-func TestCommitDropsEmptiedNamespace(t *testing.T) {
+// TestCommitKeepsEmptiedNamespace: removing the last secret keeps the namespace
+// as a persistent empty blob rather than dropping it, so Exists still reports
+// true and a later read resolves to no secrets (not "untouched"). A namespace is
+// a first-class container that outlives its secrets; removing it is the separate
+// Delete. The standard no-orphan invariant still holds across the emptying write.
+func TestCommitKeepsEmptiedNamespace(t *testing.T) {
 	ctx := context.Background()
 	mem, mk := seeded(t)
 	ns := secrets.For(mem, "proj", mk)
@@ -528,21 +530,202 @@ func TestCommitDropsEmptiedNamespace(t *testing.T) {
 		}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := secrets.Exists(ctx, mem, "proj"); err != nil || ok {
-		t.Fatalf("Exists after emptying = %v,%v, want false,nil", ok, err)
+	if ok, err := secrets.Exists(ctx, mem, "proj"); err != nil || !ok {
+		t.Fatalf("Exists after emptying = %v,%v, want true,nil (a namespace persists once it exists)", ok, err)
 	}
-	// No blob lingers under the namespace prefix.
+
+	// The manifest still carries the entry, and a read resolves it as "exists,
+	// no secrets" (history true, zero secrets).
+	entry, ok := mustEntryFor(t, mem, "proj")
+	if !ok {
+		t.Fatal("the manifest must keep an entry for an emptied (persistent) namespace")
+	}
+	state, err := ns.Read(ctx, entry)
+	if err != nil {
+		t.Fatalf("read emptied namespace: %v", err)
+	}
+	if !state.HasHistory() || len(state.Secrets) != 0 {
+		t.Fatalf("emptied namespace read = history %v, %d secrets; want history true, 0 secrets", state.HasHistory(), len(state.Secrets))
+	}
+
+	// No orphan leaks: every blob under the prefix is the current blob or its
+	// one-generation backup.
+	keys, err := mem.List(ctx, "proj/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	referenced := map[string]bool{entry.Blob: true}
+	if entry.Prev != "" {
+		referenced[entry.Prev] = true
+	}
+	for _, k := range keys {
+		if !referenced[k] {
+			t.Fatalf("unreferenced blob %s lingers after emptying (referenced: %v)", k, referenced)
+		}
+	}
+}
+
+// TestCreateEmptyNamespace: Create brings a namespace into existence holding no
+// secrets, and refuses (ErrNamespaceExists, touching nothing) a second create.
+func TestCreateEmptyNamespace(t *testing.T) {
+	ctx := context.Background()
+	mem, mk := seeded(t)
+	ns := secrets.For(mem, "fresh", mk)
+
+	if err := ns.Create(ctx, nil, ""); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if ok, err := secrets.Exists(ctx, mem, "fresh"); err != nil || !ok {
+		t.Fatalf("Exists after create = %v,%v, want true,nil", ok, err)
+	}
+	entry, ok := mustEntryFor(t, mem, "fresh")
+	if !ok {
+		t.Fatal("create must record a manifest entry")
+	}
+	state, err := ns.Read(ctx, entry)
+	if err != nil {
+		t.Fatalf("read created namespace: %v", err)
+	}
+	if !state.HasHistory() || len(state.Secrets) != 0 {
+		t.Fatalf("created namespace = history %v, %d secrets; want history true, 0 secrets", state.HasHistory(), len(state.Secrets))
+	}
+	if err := ns.Create(ctx, nil, ""); !errors.Is(err, secrets.ErrNamespaceExists) {
+		t.Fatalf("second create err = %v, want ErrNamespaceExists", err)
+	}
+}
+
+// TestDeleteRemovesNamespace: Delete drops the manifest entry and reclaims every
+// blob under the namespace prefix.
+func TestDeleteRemovesNamespace(t *testing.T) {
+	ctx := context.Background()
+	mem, mk := seeded(t)
+	ns := secrets.For(mem, "proj", mk)
+	if _, _, err := ns.Commit(ctx, func(cur *secrets.State) (*secrets.State, error) {
+		return cur.Apply([]secrets.Write{{Key: "K", Value: "v"}}), nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := ns.Delete(ctx, nil); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if ok, err := secrets.Exists(ctx, mem, "proj"); err != nil || ok {
+		t.Fatalf("Exists after delete = %v,%v, want false,nil", ok, err)
+	}
+	if _, ok := mustEntryFor(t, mem, "proj"); ok {
+		t.Fatal("delete must drop the manifest entry")
+	}
 	keys, err := mem.List(ctx, "proj/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(keys) != 0 {
-		t.Fatalf("an emptied namespace must leave no blob, got %v", keys)
+		t.Fatalf("delete must reclaim every namespace blob, got %v", keys)
 	}
-	// And the manifest no longer carries the entry.
+}
+
+// TestDeleteToleratesMissingBlob: Delete never reads the blob, so a namespace
+// whose blob has been lost (honest media loss, where a strict read fails closed)
+// is still removed cleanly. This is what lets delete double as a recovery tool.
+func TestDeleteToleratesMissingBlob(t *testing.T) {
+	ctx := context.Background()
+	mem, mk := seeded(t)
+	ns := secrets.For(mem, "proj", mk)
+	if _, _, err := ns.Commit(ctx, func(cur *secrets.State) (*secrets.State, error) {
+		return cur.Apply([]secrets.Write{{Key: "K", Value: "v"}}), nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := mustEntryFor(t, mem, "proj")
+	if err := mem.Delete(ctx, entry.Blob); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ns.Read(ctx, entry); err == nil {
+		t.Fatal("precondition: a strict read should fail closed on the missing blob")
+	}
+	if err := ns.Delete(ctx, nil); err != nil {
+		t.Fatalf("delete over a missing blob: %v", err)
+	}
 	if _, ok := mustEntryFor(t, mem, "proj"); ok {
-		t.Fatal("the manifest must not keep an entry for an emptied namespace")
+		t.Fatal("delete must drop the manifest entry even when the blob is gone")
 	}
+}
+
+// TestNamespaceMetadataStamps: a write under a Stamp records the namespace's
+// created/updated (who+when) and each written secret's `by`; a later write under
+// a different stamp advances `updated` but preserves `created`, and leaves an
+// untouched secret's `by` alone.
+func TestNamespaceMetadataStamps(t *testing.T) {
+	ctx := context.Background()
+	mem, mk := seeded(t)
+
+	ns := secrets.For(mem, "proj", mk).WithStamp(secrets.Stamp{By: "alice@host", TS: 100})
+	if _, _, err := ns.Commit(ctx, func(cur *secrets.State) (*secrets.State, error) {
+		return cur.Apply([]secrets.Write{{Key: "K", Value: "v", By: "alice@host", TS: 100}}), nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	st := readProj(t, mem, mk)
+	if st.Namespace.Created != 100 || st.Namespace.CreatedBy != "alice@host" {
+		t.Fatalf("created = %d/%q, want 100/alice@host", st.Namespace.Created, st.Namespace.CreatedBy)
+	}
+	if st.Namespace.Updated != 100 || st.Namespace.UpdatedBy != "alice@host" {
+		t.Fatalf("updated = %d/%q, want 100/alice@host", st.Namespace.Updated, st.Namespace.UpdatedBy)
+	}
+	if st.Meta["K"].By != "alice@host" {
+		t.Fatalf("secret K by = %q, want alice@host", st.Meta["K"].By)
+	}
+
+	ns2 := secrets.For(mem, "proj", mk).WithStamp(secrets.Stamp{By: "bob@host", TS: 200})
+	if _, _, err := ns2.Commit(ctx, func(cur *secrets.State) (*secrets.State, error) {
+		return cur.Apply([]secrets.Write{{Key: "K2", Value: "v2", By: "bob@host", TS: 200}}), nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	st = readProj(t, mem, mk)
+	if st.Namespace.Created != 100 || st.Namespace.CreatedBy != "alice@host" {
+		t.Fatalf("created changed to %d/%q, want 100/alice@host preserved", st.Namespace.Created, st.Namespace.CreatedBy)
+	}
+	if st.Namespace.Updated != 200 || st.Namespace.UpdatedBy != "bob@host" {
+		t.Fatalf("updated = %d/%q, want 200/bob@host", st.Namespace.Updated, st.Namespace.UpdatedBy)
+	}
+	if st.Meta["K"].By != "alice@host" {
+		t.Fatalf("untouched K by = %q, want alice@host preserved", st.Meta["K"].By)
+	}
+	if st.Meta["K2"].By != "bob@host" {
+		t.Fatalf("K2 by = %q, want bob@host", st.Meta["K2"].By)
+	}
+}
+
+// TestNamespaceDescriptionRoundTrips: Create's description (and so the
+// namespace-level base64 desc path) round-trips byte-for-byte, including a
+// newline that the encoding exists to preserve.
+func TestNamespaceDescriptionRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	mem, mk := seeded(t)
+	ns := secrets.For(mem, "proj", mk).WithStamp(secrets.Stamp{By: "x", TS: 1})
+	const desc = "prod secrets\nline two"
+	if err := ns.Create(ctx, nil, desc); err != nil {
+		t.Fatal(err)
+	}
+	if got := readProj(t, mem, mk).Namespace.Description; got != desc {
+		t.Fatalf("namespace description = %q, want %q", got, desc)
+	}
+}
+
+// readProj reads the "proj" namespace's current state via its manifest entry.
+func readProj(t *testing.T, mem *memstore.Store, mk *crypto.MasterKey) *secrets.State {
+	t.Helper()
+	entry, ok := mustEntryFor(t, mem, "proj")
+	if !ok {
+		t.Fatal("proj has no manifest entry")
+	}
+	st, err := secrets.For(mem, "proj", mk).Read(context.Background(), entry)
+	if err != nil {
+		t.Fatalf("read proj: %v", err)
+	}
+	return st
 }
 
 // TestCommitReclaimsOrphanFromCrashedWrite: a blob a past write left behind (it

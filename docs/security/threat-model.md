@@ -45,13 +45,13 @@ Add three things:
 
 - **Use a read-after-write-consistent remote.** Every major provider (Backblaze
   B2, S3, and the like) is one. Concurrent writers rely on it to serialize safely.
-- **Offboarding ends at the storage credential.** `notenv key rm` re-keys the vault
+- **Offboarding ends at the storage credential.** `notenv credential delete` re-keys the vault
   so a removed teammate cannot read new writes, but someone who kept both the old
   key and *write* access to the storage could still fork its history. Rotate the
   storage credential at your provider to close that; notenv reminds you but cannot
   do it for you.
 - **A machine's first contact with a vault is trust-on-first-use; a collaborator's
-  is not.** `key add <name>` prints an onboarding string (a one-time passphrase plus
+  is not.** `credential add <name>` prints an onboarding string (a one-time passphrase plus
   a vault fingerprint) that verifies the served vault on first contact, so onboarding
   a teammate is not trust-on-first-use. A machine unlocking by `NOTENV_IDENTITY`
   carries no such fingerprint, so its first contact has nothing to verify against.
@@ -154,7 +154,7 @@ Two residuals come with concentration: the **offline brute-force** surface again
 a passphrase slot (why passphrase strength matters), and the brief **onboarding
 window** where a teammate's one-time passphrase is in transit (the slot stays
 provisional and refuses to proceed until they replace it; a suspected interception
-is cured by `key rotate-master`).
+is cured by `credential rotate-master`).
 
 ## Adversaries at a glance
 
@@ -206,7 +206,7 @@ recoverable ones and names the fix; the [recovery guide](../guides/recovery.md)
 walks through them.
 
 - **A machine's first use is trust-on-first-use; a collaborator onboarded with the
-  onboarding string is not.** The string `key add <name>` prints (a one-time
+  onboarding string is not.** The string `credential add <name>` prints (a one-time
   passphrase plus a vault fingerprint) verifies the served header against that
   fingerprint, refusing a substituted vault before the first pin. A machine unlocking
   by identity has no fingerprint: with no prior revision to compare, a substitution
@@ -220,10 +220,10 @@ walks through them.
 - **Concurrent header writes need a read-after-write-consistent remote.** rclone
   has no atomic conditional write, so the swap is read-compare-write-readback;
   every major provider meets the requirement. In a rare same-instant race a losing
-  write can be dropped (recover with `key restore-backup` or by re-running); the
+  write can be dropped (recover with `credential restore-backup` or by re-running); the
   local file-lock backend and single-machine use are unaffected.
 - **An interrupted remote write may be unconfirmed.** notenv keeps the object
-  rather than risk deleting one the header now references; `key restore-backup`
+  rather than risk deleting one the header now references; `credential restore-backup`
   recovers if a later read fails. A write that crashed earlier just leaves an
   unreferenced blob the next write reclaims.
 - **The first-use "expose these secrets?" prompt reads an unauthenticated header,**

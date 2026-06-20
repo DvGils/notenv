@@ -28,6 +28,9 @@ func TestEvalHandoff(t *testing.T) {
 	t.Run("live session is a handoff", func(t *testing.T) {
 		storage, session := liveHandoffVault(t, 4242)
 		got := evalHandoff(session, storage, "api", alive)
+		if got.Version != 1 {
+			t.Errorf("version = %d, want 1", got.Version)
+		}
 		if !got.Handoff {
 			t.Fatalf("a live handoff vault should report handoff: %+v", got)
 		}

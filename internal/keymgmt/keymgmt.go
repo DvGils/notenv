@@ -75,7 +75,7 @@ func SafePut(ctx context.Context, store backend.HeaderStore, h *crypto.Header, b
 	// ErrCommitUncertain stops the caller from deleting the data object it wrote
 	// for this now-live header (that would strand the committed header).
 	if err := confirmHeaderWrite(ctx, store, newRaw, mk, verify); err != nil {
-		return fmt.Errorf("%w: %v; recover with `notenv key restore-backup` if a later read fails", backend.ErrCommitUncertain, err)
+		return fmt.Errorf("%w: %v; recover with `notenv credential restore-backup` if a later read fails", backend.ErrCommitUncertain, err)
 	}
 	return nil
 }

@@ -44,9 +44,10 @@ there:
 - `notenv run --skip-corrupt` (and `list --skip-corrupt`) falls back to the
   verified backup, serving the previous generation and reporting exactly what it
   dropped. The most recent write may be lost; nothing is served unverified.
-- `notenv key evict <namespace>` rebuilds the namespace from what survives (the
-  backup, or empty if that is gone too) and drops the corrupt blobs, so ordinary
-  writes work again.
+- `notenv namespace recover <namespace>` rebuilds the namespace from its
+  one-generation backup and drops the corrupt blobs, so ordinary writes work
+  again. If nothing readable survives (the backup is gone too) it stops without
+  changing anything and points you to `notenv namespace delete`.
 
 A remote that keeps its own object versions is an extra backstop, not something
 notenv relies on: the one-generation backup is kept on every backend.

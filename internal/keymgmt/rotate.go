@@ -159,11 +159,11 @@ func widenNamespace(ctx context.Context, store Vault, ns string, e crypto.Manife
 // deletion still alarms on the next read).
 func narrowNamespace(ctx context.Context, store Vault, ns string, e crypto.ManifestEntry, newMK *crypto.MasterKey) error {
 	if _, err := reencryptRecorded(ctx, store, e.Blob, e.MAC, newMK, newMK, newMK); err != nil && !errors.Is(err, backend.ErrNotFound) {
-		return fmt.Errorf("re-encrypt namespace %q (narrow): %w; the vault is re-keyed but some blobs still carry the old key, re-run `notenv key rotate-master`", ns, err)
+		return fmt.Errorf("re-encrypt namespace %q (narrow): %w; the vault is re-keyed but some blobs still carry the old key, re-run `notenv credential rotate-master`", ns, err)
 	}
 	if e.Prev != "" {
 		if _, err := reencryptRecorded(ctx, store, e.Prev, e.PrevMAC, newMK, newMK, newMK); err != nil && !errors.Is(err, backend.ErrNotFound) {
-			return fmt.Errorf("re-encrypt namespace %q backup (narrow): %w; re-run `notenv key rotate-master`", ns, err)
+			return fmt.Errorf("re-encrypt namespace %q backup (narrow): %w; re-run `notenv credential rotate-master`", ns, err)
 		}
 	}
 	return nil

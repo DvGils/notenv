@@ -24,15 +24,21 @@ var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ValidEnvName reports whether s is a usable environment variable name (and
 // thus a valid secret key): a letter or underscore followed by letters,
-// digits, or underscores. Entry points that store a key (e.g. `notenv set`)
+// digits, or underscores. Entry points that store a key (e.g. `notenv secret set`)
 // should check this before doing any work, so a name that could never be
-// injected never reaches storage.
+// injected never reaches storage. Frozen at v1: this is the secret-key charset,
+// the shape every stored key and every .env round-trip relies on.
 func ValidEnvName(s string) bool { return envName.MatchString(s) }
 
 // NamespaceName constrains namespaces: they become remote object names.
 // Must start with an alphanumeric or underscore, which excludes the
 // path-significant names "." and ".." (and any leading "-"), while still
 // allowing dots/dashes internally.
+//
+// Frozen at v1: a namespace names on-storage objects, so narrowing this set
+// would orphan blobs built from now-illegal names, and widening it risks
+// colliding with backend path semantics. The backend's blob-key recognizer is
+// held to this exact set by TestNamespaceBlobKeyTracksContract.
 var NamespaceName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
 
 // Spec describes one declared secret.
@@ -205,7 +211,7 @@ func (f *File) BuildEnv(base []string, secrets map[string]string) ([]string, err
 		}
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("missing required secrets: %s (use `notenv set KEY`)",
+		return nil, fmt.Errorf("missing required secrets: %s (use `notenv secret set KEY`)",
 			strings.Join(missing, ", "))
 	}
 	return env, nil

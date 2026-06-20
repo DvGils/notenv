@@ -214,7 +214,7 @@ func TestCopyCmdRejectsContradictoryFlags(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			copyFrom, copyTo, namespaceFlag = c.from, c.to, c.namespace
 			t.Cleanup(func() { copyFrom, copyTo, namespaceFlag = "", "", "" })
-			err := copyCmd.RunE(copyCmd, []string{"API_KEY"})
+			err := secretCopyCmd.RunE(secretCopyCmd, []string{"API_KEY"})
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("err = %v, want %q", err, c.want)
 			}

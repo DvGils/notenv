@@ -25,7 +25,7 @@ import (
 // config.CheckNamespacePin; this is the I/O around it.
 //
 // A first use whose namespace is just the directory's name still gets one
-// check: if that namespace already holds secrets in the vault, this checkout
+// check: if that namespace already exists in the vault, this checkout
 // is *joining* it, usually a legitimate new clone of your own project, but
 // also exactly what a malicious repository named after your project looks
 // like, so the join is confirmed once rather than pinned silently. A virgin
@@ -51,7 +51,7 @@ func guardNamespace(ctx context.Context, store backend.HeaderStore, dir string, 
 		}
 		if joining {
 			if err := confirmNamespace(resolved,
-				fmt.Sprintf("this checkout hasn't used notenv before, but namespace %q already holds secrets. Use it here?", resolved),
+				fmt.Sprintf("this checkout hasn't used notenv before, but namespace %q already exists in the vault. Use it here?", resolved),
 				fmt.Sprintf("namespace %q declined; fix the namespace in %s or run notenv in the right project", resolved, contract.FileName)); err != nil {
 				return err
 			}
@@ -65,7 +65,7 @@ func guardNamespace(ctx context.Context, store backend.HeaderStore, dir string, 
 // user-level acceptance record. Unlike a committed contract, the flag is
 // chosen by the invoker, so it cannot be planted by a cloned repository, but
 // it is exactly how a misdirected agent would be steered at another project's
-// secrets, so joining a namespace that already holds secrets is confirmed once
+// secrets, so joining a namespace that already exists is confirmed once
 // per (storage, namespace). Acceptance is recorded user-level: there is no
 // checkout to pin in. A virgin namespace is the new-project flow and pins
 // without ceremony, same as a checkout's.
@@ -83,7 +83,7 @@ func guardFlagNamespace(ctx context.Context, store backend.HeaderStore, scope, n
 	}
 	if joining {
 		if err := confirmNamespace(namespace,
-			fmt.Sprintf("namespace %q already holds secrets. Use this namespace?", namespace),
+			fmt.Sprintf("namespace %q already exists in the vault. Use this namespace?", namespace),
 			fmt.Sprintf("namespace %q declined; check the --namespace value", namespace)); err != nil {
 			return err
 		}

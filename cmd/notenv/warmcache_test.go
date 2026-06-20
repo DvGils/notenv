@@ -132,6 +132,24 @@ func TestFetchSecretsServesSessionVault(t *testing.T) {
 	}
 }
 
+// TestFetchSecretsRefusesEmptyWarm: a namespace whose cached state holds no
+// secrets (e.g. an unset that removed the last secret, which caches the empty
+// state) must make the warm path fail loudly rather than serve an empty
+// injection. The cold-read path applies the same len==0 refusal; this pins the
+// warm half so the two paths cannot diverge into a silent empty injection.
+func TestFetchSecretsRefusesEmptyWarm(t *testing.T) {
+	a, _, mk := warmApp(t)
+	a.cacheState(mk, &secrets.State{Secrets: map[string]string{}, Meta: map[string]secrets.Meta{}})
+
+	// Precondition: the empty state really is a warm hit (decodes, MAC verifies).
+	if _, ok := a.cachedSecrets(); !ok {
+		t.Fatal("setup: an empty state should round-trip as a warm cache hit")
+	}
+	if _, err := a.fetchSecrets(context.Background(), false); err == nil {
+		t.Fatal("fetchSecrets must refuse an empty namespace served warm, not return an empty injection")
+	}
+}
+
 // TestWarmCacheRejectsTamperedEntry: flipping a byte of a legitimately cached
 // ciphertext breaks its MAC, so the warm path rejects it.
 func TestWarmCacheRejectsTamperedEntry(t *testing.T) {

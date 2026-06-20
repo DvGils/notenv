@@ -1,4 +1,4 @@
-// Package dotenv parses the subset of .env syntax `notenv import` accepts.
+// Package dotenv parses the subset of .env syntax `notenv namespace import` accepts.
 // The dialect is documented and deliberately small. An importer for secrets
 // must never guess:
 //

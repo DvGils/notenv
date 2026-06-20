@@ -18,9 +18,8 @@ import (
 )
 
 var (
-	initRemote    string
-	initBase      string
-	initNamespace string
+	initRemote string
+	initBase   string
 )
 
 const contractTemplate = `# notenv contract (committed). Declares which env vars this project needs.
@@ -33,11 +32,28 @@ const contractTemplate = `# notenv contract (committed). Declares which env vars
 `
 
 var initCmd = &cobra.Command{
-	Use:   "init",
+	Use:   "init [NAMESPACE]",
 	Short: "Set up notenv for this project (also runs machine setup the first time)",
-	Args:  cobra.NoArgs,
+	Long: `Set up the current project: write notenv.toml and bind it to a namespace.
+
+The namespace defaults to this directory's name; pass it as an optional argument
+(notenv init NAME) to use a different one, for example when the directory name is
+not a valid namespace name. The global --namespace flag selects an existing
+namespace for other commands and is not used here.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
+
+		// The global --namespace selects an existing namespace for other commands; it
+		// has no meaning for init (which binds this project to a name), so reject it
+		// rather than silently ignore the name the user thought they were setting.
+		if namespaceFlag != "" {
+			return errors.New("init takes the namespace as a positional argument (`notenv init NAME`); the global --namespace selects a namespace for other commands and is not used here")
+		}
+		var projectNamespace string
+		if len(args) == 1 {
+			projectNamespace = args[0]
+		}
 
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -68,7 +84,7 @@ var initCmd = &cobra.Command{
 			}
 		}
 
-		if err := writeContract(cwd); err != nil {
+		if err := writeContract(cwd, projectNamespace); err != nil {
 			return err
 		}
 
@@ -116,7 +132,7 @@ var initCmd = &cobra.Command{
 			return nil
 		}
 
-		ui.Infof("next: `notenv set KEY` stores the value encrypted and declares the key in %s", contract.FileName)
+		ui.Infof("next: `notenv secret set KEY` stores the value encrypted and declares the key in %s", contract.FileName)
 		return nil
 	},
 }
@@ -149,17 +165,15 @@ func guardProjectDir(cwd string) error {
 }
 
 // writeContract creates notenv.toml if missing. The namespace defaults silently
-// to the directory name; --namespace overrides it. No prompt: a first-time user
-// does not need to meet the concept to start, and the chosen namespace is shown
-// in the success line either way.
-func writeContract(cwd string) error {
+// to the directory name; the optional positional argument overrides it. No
+// prompt: a first-time user does not need to meet the concept to start, and the
+// chosen namespace is shown in the success line either way.
+func writeContract(cwd, namespace string) error {
 	path := filepath.Join(cwd, contract.FileName)
 	if _, err := os.Stat(path); err == nil {
 		ui.Notef("%s already exists, leaving it alone", contract.FileName)
 		return nil
 	}
-
-	namespace := initNamespace
 
 	nsLine := fmt.Sprintf("\n# namespace = %q   # default: this directory's name\n", filepath.Base(cwd))
 	if namespace != "" {
@@ -313,5 +327,4 @@ func writeUserConfigFromFlags(ctx context.Context) error {
 func init() {
 	initCmd.Flags().StringVar(&initRemote, "remote", "", "rclone remote name (non-interactive machine setup)")
 	initCmd.Flags().StringVar(&initBase, "base", "", "path within the remote (default \""+config.DefaultBase+"\")")
-	initCmd.Flags().StringVar(&initNamespace, "namespace", "", "namespace for this project (default: directory name)")
 }

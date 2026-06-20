@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"github.com/DvGils/notenv/internal/backend"
 	"github.com/DvGils/notenv/internal/config"
+	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keyring"
 	"github.com/DvGils/notenv/internal/ui"
 )
@@ -355,7 +358,7 @@ notenv removes the LIVE vault. A versioned remote's history and your own backups
 are the provider's to purge, so "deleted" here does not mean the ciphertext is
 gone everywhere. There is deliberately no --force: if you have lost the
 passphrase, delete the storage yourself (a local vault is its directory, a
-remote's objects are yours to delete) and run ` + "`notenv key forget`" + ` to clear the
+remote's objects are yours to delete) and run ` + "`notenv credential forget`" + ` to clear the
 local trust state.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -475,7 +478,88 @@ func vaultLocation(eff config.Effective) string {
 	return eff.Remote + ":" + eff.Base
 }
 
+var vaultInspectJSON bool
+
+// vaultInspect is the frozen `vault inspect --json` shape. It comes from the
+// authenticated header alone, so no value is decrypted and no passphrase is asked.
+type vaultInspect struct {
+	Version    int      `json:"version"`
+	Storage    string   `json:"storage"`
+	VaultID    string   `json:"vault_id"`
+	Revision   int      `json:"revision"`
+	ReadOnly   bool     `json:"read_only"`
+	Namespaces []string `json:"namespaces"`
+}
+
+var vaultInspectCmd = &cobra.Command{
+	Use:   "inspect",
+	Short: "Summarize the whole vault: its namespaces, id, revision, and storage (no passphrase)",
+	Long: `Report what a vault holds as a whole: its namespaces, vault id, revision, and
+storage, plus whether writes are refused here. It reads only the authenticated
+header, so it decrypts nothing and asks for no passphrase.
+
+The storage is selected the usual way (--storage, NOTENV_STORAGE, or the project
+binding). No secret value is ever printed; to inspect one namespace use "notenv
+namespace inspect", and one secret "notenv secret inspect KEY".`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
+		user, err := config.LoadUser()
+		if err != nil {
+			return err
+		}
+		eff, err := config.ResolveStorage(user, storageSelector(""))
+		if err != nil {
+			return err
+		}
+		// Honor the handoff session guard: an agent in a session must not enumerate
+		// another vault's namespaces (or its id/revision) via a stray --storage. The
+		// header read touches no secret, but the guard governs which vault a session
+		// may address at all, the same rule every other header-only read follows.
+		if err := sessionGuard(eff.Scope()); err != nil {
+			return err
+		}
+		store := openStorage(eff)
+		raw, err := store.GetHeader(ctx)
+		if errors.Is(err, backend.ErrNotFound) {
+			return fmt.Errorf("no vault found at storage %q; create one with `notenv init`", eff.StorageName)
+		}
+		if err != nil {
+			return err
+		}
+		header, err := crypto.ParseHeader(raw)
+		if err != nil {
+			return err
+		}
+		namespaces := vaultNamespaces(header)
+		out := vaultInspect{
+			Version:    1,
+			Storage:    eff.StorageName,
+			VaultID:    header.VaultID,
+			Revision:   header.Revision,
+			ReadOnly:   readOnlyReason(eff.StorageName, eff.ReadOnly) != "",
+			Namespaces: namespaces,
+		}
+		if vaultInspectJSON {
+			return printJSON(out)
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+		fmt.Fprintf(w, "storage:\t%s\n", out.Storage)
+		fmt.Fprintf(w, "vault id:\t%s\n", dashIfEmpty(out.VaultID))
+		fmt.Fprintf(w, "revision:\t%d\n", out.Revision)
+		fmt.Fprintf(w, "read-only:\t%s\n", yesNo(out.ReadOnly))
+		if len(namespaces) == 0 {
+			fmt.Fprintf(w, "namespaces:\t-\n")
+		} else {
+			fmt.Fprintf(w, "namespaces (%d):\t%s\n", len(namespaces), strings.Join(namespaces, ", "))
+		}
+		_ = w.Flush()
+		return nil
+	},
+}
+
 func init() {
+	vaultInspectCmd.Flags().BoolVar(&vaultInspectJSON, "json", false, "machine-readable output (never a secret value)")
 	vaultCopyCmd.Flags().StringVar(&vaultCopyToPath, "to-path", "", "destination directory for a local copy")
 	vaultCopyCmd.Flags().StringVar(&vaultCopyToRemote, "to-remote", "", "destination rclone remote")
 	vaultCopyCmd.Flags().StringVar(&vaultCopyToBase, "to-base", "", "path within the destination remote (default \""+config.DefaultBase+"\")")
@@ -483,5 +567,5 @@ func init() {
 	vaultCopyCmd.Flags().BoolVar(&vaultCopyDefault, "make-default", false, "make the copy this machine's default storage")
 	vaultCopyCmd.Flags().BoolVar(&vaultCopyForce, "force", false, "repoint --name even if it already names a different storage")
 	vaultDeleteCmd.Flags().BoolVar(&vaultDeleteYes, "yes", false, "skip the type-the-name confirmation (the passphrase is still required)")
-	vaultCmd.AddCommand(vaultCopyCmd, vaultDeleteCmd)
+	vaultCmd.AddCommand(vaultInspectCmd, vaultCopyCmd, vaultDeleteCmd)
 }

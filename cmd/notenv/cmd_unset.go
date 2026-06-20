@@ -11,7 +11,7 @@ import (
 	"github.com/DvGils/notenv/internal/ui"
 )
 
-var unsetCmd = &cobra.Command{
+var secretUnsetCmd = &cobra.Command{
 	Use:   "unset KEY",
 	Short: "Remove a stored secret value",
 	Args:  cobra.ExactArgs(1),
@@ -51,6 +51,14 @@ var unsetCmd = &cobra.Command{
 		}
 		a.cacheState(view.mk, updated)
 		ui.Successf("%s removed from namespace %q", key, a.namespace)
+
+		// Namespaces are persistent: removing the last secret leaves the namespace
+		// in place (empty), rather than making it vanish. Surface that, and how to
+		// remove it, as a notification (never a prompt: this stays non-interactive
+		// safe, and keeping the empty namespace is the right default).
+		if len(updated.Secrets) == 0 {
+			ui.Notef("namespace %q now holds no secrets; it still exists. Remove it with `notenv namespace delete %s`", a.namespace, a.namespace)
+		}
 
 		// The committed contract is a separate decision from the stored value, so
 		// removal never edits it; warn if `run` will now report the key missing.

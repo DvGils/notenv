@@ -52,24 +52,53 @@ import (
 // effectively lost. Encoding makes the blob hold opaque bytes, so any stored
 // byte is recoverable verbatim; ValidateValue independently gates what may be
 // stored, leaving the encoding as the integrity backstop rather than the gate.
-const blobVersion = 2
+//
+// Version 3 adds metadata: a namespace-level meta object (description, creation
+// and last-modification stamps, and reserved sensitivity/egress defaults) and
+// per-secret by/sensitivity/egress fields. The bump is deliberate rather than an
+// additive struct extension: an older reader must refuse a v3 blob (fail closed)
+// rather than silently drop the new metadata on a rewrite, so the version is
+// exact-match. There is no in-place upgrade from v2 (pre-1.0, no stable
+// release): export from the old binary and import into a fresh v3 vault.
+const blobVersion = 3
 
-// blob is a namespace's whole state: every live key with its advisory metadata.
-// NS records the namespace it belongs to, checked on read so a blob copied from
-// another namespace cannot pass as this one (the MAC binds NS as it binds the
-// values).
+// blob is a namespace's whole state: its namespace-level metadata plus every
+// live key with its advisory metadata. NS records the namespace it belongs to,
+// checked on read so a blob copied from another namespace cannot pass as this one
+// (the MAC binds NS, Meta, and the entries alike).
 type blob struct {
 	Version int               `json:"v"`
 	NS      string            `json:"ns"`
+	Meta    nsMeta            `json:"meta"`
 	Entries map[string]record `json:"entries"`
 }
 
+// nsMeta is a namespace's stored metadata (the on-storage form: Description is
+// base64 via encodeField, like a record's). All of it is advisory and forgeable
+// (single shared master), so nothing orders or trusts by it. Sensitivity and
+// Egress are reserved here so the frozen format carries them; they are not
+// populated or consumed yet.
+type nsMeta struct {
+	Description string   `json:"desc,omitempty"`
+	Created     int64    `json:"created,omitempty"`
+	CreatedBy   string   `json:"created_by,omitempty"`
+	Updated     int64    `json:"updated,omitempty"`
+	UpdatedBy   string   `json:"updated_by,omitempty"`
+	Sensitivity string   `json:"sensitivity,omitempty"`
+	Egress      []string `json:"egress,omitempty"`
+}
+
 // record is one key's stored value and its advisory metadata. Advisory means
-// exactly that: nothing orders or trusts by it.
+// exactly that: nothing orders or trusts by it. Sensitivity and Egress are
+// reserved so the frozen format carries them; they are not populated or consumed
+// yet.
 type record struct {
-	Value       string `json:"value"`
-	Description string `json:"desc,omitempty"`
-	TS          int64  `json:"ts,omitempty"`
+	Value       string   `json:"value"`
+	Description string   `json:"desc,omitempty"`
+	TS          int64    `json:"ts,omitempty"`
+	By          string   `json:"by,omitempty"`
+	Sensitivity string   `json:"sensitivity,omitempty"`
+	Egress      []string `json:"egress,omitempty"`
 }
 
 // Namespace reads and writes one namespace's secrets through a backend, sealing
@@ -78,6 +107,18 @@ type Namespace struct {
 	store  backend.Backend
 	name   string
 	master *crypto.MasterKey
+	stamp  Stamp
+}
+
+// Stamp is the actor and wall-clock time the command layer attributes a write
+// to: who (a label, e.g. user@host) and when (Unix seconds). The secrets package
+// never reads a clock or the environment, so the caller supplies both, exactly as
+// it already supplies per-Write TS. A zero Stamp (the default when WithStamp is
+// not called) leaves the namespace's who/when metadata unset, which a read
+// resolves as "unknown"; this is what tests and pure reads get.
+type Stamp struct {
+	By string
+	TS int64
 }
 
 // For binds a namespace to a backend and master key.
@@ -85,21 +126,51 @@ func For(store backend.Backend, name string, master *crypto.MasterKey) *Namespac
 	return &Namespace{store: store, name: name, master: master}
 }
 
-// Meta is a live key's advisory metadata: what the secret is for and when its
-// write happened (wall-clock Unix seconds; 0 means the write predates
-// timestamps). Advisory means exactly that: nothing orders or trusts by it.
+// WithStamp sets the actor and time stamped onto namespace-level metadata
+// (created/updated) at the WriteBlob chokepoint, so every write records who last
+// changed the namespace and when, with no per-command drift. It returns the
+// receiver for chaining: secrets.For(...).WithStamp(s).Commit(...). Per-secret
+// `by` rides on each Write, not this.
+func (n *Namespace) WithStamp(s Stamp) *Namespace {
+	n.stamp = s
+	return n
+}
+
+// Meta is a live key's advisory metadata: what the secret is for, when its write
+// happened (wall-clock Unix seconds; 0 means the write predates timestamps), and
+// who last wrote it (By, a label). Sensitivity and Egress are decoded here for
+// forward compatibility but are not populated or consumed yet. Advisory means
+// exactly that: nothing orders or trusts by it.
 type Meta struct {
 	Description string
 	TS          int64
+	By          string
+	Sensitivity string
+	Egress      []string
 }
 
-// State is a namespace's resolved secrets. Corrupt is populated only by a
-// salvage read that fell back past an untrustable blob; a strict read fails
-// instead of listing.
+// NamespaceMeta is a namespace's advisory metadata (the in-memory, decoded form):
+// a description, creation and last-modification stamps, and reserved
+// sensitivity/egress defaults. Created/Updated are wall-clock Unix seconds (0 =
+// unknown). Like Meta, it is advisory and forgeable.
+type NamespaceMeta struct {
+	Description string
+	Created     int64
+	CreatedBy   string
+	Updated     int64
+	UpdatedBy   string
+	Sensitivity string
+	Egress      []string
+}
+
+// State is a namespace's resolved secrets and namespace-level metadata. Corrupt
+// is populated only by a salvage read that fell back past an untrustable blob; a
+// strict read fails instead of listing.
 type State struct {
-	Secrets map[string]string
-	Meta    map[string]Meta
-	Corrupt []CorruptBlob
+	Secrets   map[string]string
+	Meta      map[string]Meta
+	Namespace NamespaceMeta
+	Corrupt   []CorruptBlob
 
 	has bool // a blob existed (distinct from a namespace emptied by deletes)
 }
@@ -125,6 +196,7 @@ type Write struct {
 	Description     string
 	KeepDescription bool
 	TS              int64
+	By              string
 	Deleted         bool
 }
 
@@ -151,11 +223,13 @@ func corruptBlobf(format string, a ...any) error {
 // it is untouched (distinct from one emptied by deletes, which still has a blob).
 func (s *State) HasHistory() bool { return s.has }
 
-// Exists reports whether a namespace holds committed secrets, by consulting the
+// Exists reports whether a namespace exists in the vault, by consulting the
 // authenticated header manifest rather than the raw object listing: a crashed
 // write can leave an orphan blob under the namespace prefix that no manifest
-// entry references, and that must not read as "this namespace has secrets". It
-// needs no master key (parsing the header is enough; the manifest's
+// entry references, and that must not read as the namespace existing. Because
+// namespaces are persistent, this is true for a namespace that holds no secrets
+// too (one created empty, or emptied by deletes), not only one that holds some.
+// It needs no master key (parsing the header is enough; the manifest's
 // trustworthiness is confirmed at unlock). Virgin storage (no header) reports
 // false.
 func Exists(ctx context.Context, store backend.HeaderStore, name string) (bool, error) {
@@ -261,6 +335,19 @@ func (n *Namespace) decode(key string, plain []byte) (*State, error) {
 		return nil, corruptBlobf("namespace %q blob %s declares namespace %q: it was copied from another namespace and is not trusted", n.name, key, b.NS)
 	}
 	state := emptyState(true)
+	nsDesc, err := decodeField(b.Meta.Description)
+	if err != nil {
+		return nil, corruptBlobf("namespace %q blob %s: namespace description: %v", n.name, key, err)
+	}
+	state.Namespace = NamespaceMeta{
+		Description: nsDesc,
+		Created:     b.Meta.Created,
+		CreatedBy:   b.Meta.CreatedBy,
+		Updated:     b.Meta.Updated,
+		UpdatedBy:   b.Meta.UpdatedBy,
+		Sensitivity: b.Meta.Sensitivity,
+		Egress:      b.Meta.Egress,
+	}
 	for k, r := range b.Entries {
 		value, err := decodeField(r.Value)
 		if err != nil {
@@ -271,7 +358,7 @@ func (n *Namespace) decode(key string, plain []byte) (*State, error) {
 			return nil, corruptBlobf("namespace %q blob %s: secret %q description: %v", n.name, key, k, err)
 		}
 		state.Secrets[k] = value
-		state.Meta[k] = Meta{Description: desc, TS: r.TS}
+		state.Meta[k] = Meta{Description: desc, TS: r.TS, By: r.By, Sensitivity: r.Sensitivity, Egress: r.Egress}
 	}
 	return state, nil
 }
@@ -280,7 +367,7 @@ func (n *Namespace) decode(key string, plain []byte) (*State, error) {
 // overwrites, a deletion removes. The receiver is not mutated, so a caller can
 // re-apply the same writes against a freshly re-read state on a swap-race retry.
 func (s *State) Apply(writes []Write) *State {
-	next := &State{Secrets: maps.Clone(s.Secrets), Meta: maps.Clone(s.Meta), has: true}
+	next := &State{Secrets: maps.Clone(s.Secrets), Meta: maps.Clone(s.Meta), Namespace: s.Namespace, has: true}
 	if next.Secrets == nil {
 		next.Secrets = map[string]string{}
 	}
@@ -293,12 +380,16 @@ func (s *State) Apply(writes []Write) *State {
 			delete(next.Meta, w.Key)
 			continue
 		}
+		prev := next.Meta[w.Key] // zero for a new key
 		desc := w.Description
 		if w.KeepDescription {
-			desc = next.Meta[w.Key].Description // the current description (zero for a new key)
+			desc = prev.Description // carry the current description forward
 		}
 		next.Secrets[w.Key] = w.Value
-		next.Meta[w.Key] = Meta{Description: desc, TS: w.TS}
+		// Sensitivity/Egress are carried from the existing record (they are not set
+		// by any write today; this keeps a value update from clearing them once they
+		// are). By/TS record this write's actor and time.
+		next.Meta[w.Key] = Meta{Description: desc, TS: w.TS, By: w.By, Sensitivity: prev.Sensitivity, Egress: prev.Egress}
 	}
 	return next
 }
@@ -317,7 +408,7 @@ func (s *State) Apply(writes []Write) *State {
 // callers (set, import, edit) reuse it for friendly errors, WriteBlob enforces it.
 func ValidateValue(value string) error {
 	if !utf8.ValidString(value) {
-		return errors.New("value is not valid UTF-8 text; an environment variable holds text. If this is binary (a key, a cert bundle), base64-encode it first, e.g. `base64 -w0 file | notenv set KEY --stdin`")
+		return errors.New("value is not valid UTF-8 text; an environment variable holds text. If this is binary (a key, a cert bundle), base64-encode it first, e.g. `base64 -w0 file | notenv secret set KEY --stdin`")
 	}
 	for _, r := range value {
 		if r == '\n' || r == '\t' || r == '\r' {
@@ -346,6 +437,32 @@ func decodeField(s string) (string, error) {
 	return string(b), nil
 }
 
+// stampMeta turns a namespace's in-memory metadata into its on-storage form,
+// applying this write's stamp at the single write chokepoint. Updated/UpdatedBy
+// are set on every write, so the namespace's last-modification time has one
+// drift-free source. Created/CreatedBy are set only when not already recorded:
+// the first write to the namespace (a `namespace create` or a lazy first `set`)
+// stamps the birth time, and later writes preserve it. Description is base64 like
+// a record's; the reserved sensitivity/egress defaults ride through unchanged. A
+// zero stamp (no WithStamp, e.g. a test) leaves the times at zero (= unknown).
+func (n *Namespace) stampMeta(m NamespaceMeta) nsMeta {
+	if m.Created == 0 {
+		m.Created = n.stamp.TS
+		m.CreatedBy = n.stamp.By
+	}
+	m.Updated = n.stamp.TS
+	m.UpdatedBy = n.stamp.By
+	return nsMeta{
+		Description: encodeField(m.Description),
+		Created:     m.Created,
+		CreatedBy:   m.CreatedBy,
+		Updated:     m.Updated,
+		UpdatedBy:   m.UpdatedBy,
+		Sensitivity: m.Sensitivity,
+		Egress:      m.Egress,
+	}
+}
+
 // WriteBlob seals state into a fresh, uniquely named blob and returns its object
 // key and the manifest entry that records it, carrying prev forward as the
 // one-generation backup. It is the low-level primitive Commit and Rewrite build
@@ -353,7 +470,7 @@ func decodeField(s string) (string, error) {
 // read back after writing (putVerified) so a corrupt write never reaches the
 // manifest.
 func (n *Namespace) WriteBlob(ctx context.Context, state *State, prev crypto.ManifestEntry) (string, crypto.ManifestEntry, error) {
-	b := blob{Version: blobVersion, NS: n.name, Entries: make(map[string]record, len(state.Secrets))}
+	b := blob{Version: blobVersion, NS: n.name, Meta: n.stampMeta(state.Namespace), Entries: make(map[string]record, len(state.Secrets))}
 	for k, v := range state.Secrets {
 		// The authoritative gate: no value the command layer missed reaches
 		// storage. Commands validate earlier for a friendlier error; this is the
@@ -362,7 +479,7 @@ func (n *Namespace) WriteBlob(ctx context.Context, state *State, prev crypto.Man
 			return "", crypto.ManifestEntry{}, fmt.Errorf("secret %q: %w", k, err)
 		}
 		m := state.Meta[k]
-		b.Entries[k] = record{Value: encodeField(v), Description: encodeField(m.Description), TS: m.TS}
+		b.Entries[k] = record{Value: encodeField(v), Description: encodeField(m.Description), TS: m.TS, By: m.By, Sensitivity: m.Sensitivity, Egress: m.Egress}
 	}
 	plain := mustMarshal(b)
 	mac, err := n.master.BlobMAC(plain)
@@ -402,6 +519,14 @@ type commitPlan struct {
 // once the swap commits deletes the generation that fell off and calls pin with
 // the committed header. A blob a superseded or failed attempt wrote is cleaned
 // up; errors (including keymgmt.ErrEpochChanged) propagate after that cleanup.
+//
+// A commit whose result holds zero secrets is NOT special-cased: it records a
+// normal blob with an empty entry set and keeps the manifest entry, so a
+// namespace persists once it exists (created by Create or by a first set) even
+// after its last secret is removed. Removal of the namespace itself is the
+// deliberate, separate Delete; emptying it is just another write. This is what
+// makes a namespace a first-class container rather than a side effect of holding
+// secrets.
 func (n *Namespace) Commit(ctx context.Context, apply func(*State) (*State, error), pin func(*crypto.Header)) (*State, *crypto.Header, error) {
 	var result *State
 	h, err := n.commit(ctx, func(cur crypto.ManifestEntry) (commitPlan, error) {
@@ -413,12 +538,6 @@ func (n *Namespace) Commit(ctx context.Context, apply func(*State) (*State, erro
 			return commitPlan{}, err
 		}
 		result = state
-		if len(state.Secrets) == 0 {
-			// The last secret was removed: drop the namespace entry rather than
-			// record an empty blob, so Exists and the first-use prompt do not treat
-			// an emptied namespace as one that still holds secrets. Mirrors Rewrite.
-			return commitPlan{dead: []string{cur.Blob, cur.Prev}}, nil
-		}
 		key, entry, err := n.WriteBlob(ctx, state, cur)
 		if err != nil {
 			return commitPlan{}, err
@@ -431,9 +550,55 @@ func (n *Namespace) Commit(ctx context.Context, apply func(*State) (*State, erro
 	return result, h, nil
 }
 
+// ErrNamespaceExists reports that Create was asked to create a namespace that
+// already has a manifest entry. The check is made inside the header swap, so it
+// reflects the namespace's state at the instant of the write, not a stale read.
+var ErrNamespaceExists = errors.New("namespace already exists")
+
+// Create records a namespace that holds no secrets: a fresh empty blob (carrying
+// the given description and this write's creation stamp) plus its manifest entry,
+// so a namespace can be brought into existence deliberately rather than only as a
+// side effect of the first set (which still works). If the namespace already has
+// an entry it returns ErrNamespaceExists and touches nothing: the guard is
+// evaluated against the freshly re-read header inside the swap, so a concurrent
+// first write cannot be clobbered by a racing Create. Same swap, cleanup, and pin
+// contract as Commit.
+func (n *Namespace) Create(ctx context.Context, pin func(*crypto.Header), description string) error {
+	_, err := n.commit(ctx, func(cur crypto.ManifestEntry) (commitPlan, error) {
+		if cur.Blob != "" {
+			return commitPlan{}, ErrNamespaceExists
+		}
+		state := emptyState(true)
+		state.Namespace.Description = description
+		key, entry, err := n.WriteBlob(ctx, state, cur)
+		if err != nil {
+			return commitPlan{}, err
+		}
+		return commitPlan{entry: &entry, wrote: key}, nil
+	}, pin)
+	return err
+}
+
+// Delete removes a namespace entirely: it drops the manifest entry and reclaims
+// every blob under the namespace prefix. It is the deliberate counterpart to the
+// persistent-namespace model, where emptying a namespace (Commit to zero
+// secrets) keeps it; this is how a namespace actually goes away. It never reads
+// or decrypts the blob, so it removes a namespace whose current blob is corrupt
+// or missing exactly as readily as a healthy one, doubling as a recovery tool.
+// Deleting a namespace that has no entry is a harmless no-op (callers that want
+// a "not found" error check the manifest first). Same swap, cleanup, and pin
+// contract as Commit: the entry is dropped under the header compare-and-swap and
+// the namespace's blobs are reclaimed once it commits.
+func (n *Namespace) Delete(ctx context.Context, pin func(*crypto.Header)) error {
+	_, err := n.commit(ctx, func(cur crypto.ManifestEntry) (commitPlan, error) {
+		return commitPlan{dead: []string{cur.Blob, cur.Prev}}, nil
+	}, pin)
+	return err
+}
+
 // ErrNamespaceChanged reports that a namespace's current blob moved between the
 // read an operation planned against and the swap it tried to commit: another
-// writer landed in between. Rewrite (the evict recovery path) returns it rather
+// writer landed in between. Rewrite (the recovery path) returns it rather
 // than clobber that concurrent write.
 var ErrNamespaceChanged = errors.New("the namespace changed since it was read")
 

@@ -2,12 +2,12 @@
 
 ## Take your secrets out
 
-`notenv export` prints a namespace as a `.env` file to standard output, the
+`notenv namespace export` prints a namespace as a `.env` file to standard output, the
 inverse of `import`:
 
 ```sh
-notenv export > backup.env       # one namespace
-notenv export --all > all.env    # every namespace in the vault
+notenv namespace export > backup.env       # one namespace
+notenv vault export > all.env    # every namespace in the vault
 ```
 
 It asks for the vault's primary passphrase even when your session is cached,
@@ -15,13 +15,13 @@ because this is plaintext leaving the vault on purpose, and it refuses without a
 terminal (a machine cannot export). notenv never writes the file itself; you
 redirect it.
 
-The output is for `notenv import`, not for `source`: values are written literally,
+The output is for `notenv namespace import`, not for `source`: values are written literally,
 so one containing `$(...)` or backticks is data to notenv but a shell would
-execute it. Round-trip a namespace with `notenv export | notenv import`.
+execute it. Round-trip a namespace with `notenv namespace export | notenv namespace import`.
 
 !!! tip "Moving to another tool"
 
-    `notenv export --json` emits a structured object instead of `.env`, if the
+    `notenv namespace export --json` emits a structured object instead of `.env`, if the
     tool you are moving to wants JSON.
 
 ## Move a vault to different storage
@@ -48,7 +48,7 @@ you can prove you own.
     A versioned remote's history and any backups you made are the provider's to
     purge. If you have lost the passphrase, delete the storage yourself (a local
     vault is its directory; a remote's objects are yours to remove) and run
-    `notenv key forget` to clear this machine's trust state.
+    `notenv credential forget` to clear this machine's trust state.
 
 ---
 

@@ -93,6 +93,9 @@ func loadApp(ctx context.Context) (*app, error) {
 	}
 	cf, dir, err := contract.Find(cwd)
 	if err != nil {
+		if errors.Is(err, contract.ErrNotFound) {
+			warnLoneLocalBinding(cwd)
+		}
 		return nil, err
 	}
 	user, err := config.LoadUser()
@@ -130,6 +133,32 @@ func loadApp(ctx context.Context) (*app, error) {
 		readOnly:     readOnlyReason(eff.StorageName, eff.ReadOnly),
 		sourceSpec:   storageSpec(eff),
 	}, nil
+}
+
+// warnLoneLocalBinding warns when a notenv.local.toml sits in the directory tree
+// with no notenv.toml above it. The local binding is the namespace *pin* (and a
+// storage hint), never a namespace *selector*: without a committed contract it
+// is inert and was silently ignored, which is surprising to someone who expects
+// it to bind a namespace. It runs only on the contract-not-found path, which
+// already established there is no notenv.toml from cwd to root, so any binding
+// found in that range is necessarily orphaned. Best-effort and warning-only: the
+// command still fails with the original not-found error.
+func warnLoneLocalBinding(start string) {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, config.LocalBindingFile)); err == nil {
+			ui.Warnf("found %s in %s but no %s above it: a local binding without a committed contract is ignored (it pins a namespace, it does not select one). Run `notenv init` to create a contract, or address a namespace directly with `--namespace`", config.LocalBindingFile, dir, contract.FileName)
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return
+		}
+		dir = parent
+	}
 }
 
 // projectlessApp is loadApp for an explicitly named namespace (--namespace):
@@ -219,7 +248,7 @@ func (a *app) buildEnvOnly(base []string, secretMap map[string]string) ([]string
 		for i, m := range missing {
 			quoted[i] = fmt.Sprintf("%q", m)
 		}
-		return nil, fmt.Errorf("--only names %s, which namespace %q does not hold; check the name or run `notenv list`",
+		return nil, fmt.Errorf("--only names %s, which namespace %q does not hold; check the name or run `notenv namespace inspect`",
 			strings.Join(quoted, ", "), a.namespace)
 	}
 	return env, nil
@@ -309,7 +338,7 @@ func (a *app) view(ctx context.Context, mk *crypto.MasterKey) (*vaultView, error
 	}
 	raw, err := v.GetHeader(ctx)
 	if errors.Is(err, backend.ErrNotFound) {
-		return nil, errors.New("the vault's key header is gone from storage; refusing to proceed (recover it, e.g. `notenv key restore-backup`)")
+		return nil, errors.New("the vault's key header is gone from storage; refusing to proceed (recover it, e.g. `notenv credential restore-backup`)")
 	}
 	if err != nil {
 		return nil, err
@@ -330,6 +359,14 @@ func (a *app) view(ctx context.Context, mk *crypto.MasterKey) (*vaultView, error
 // namespaceFor binds this command's namespace to a verified vault view.
 func (a *app) namespaceFor(view *vaultView) *secrets.Namespace {
 	return secrets.For(a.store, a.namespace, view.mk)
+}
+
+// writeStamp is the actor and time the command layer attributes a write to:
+// USER@hostname (advisory, the local user, not a verified vault slot) and now.
+// It feeds both the namespace-level created/updated stamp (via WithStamp) and
+// each secret's `by` (via Write.By), so one resolved actor covers a whole write.
+func writeStamp() secrets.Stamp {
+	return secrets.Stamp{By: userAtHost(), TS: time.Now().Unix()}
 }
 
 // vault returns the backend's header-bearing side, which every store this app
@@ -354,6 +391,10 @@ func (a *app) vault() (keymgmt.Vault, error) {
 // the orphaned blob is removed, the now-stale local caches are dropped, and the
 // user re-runs, which unlocks the new master and writes cleanly.
 func (a *app) writeNamespace(ctx context.Context, view *vaultView, writes []secrets.Write) (*secrets.State, error) {
+	by := userAtHost()
+	for i := range writes {
+		writes[i].By = by // who last wrote each secret; the namespace stamp records the same actor
+	}
 	return a.commitNamespace(ctx, view, func(cur *secrets.State) (*secrets.State, error) {
 		return cur.Apply(writes), nil
 	})
@@ -365,14 +406,14 @@ func (a *app) writeNamespace(ctx context.Context, view *vaultView, writes []secr
 // attempt, so a check-then-write (e.g. copy's refuse-if-exists) decides against
 // the state that will actually be committed, with no separate-read TOCTOU gap.
 func (a *app) commitNamespace(ctx context.Context, view *vaultView, apply func(*secrets.State) (*secrets.State, error)) (*secrets.State, error) {
-	state, _, err := a.namespaceFor(view).Commit(ctx, apply,
+	state, _, err := a.namespaceFor(view).WithStamp(writeStamp()).Commit(ctx, apply,
 		func(h *crypto.Header) { pinCurrent(a.cacheScope, h, view.mk) })
 	if err != nil {
 		if errors.Is(err, backend.ErrCommitUncertain) {
 			// The write may have landed; do not claim a rollback, and drop the warm
 			// blob cache since the namespace state is now uncertain.
 			a.blobs.Drop(a.cacheScope, a.namespace)
-			return nil, fmt.Errorf("%w; it may have landed. Run `notenv doctor` to check, or `notenv key restore-backup` to revert, before relying on it", err)
+			return nil, fmt.Errorf("%w; it may have landed. Run `notenv doctor` to check, or `notenv credential restore-backup` to revert, before relying on it", err)
 		}
 		if errors.Is(err, keymgmt.ErrEpochChanged) {
 			a.cache.Drop(a.cacheScope)
@@ -453,21 +494,24 @@ func (a *app) readState(ctx context.Context) (*secrets.State, *vaultView, error)
 // lost.
 func (a *app) reportCorrupt(state *secrets.State) {
 	for _, c := range state.Corrupt {
-		ui.Warnf("salvage: read past untrustable blob %s (%s); namespace %q reverted to its last good backup or, if that is gone too, resolved empty. Recover from your remote's version history if it keeps one, or `notenv key evict %s` to rewrite the namespace from what survives", c.Blob, c.Reason, a.namespace, a.namespace)
+		ui.Warnf("salvage: read past untrustable blob %s (%s); namespace %q reverted to its last good backup or, if that is gone too, resolved empty. Recover from your remote's version history if it keeps one, or `notenv namespace recover %s` to rebuild it from its last good backup", c.Blob, c.Reason, a.namespace, a.namespace)
 	}
 }
 
-// resolved is a namespace's secrets as run/list consume them: the values plus
+// resolved is a namespace's secrets as run/inspect consume them: the values plus
 // each live key's advisory metadata.
 type resolved struct {
 	secrets map[string]string
 	meta    map[string]secrets.Meta
 }
 
-// fetchSecrets resolves the namespace's secrets for run/list. It serves a warm,
+// fetchSecrets resolves the namespace's secrets for run. It serves a warm,
 // fully-local copy from the cached blob when both the blob and the master are
 // cached; otherwise it reads from storage and repopulates the cache. refresh
-// skips the cache to pull another machine's changes.
+// skips the cache to pull another machine's changes. A namespace that holds no
+// secrets is an error: run is a deliberate inject-and-exec, so a silent empty
+// injection is wrong (introspection of an empty namespace is `namespace inspect`,
+// which reads cold and tolerates empty).
 func (a *app) fetchSecrets(ctx context.Context, refresh bool) (*resolved, error) {
 	// Honor the handoff session guard on the warm path too. The cold path enforces
 	// it via master(), but a warm cache hit returns before reaching it, so without
@@ -483,6 +527,9 @@ func (a *app) fetchSecrets(ctx context.Context, refresh bool) (*resolved, error)
 	// reads a state missing its dropped keys.
 	if !refresh && !a.salvage {
 		if cached, ok := a.cachedSecrets(); ok {
+			if len(cached.secrets) == 0 {
+				return nil, a.errEmptyNamespace()
+			}
 			return cached, nil
 		}
 	}
@@ -490,13 +537,27 @@ func (a *app) fetchSecrets(ctx context.Context, refresh bool) (*resolved, error)
 	if err != nil {
 		return nil, err
 	}
-	if !state.HasHistory() {
-		return nil, fmt.Errorf("no secrets stored yet for namespace %q; use `notenv set KEY` first", a.namespace)
+	// Refuse a namespace with nothing to inject. Since namespaces are now persistent
+	// (an emptied or freshly created one keeps a blob rather than vanishing), "exists
+	// but holds zero secrets" is a real state run must reject so it never execs a
+	// child with a silent empty injection. This keys off the resolved secret count,
+	// not HasHistory, precisely because an empty namespace now has history, and is
+	// applied identically on the warm and cold paths so the two cannot diverge.
+	if len(state.Secrets) == 0 {
+		return nil, a.errEmptyNamespace()
 	}
 	if !a.salvage {
 		a.cacheState(view.mk, state)
 	}
 	return &resolved{secrets: state.Secrets, meta: state.Meta}, nil
+}
+
+// errEmptyNamespace is the shared refusal for a namespace that holds no secrets,
+// returned identically on the warm-cache and cold-read paths so the two can
+// never diverge (an unset that empties the namespace caches an empty state, so
+// the warm path can hit this too).
+func (a *app) errEmptyNamespace() error {
+	return fmt.Errorf("namespace %q holds no secrets; set one with `notenv secret set KEY` first (or check you selected the right namespace)", a.namespace)
 }
 
 // cacheEnvelope is what the warm cache stores: the sealed blob plus a MAC of it

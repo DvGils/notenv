@@ -41,7 +41,7 @@ var ErrNoPath = errors.New("no signed rotation path from the pinned master to th
 // Descends proves that the master a header now wraps descends, through valid
 // signed transitions, from some past signing key the caller recognizes (via
 // accept). It serves the onboarding fingerprint: the code in hand digests a
-// signing key that may have been rotated away between `key add` and first
+// signing key that may have been rotated away between `credential add` and first
 // contact, so the verifier must accept any recognized ancestor, not only the
 // current key. The caller checks the current key itself before calling; this
 // only searches history. Revisions are unbounded below: the fingerprint carries

@@ -19,11 +19,10 @@ import (
 )
 
 var (
-	setupName    string
-	setupDefault bool
-	setupLocal   bool
-	setupRemote  bool
-	setupPath    string
+	setupName        string
+	setupMakeDefault bool
+	setupStorageType string
+	setupPath        string
 )
 
 var setupCmd = &cobra.Command{
@@ -37,9 +36,8 @@ var setupCmd = &cobra.Command{
 
 func init() {
 	setupCmd.Flags().StringVar(&setupName, "name", "", "name for this storage (use distinct names for separate vaults)")
-	setupCmd.Flags().BoolVar(&setupDefault, "default", false, "make this the default storage")
-	setupCmd.Flags().BoolVar(&setupLocal, "local", false, "create a local vault on this machine (the default; no accounts, no rclone)")
-	setupCmd.Flags().BoolVar(&setupRemote, "remote-storage", false, "set up a cloud remote via rclone instead of a local vault")
+	setupCmd.Flags().BoolVar(&setupMakeDefault, "make-default", false, "make this the default storage")
+	setupCmd.Flags().StringVar(&setupStorageType, "storage-type", "", "what kind of storage to create: \"local\" (this machine; the default, no accounts or rclone) or \"remote\" (a cloud remote via rclone)")
 	setupCmd.Flags().StringVar(&setupPath, "path", "", "directory for a local vault (default: the per-name data dir)")
 }
 
@@ -106,17 +104,21 @@ func addStorage(ctx context.Context, user *config.User, first bool) (bool, error
 	return addRemoteStorage(ctx, user, first)
 }
 
-// chooseVaultKind decides local vs remote: flags first, then the prompt, and
-// promptless runs default to local: the zero-account, zero-dependency path.
+// chooseVaultKind decides local vs remote: --storage-type first, then the
+// prompt, and promptless runs default to local: the zero-account,
+// zero-dependency path.
 func chooseVaultKind() (bool, error) {
-	switch {
-	case setupLocal && setupRemote:
-		return false, errors.New("--local and --remote-storage are mutually exclusive")
-	case setupLocal:
+	switch setupStorageType {
+	case "local":
 		return true, nil
-	case setupRemote:
+	case "remote":
 		return false, nil
-	case !ui.Interactive():
+	case "":
+		// No explicit choice: prompt below, or default to local on a promptless run.
+	default:
+		return false, fmt.Errorf("invalid --storage-type %q: use \"local\" or \"remote\"", setupStorageType)
+	}
+	if !ui.Interactive() {
 		return true, nil
 	}
 	choice, err := ui.Select("Where should this vault live?", []ui.Option{
@@ -199,7 +201,7 @@ func addLocalStorage(ctx context.Context, user *config.User, first bool) (bool, 
 
 	// force: localStorageTarget already resolved a fresh name, the same target, or
 	// a replacement the user confirmed, so the collision is decided by here.
-	confPath, err := config.UpsertStorage(name, config.StorageEntry{Path: path}, setupDefault && first, true)
+	confPath, err := config.UpsertStorage(name, config.StorageEntry{Path: path}, setupMakeDefault && first, true)
 	if err != nil {
 		return false, err
 	}
@@ -271,7 +273,7 @@ func addRemoteStorage(ctx context.Context, user *config.User, first bool) (bool,
 		return false, err
 	}
 
-	makeDefault := setupDefault && first
+	makeDefault := setupMakeDefault && first
 	// force: chooseStorageName already confirmed any replacement above.
 	path, err := config.UpsertStorage(name, config.StorageEntry{Remote: remote, Base: base}, makeDefault, true)
 	if err != nil {

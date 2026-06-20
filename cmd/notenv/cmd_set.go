@@ -21,7 +21,7 @@ var (
 	setDescription string
 )
 
-var setCmd = &cobra.Command{
+var secretSetCmd = &cobra.Command{
 	Use:   "set KEY",
 	Short: "Set a secret value (entered hidden, encrypted, never echoed or written to disk)",
 	Args:  cobra.ExactArgs(1),
@@ -137,6 +137,6 @@ func trimStdinTerminator(s string) string {
 }
 
 func init() {
-	setCmd.Flags().BoolVar(&setStdin, "stdin", false, "read the value from stdin (for multiline or piped values)")
-	setCmd.Flags().StringVar(&setDescription, "description", "", "what this secret is and how to use it, shown by `list` (omit to keep the current one; \"\" clears)")
+	secretSetCmd.Flags().BoolVar(&setStdin, "stdin", false, "read the value from stdin (for multiline or piped values)")
+	secretSetCmd.Flags().StringVar(&setDescription, "description", "", "what this secret is and how to use it, shown by 'notenv secret inspect' (omit to keep the current one; \"\" clears)")
 }

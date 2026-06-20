@@ -44,7 +44,7 @@ func DefaultCache() Cache { return newCache() }
 
 // ReadSecret prompts on the controlling terminal with echo disabled.
 // It prefers the console device (/dev/tty; CONIN$ on Windows) so prompts
-// work even when stdin is a pipe (e.g. `notenv set --stdin`).
+// work even when stdin is a pipe (e.g. `notenv secret set --stdin`).
 func ReadSecret(label string) (string, error) {
 	tty, err := openConsole()
 	if err != nil {

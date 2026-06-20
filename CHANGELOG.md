@@ -4,6 +4,144 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## Unreleased (0.21.0)
+
+Namespaces become a first-class concept. Until now a namespace existed only while
+it held secrets: it appeared on the first `set` and vanished when its last secret
+was removed, with no command to create or remove one deliberately. This release
+makes a namespace a persistent container you manage on its own, and gives both
+namespaces and secrets committed metadata (descriptions, and who/when stamps).
+
+**Breaking, on purpose: the namespace blob format is now version 3 and an older
+(v2) vault is not read by this version.** Each blob now carries namespace-level
+metadata (a description, creation and last-modification stamps) and per-secret
+fields. The version bump is deliberate: an older notenv refuses a v3 blob (fail
+closed) rather than silently dropping the new metadata on a rewrite. There is no
+in-place upgrade (pre-1.0, no stable release): export every namespace from the old
+binary and import it into a fresh 0.21.0 vault. Import reads `.env`, which carries
+no metadata, so a secret's description is not migrated (re-set it as needed) and
+the new who/when stamps begin at import time.
+
+This release also sweeps the CLI grammar one last time before the v1 interface
+freeze, onto a single shape: `notenv <noun> <verb>` to manage things and `notenv
+run` to use them, so the noun always carries the level. Secrets move under a
+`secret` group, introspection collapses onto one verb (`inspect`, no more `list`),
+the `key` group becomes `credential`, `export`/`import` move under `namespace`/
+`vault`, flags are uniform, and every `--json` document carries a `version`.
+**These are breaking command renames** (pre-1.0, so allowed): update any scripts
+that call the old names. See Changed below for the full mapping.
+
+### Added
+
+- **A `namespace` command group: `inspect`, `create`, `update`, `delete`, `recover`, `export`, `import`.**
+  - `notenv namespace inspect` summarizes the selected namespace: its description
+    and who/when stamps, and the secrets it holds (names, lengths, descriptions,
+    last write; never values), with `--json` and `--skip-corrupt`. To enumerate the
+    vault's namespaces, use `notenv vault inspect` (header-only, no passphrase). It
+    does not report whether a namespace is empty without a key; `notenv doctor`
+    surfaces empty namespaces when one is cached.
+  - `notenv namespace create NAME` stands up an empty namespace deliberately,
+    before its first secret (setting a secret still creates one lazily too). It
+    fails if the namespace already exists and never touches an existing one.
+    Because creating a namespace is a deliberate, authenticated act, it also
+    records your acceptance of it, so the first `--namespace NAME` use is not
+    re-confirmed.
+  - `notenv namespace delete NAME` permanently removes a namespace and all of its
+    secrets. It requires the vault passphrase and a confirmation (`--yes` skips
+    only the confirmation), and works even on a namespace whose data is corrupt or
+    missing, so it also clears a namespace that can no longer be read.
+- **Descriptions for namespaces and secrets.** `notenv namespace create NAME
+  --description "…"` sets a namespace's description at creation and `notenv namespace update
+  NAME --description "…"` changes it later. For a secret, `notenv secret set KEY
+  --description` records one when you set the value, and the new `notenv secret
+  update KEY --description "…"` amends the description of an existing secret without
+  touching its value (the metadata-only counterpart to `set`; it errors if the
+  secret does not exist). `--description ""` clears in every case. Descriptions show
+  in `notenv secret inspect` and `notenv namespace inspect`.
+- **`inspect` now shows who and when.** `notenv secret inspect KEY` reports who last
+  wrote a secret and when; `notenv namespace inspect` reports the namespace's
+  description and its creation and last-modification stamps (each with the actor).
+  The actor is `USER@hostname`, advisory and forgeable (it is the local user, not a
+  verified vault slot), so it is a convenience for honest teams, never an audit
+  trail. The `--json` forms gain the matching fields, all omitted when unset.
+- **`notenv doctor --json`.** Doctor now has a machine-readable mode: a versioned
+  object of findings (each a `level` of `ok`/`note`/`problem` and a `text`) plus a
+  `problems` count. Exit is 1 when `problems > 0`, the same as the human run.
+- **`notenv namespace recover NAME`** rebuilds a namespace whose blob is unreadable
+  from its one-generation backup (the recovery command, relocated and renamed from
+  `key evict`; see Changed). Last resort for honest media loss.
+
+### Changed
+
+- **Namespaces are now persistent.** A namespace stays once it exists, even after
+  its last secret is removed, instead of silently disappearing. Removing the last
+  secret reports that the namespace is now empty and how to delete it; the
+  namespace itself goes away only with `notenv namespace delete`.
+- **`run` against an empty namespace now fails loudly** ("namespace X holds no
+  secrets") rather than injecting nothing, on both the cold read and the warm-cache
+  path: `run` is a deliberate inject-and-exec, so an empty injection is an error,
+  not a silent success. `notenv namespace inspect` instead shows an empty namespace
+  as empty (its `--json` emits an empty secret set), since inspecting is read-only.
+- **`notenv doctor` names empty namespaces** (when a key is cached so it can read
+  them), with how to remove one, so empty namespaces stay discoverable.
+- **A lone `notenv.local.toml` with no `notenv.toml` above it now warns.** The
+  local binding pins a namespace, it does not select one, so without a committed
+  contract it was silently ignored; notenv now says so and points at `notenv init`
+  or `--namespace`.
+- The namespace first-use confirmation now reads "already exists in the vault"
+  rather than "already holds secrets", since a persistent namespace may exist
+  while holding none.
+
+#### CLI grammar (breaking renames)
+
+The whole command surface moves to `notenv <noun> <verb>` to manage things and
+`notenv run` to use them, so the noun always carries the level. **These are
+breaking command renames** (pre-1.0); update any scripts.
+
+- **Secrets are now a `secret` group.** `set`/`unset`/`update`/`copy` and the
+  per-secret inspect become `notenv secret set/unset/update/copy` and
+  `notenv secret inspect KEY`. `set` still creates-or-replaces a value; the secret
+  is a leaf, so removal stays `unset` (not `delete`).
+- **One introspection verb, `inspect`, and no `list`.** Inspecting a container
+  shows its metadata and what it holds: `notenv vault inspect` (the vault's
+  namespaces, id, revision, storage; was `inspect --all` and `namespace list`),
+  `notenv namespace inspect` (the namespace's metadata and its secrets; was the
+  bare `inspect` and `list`), `notenv credential inspect` (the key slots; was
+  `credential list`). `notenv secret inspect KEY` inspects one secret. There is no
+  more `list` command; bare-name scripting moves to `--json`. `namespace inspect`
+  takes `--skip-corrupt` (the old `list --skip-corrupt`). `vault inspect` and
+  `credential inspect` are header-only (no passphrase); `namespace`/`secret inspect`
+  need an unlock (secret names live in the encrypted blob).
+- **The `key` group is now `credential`** (full word, no abbreviation), resolving
+  the overload between "key" the access credential and "key" the secret name
+  (secrets keep `KEY`/`KEY=VALUE`). `notenv key add/rotate/rotate-master/set-primary/
+  trust/forget/restore-backup` become `notenv credential …`. Removal is the uniform
+  verb `delete`: `key rm` becomes `credential delete`, which **now asks for a
+  confirmation** (`--yes` skips it) since it re-keys the whole vault. `credential
+  forget` takes `--yes` instead of `--force`.
+- **`key evict` becomes `notenv namespace recover NAME`**, relocated to the
+  `namespace` group and renamed because it recovers survivors rather than deletes.
+  Its behavior is refined too: it rebuilds from the one-generation backup, and when
+  nothing readable survives it now refuses (pointing you to `namespace delete`)
+  rather than silently emptying the namespace.
+- **`export`/`import` carry the level in the noun, no `--all`.** `notenv namespace
+  export` prints this namespace's secrets; `notenv vault export` prints the whole
+  vault (the offboarding path, was `export --all`); `notenv namespace import` reads
+  a `.env` into this namespace (was `import`).
+- **`notenv inspect handoff` becomes `notenv handoff inspect`** (the agent
+  self-check), now under the `handoff` command.
+- **`notenv init` takes the namespace as a positional argument** (`notenv init
+  [NAMESPACE]`, default the directory name) instead of `--namespace`, so the global
+  `--namespace` selector has one meaning everywhere; `init` errors if you pass it.
+- **`notenv setup` flag vocabulary.** The mutually-exclusive `--local` /
+  `--remote-storage` booleans become one `--storage-type local|remote` (default
+  local), and `--default` becomes `--make-default`.
+- **Every `--json` output is a versioned, named-field object.** export gains an
+  envelope (`{ "version": 1, "namespace": …, "secrets": {…} }`, or `"namespaces"`
+  for `vault export`) instead of a bare map, and `secret inspect`, `namespace
+  inspect`, `vault inspect`, `credential inspect`, and `handoff inspect` carry a
+  `version` field. Existing fields are unchanged; consumers just see the new `version`.
+
 ## 0.20.1
 
 ### Added

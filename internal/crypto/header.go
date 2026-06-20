@@ -112,7 +112,7 @@ type Slot struct {
 	// like Primary.
 	Provisional bool `json:"provisional,omitempty"`
 	// TS is the slot's creation time in Unix seconds. Advisory display data
-	// (clocks lie): it feeds `key list` and the stale-provisional warning and
+	// (clocks lie): it feeds `credential inspect` and the stale-provisional warning and
 	// is never load-bearing. Stamped by the command layer; this package reads
 	// no clock.
 	TS int64 `json:"ts,omitempty"`
@@ -372,7 +372,7 @@ func (h *Header) Unlock(passphrase string) (*MasterKey, int, *age.X25519Identity
 		return mk, i, slotKey, nil
 	}
 	if matched {
-		return nil, -1, nil, fmt.Errorf("this passphrase opened a key slot but its key cannot unlock the vault, so notenv treats it as a %w; the header may be tampered with or only partly rotated. Recover with `notenv key restore-backup`", ErrWrongPassphrase)
+		return nil, -1, nil, fmt.Errorf("this passphrase opened a key slot but its key cannot unlock the vault, so notenv treats it as a %w; the header may be tampered with or only partly rotated. Recover with `notenv credential restore-backup`", ErrWrongPassphrase)
 	}
 	return nil, -1, nil, ErrWrongPassphrase
 }
@@ -512,7 +512,7 @@ func (m *MasterKey) Decrypt(ciphertext []byte) ([]byte, error) {
 	if err != nil {
 		var noMatch *age.NoIdentityMatchError
 		if errors.As(err, &noMatch) {
-			return nil, fmt.Errorf("%w. Was the storage re-initialized or re-keyed? Re-create the value with `notenv set`", ErrNotRecipient)
+			return nil, fmt.Errorf("%w. Was the storage re-initialized or re-keyed? Re-create the value with `notenv secret set`", ErrNotRecipient)
 		}
 		return nil, err
 	}

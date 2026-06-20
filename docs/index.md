@@ -10,7 +10,7 @@ you run**. Plaintext never touches your disk.
 
 ```sh
 notenv setup                   # a local vault: no accounts, no dependencies, one passphrase
-notenv import .env             # your existing secrets, encrypted; delete the .env after
+notenv namespace import .env             # your existing secrets, encrypted; delete the .env after
 notenv run -- npm run dev      # secrets injected as env vars, gone when the process exits
 ```
 
@@ -83,7 +83,7 @@ Vault.
 | What you depend on to read a secret | **only your key** | only your key | 1Password, your account and plan | only your key |
 | Account or service to sign up for | **none** | none | required | none |
 | Onboard a teammate | **one command**, with a verifiable vault fingerprint | hand over the private key | invite them in the app | add their key, redistribute the file |
-| Offboarding actually revokes | **yes**: `key rm` re-encrypts the vault | rotate the key, re-encrypt by hand | remove them from the vault | rotate, re-encrypt by hand |
+| Offboarding actually revokes | **yes**: `credential delete` re-encrypts the vault | rotate the key, re-encrypt by hand | remove them from the vault | rotate, re-encrypt by hand |
 | Move to other storage | **one command**, any rclone remote | it lives in git | not applicable, it is their cloud | move the file yourself |
 
 [dotenvx](https://dotenvx.com) and `op run` both nail encrypted injection; the difference is the master.

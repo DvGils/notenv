@@ -48,7 +48,8 @@ type User struct {
 
 // storageNameRe constrains storage names: they become TOML table keys and CLI
 // selectors, so no dots (which TOML reads as table nesting), spaces, or other
-// punctuation.
+// punctuation. Frozen at v1: a storage name is a config key and a --storage
+// selector value, so changing the set would break existing configs or selectors.
 var storageNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 
 // ValidStorageName reports whether name is usable as a storage name.
@@ -828,7 +829,7 @@ func AcceptNamespace(scope, namespace string) error {
 	return saveTrust(state)
 }
 
-// ForgetScope removes a scope's binding, its vault's pin (`notenv key
+// ForgetScope removes a scope's binding, its vault's pin (`notenv credential
 // forget`, after a deliberate vault reset), and the namespaces accepted
 // there. The pin survives if another scope still references the vault (the
 // same vault reachable through two storage configurations). Forgetting an
@@ -865,7 +866,7 @@ func ForgetScope(scope string) error {
 // than the pinned one. The caller distinguishes it from other pin failures
 // because it has a second chance: a chain of signed transitions from the
 // pinned master can prove the change legitimate before the alarm stands.
-var ErrMasterChanged = errors.New("the vault's master key changed unexpectedly: a legitimate rotation on another machine, or a substitution attack. If you have confirmed it is legitimate, run `notenv key trust`; otherwise treat the storage as compromised")
+var ErrMasterChanged = errors.New("the vault's master key changed unexpectedly: a legitimate rotation on another machine, or a substitution attack. If you have confirmed it is legitimate, run `notenv credential trust`; otherwise treat the storage as compromised")
 
 // CheckPin compares an observed header (revision, master public key) against the
 // stored pin. It returns advance=true when the pin should move forward (or on
@@ -880,7 +881,7 @@ func CheckPin(stored Pin, have bool, obsRevision int, obsMasterPub string) (adva
 		return false, ErrMasterChanged
 	}
 	if obsRevision < stored.Revision {
-		return false, fmt.Errorf("the header is older than one this machine already trusted (revision %d < %d): possible rollback. If you have confirmed it is legitimate, run `notenv key trust`", obsRevision, stored.Revision)
+		return false, fmt.Errorf("the header is older than one this machine already trusted (revision %d < %d): possible rollback. If you have confirmed it is legitimate, run `notenv credential trust`", obsRevision, stored.Revision)
 	}
 	return true, nil
 }

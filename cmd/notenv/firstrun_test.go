@@ -10,14 +10,13 @@ import (
 	"github.com/DvGils/notenv/internal/contract"
 )
 
-// TestWriteContractDefaultsNamespaceSilently: with no --namespace, init writes
-// the contract using the directory-name default and never prompts (a prompt
-// would block on stdin and hang this test), with the default left commented.
+// TestWriteContractDefaultsNamespaceSilently: with no positional namespace, init
+// writes the contract using the directory-name default and never prompts (a
+// prompt would block on stdin and hang this test), with the default left commented.
 func TestWriteContractDefaultsNamespaceSilently(t *testing.T) {
 	dir := t.TempDir()
-	defer setInitNamespace("")()
 
-	if err := writeContract(dir); err != nil {
+	if err := writeContract(dir, ""); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, contract.FileName))
@@ -33,13 +32,12 @@ func TestWriteContractDefaultsNamespaceSilently(t *testing.T) {
 	}
 }
 
-// TestWriteContractExplicitNamespace: a --namespace that differs from the
-// directory name is written as an active line.
+// TestWriteContractExplicitNamespace: a positional namespace that differs from
+// the directory name is written as an active line.
 func TestWriteContractExplicitNamespace(t *testing.T) {
 	dir := t.TempDir()
-	defer setInitNamespace("myproj")()
 
-	if err := writeContract(dir); err != nil {
+	if err := writeContract(dir, "myproj"); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, contract.FileName))
@@ -55,12 +53,11 @@ func TestWriteContractExplicitNamespace(t *testing.T) {
 // committed contract.
 func TestWriteContractLeavesExistingAlone(t *testing.T) {
 	dir := t.TempDir()
-	defer setInitNamespace("")()
 	path := filepath.Join(dir, contract.FileName)
 	if err := os.WriteFile(path, []byte("# mine\n[secrets]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeContract(dir); err != nil {
+	if err := writeContract(dir, ""); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -91,12 +88,4 @@ func TestGuardProjectDirAllowsExistingProject(t *testing.T) {
 	if err := guardProjectDir(dir); err != nil {
 		t.Fatalf("an existing project must not be guarded: %v", err)
 	}
-}
-
-// setInitNamespace sets the init --namespace flag global for a test and returns
-// a restore func.
-func setInitNamespace(v string) func() {
-	old := initNamespace
-	initNamespace = v
-	return func() { initNamespace = old }
 }

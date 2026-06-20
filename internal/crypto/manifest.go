@@ -41,7 +41,9 @@ type ManifestEntry struct {
 }
 
 // NamespaceEntry returns the manifest entry for a namespace and whether one
-// exists (a namespace with no stored secrets has none).
+// exists. A namespace that was never created has none; one that exists keeps its
+// entry even when it holds no secrets (namespaces are persistent), so presence
+// here means "the namespace exists", not "it holds secrets".
 func (h *Header) NamespaceEntry(ns string) (ManifestEntry, bool) {
 	e, ok := h.Manifest[ns]
 	return e, ok
@@ -55,8 +57,8 @@ func (h *Header) SetNamespace(ns string, e ManifestEntry) {
 	h.Manifest[ns] = e
 }
 
-// RemoveNamespace drops a namespace's entry (its secrets were deleted, or an
-// unrecoverable blob was evicted).
+// RemoveNamespace drops a namespace's entry from the manifest (for example, on
+// `namespace delete`).
 func (h *Header) RemoveNamespace(ns string) {
 	delete(h.Manifest, ns)
 }

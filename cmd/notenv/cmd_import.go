@@ -25,7 +25,7 @@ type importItem struct {
 	value      string
 }
 
-var importCmd = &cobra.Command{
+var namespaceImportCmd = &cobra.Command{
 	Use:   "import [file]",
 	Short: "Import an existing .env file: every value encrypted, every key declared",
 	Long: `Parse a dotenv file and store every value encrypted in the vault, declaring
@@ -183,5 +183,6 @@ func runImport(cmd *cobra.Command, a *app, file string, items []importItem, skip
 }
 
 func init() {
-	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "parse and validate only; show what would be imported (names, never values)")
+	namespaceImportCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "parse and validate only; show what would be imported (names, never values)")
+	namespaceCmd.AddCommand(namespaceImportCmd)
 }

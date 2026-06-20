@@ -12,7 +12,7 @@ No accounts, no rclone, one passphrase.
 ```sh
 notenv setup                   # local vault (the default)
 cd my-project && notenv init   # writes notenv.toml (commit it)
-notenv import .env && rm .env  # or: notenv set KEY one at a time
+notenv namespace import .env && rm .env  # or: notenv secret set KEY one at a time
 notenv run -- npm run dev      # secrets injected for this process only
 ```
 
@@ -50,7 +50,7 @@ notenv run -- ...              # ready
 ### Onboard a teammate
 
 ```sh
-notenv key add alice           # prints a one-time onboarding string; send it over a private channel
+notenv credential add alice           # prints a one-time onboarding string; send it over a private channel
 ```
 
 Alice points her machine at the same storage, runs `notenv setup`, and enters the string; her first
@@ -60,12 +60,12 @@ command replaces it with a passphrase only she knows.
 
 ### Offboard a teammate or machine
 
-`key rm` removes the slot **and** re-keys the vault (fresh master, every secret re-encrypted), so the
+`credential delete` removes the slot **and** re-keys the vault (fresh master, every secret re-encrypted), so the
 removed credential decrypts nothing new. Then rotate the storage credential at your provider, which
 notenv cannot do for you.
 
 ```sh
-notenv key rm alice            # re-keys automatically; surviving slots keep working
+notenv credential delete alice            # re-keys automatically; surviving slots keep working
 # then: rotate the bucket/SFTP credential at your provider
 ```
 
@@ -74,8 +74,8 @@ notenv key rm alice            # re-keys automatically; surviving slots keep wor
 ### Change a passphrase, or re-key as a precaution
 
 ```sh
-notenv key rotate              # rewraps your slot (header only; secrets untouched)
-notenv key rotate-master       # fresh master, every secret re-encrypted, all slots kept
+notenv credential rotate              # rewraps your slot (header only; secrets untouched)
+notenv credential rotate-master       # fresh master, every secret re-encrypted, all slots kept
 ```
 
 → [Share a vault with your team](guides/teams-and-keys.md#everyday-key-tasks)
@@ -126,7 +126,7 @@ new machine, `git clone`, `notenv setup`, and you are back.
 ### Rotate after a suspected compromise
 
 ```sh
-notenv key rotate-master       # fresh master; anything captured stops decrypting new writes
+notenv credential rotate-master       # fresh master; anything captured stops decrypting new writes
 # then: rotate the storage credential at your provider
 ```
 
@@ -135,7 +135,7 @@ notenv key rotate-master       # fresh master; anything captured stops decryptin
 ### Export your secrets, or delete a vault
 
 ```sh
-notenv export > backup.env     # one namespace; --all for the whole vault
+notenv namespace export > backup.env     # one namespace; `notenv vault export` for the whole vault
 notenv vault delete <name>     # destroy a vault you no longer want (asks the passphrase)
 ```
 
@@ -145,7 +145,7 @@ notenv vault delete <name>     # destroy a vault you no longer want (asks the pa
 
 ```sh
 notenv run --skip-corrupt -- ...   # read the one-generation backup
-notenv key evict <namespace>       # rebuild from what survives (last resort)
+notenv namespace recover <namespace>       # rebuild from the last good backup (last resort)
 ```
 
 → [Recover from problems](guides/recovery.md)

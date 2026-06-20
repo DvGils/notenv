@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -48,7 +49,7 @@ every existing value reads ` + keepSentinel + `: replace it to set a new value, 
 the line to unset the key, add KEY=value lines to create keys, and edit the
 comment line above a key to change its description. A value is single-line and
 trimmed of surrounding whitespace; to store one with surrounding whitespace or
-newlines, use "notenv set --stdin" (edit refuses a namespace whose values it cannot
+newlines, use "notenv secret set --stdin" (edit refuses a namespace whose values it cannot
 represent that way, rather than corrupt them). A value is never shown: the buffer
 can leak at most what you type into it.
 
@@ -78,7 +79,7 @@ func runEdit(cmd *cobra.Command, a *app) error {
 	// surrounding whitespace or an embedded newline, so refuse rather than render
 	// it and silently corrupt it on save. `set --stdin` handles such values.
 	if bad := unrepresentableKeys(before); len(bad) > 0 {
-		return fmt.Errorf("edit cannot represent these secrets in namespace %q (their values have surrounding whitespace or span multiple lines): %s. Set them with `notenv set <KEY> --stdin` (or remove with `notenv unset <KEY>`), then edit the rest", a.namespace, strings.Join(bad, ", "))
+		return fmt.Errorf("edit cannot represent these secrets in namespace %q (their values have surrounding whitespace or span multiple lines): %s. Set them with `notenv secret set <KEY> --stdin` (or remove with `notenv secret unset <KEY>`), then edit the rest", a.namespace, strings.Join(bad, ", "))
 	}
 
 	path, cleanup, err := writeEditBuffer(a, before)
@@ -213,7 +214,7 @@ func renderEditBuffer(namespace string, state *secrets.State) string {
 	fmt.Fprintf(&b, "# %s leaves a value unchanged; replace it to set a new value.\n", keepSentinel)
 	b.WriteString("# Delete a line to unset that key. Add KEY=value lines to create keys.\n")
 	b.WriteString("# A comment line directly above a key is its description; removing it keeps\n")
-	b.WriteString("# the existing description (clear one with `notenv set KEY --description \"\"`).\n")
+	b.WriteString("# the existing description (clear one with `notenv secret set KEY --description \"\"`).\n")
 	b.WriteString("# Values are taken literally; no quoting. Existing values are never shown.\n")
 	keys := make([]string, 0, len(state.Secrets))
 	for k := range state.Secrets {
@@ -329,7 +330,7 @@ func parseEditBuffer(r io.Reader) (map[string]editEntry, error) {
 // key sets that key's description. An ABSENT comment keeps the stored
 // description rather than clearing it (via KeepDescription), so an editor reflow
 // or a stray blank line between a comment and its key cannot silently wipe
-// metadata; clearing a description is done with `notenv set KEY --description ""`.
+// metadata; clearing a description is done with `notenv secret set KEY --description ""`.
 func diffEdit(before *secrets.State, entries map[string]editEntry) ([]secrets.Write, error) {
 	var writes []secrets.Write
 	for key, e := range entries {
@@ -424,6 +425,15 @@ func confirmWipe(before *secrets.State, writes []secrets.Write, namespace string
 	return nil
 }
 
+// metaEqual reports whether two secrets' advisory metadata is identical. It is a
+// field-by-field compare because Meta now carries a slice (Egress), so the struct
+// is no longer comparable with ==; any remote write to a key changes its TS/By,
+// so this reliably detects a concurrent change.
+func metaEqual(a, b secrets.Meta) bool {
+	return a.Description == b.Description && a.TS == b.TS && a.By == b.By &&
+		a.Sensitivity == b.Sensitivity && slices.Equal(a.Egress, b.Egress)
+}
+
 // refuseConcurrentEdits stops the save when a key this edit touches also
 // changed remotely while the buffer was open: silently overwriting a write
 // the user never saw is the one wrong answer. Keys the edit does not touch
@@ -433,7 +443,7 @@ func refuseConcurrentEdits(before, fresh *secrets.State, writes []secrets.Write)
 	for _, w := range writes {
 		bv, bok := before.Secrets[w.Key]
 		fv, fok := fresh.Secrets[w.Key]
-		if bok != fok || bv != fv || before.Meta[w.Key] != fresh.Meta[w.Key] {
+		if bok != fok || bv != fv || !metaEqual(before.Meta[w.Key], fresh.Meta[w.Key]) {
 			clashed = append(clashed, w.Key)
 		}
 	}

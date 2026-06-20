@@ -54,7 +54,7 @@ func TestFormatEnvValueNoRawControlBytes(t *testing.T) {
 }
 
 // TestSanitizeDisplay: descriptions render with every control byte as a visible
-// escape, so a description cannot break the list/inspect columns or inject a
+// escape, so a description cannot break the inspect columns or inject a
 // terminal escape sequence; ordinary text (including multibyte UTF-8) is untouched.
 func TestSanitizeDisplay(t *testing.T) {
 	cases := map[string]string{
@@ -97,6 +97,46 @@ func TestWriteExportRoundTrips(t *testing.T) {
 		if got[k] != want {
 			t.Fatalf("key %s round-trip: got %q want %q", k, got[k], want)
 		}
+	}
+}
+
+// TestWriteExportJSONShape pins the frozen, versioned export --json envelopes:
+// `namespace export` (a single namespace) and `vault export` (the whole vault).
+func TestWriteExportJSONShape(t *testing.T) {
+	var buf bytes.Buffer
+	single := &secrets.State{Secrets: map[string]string{"A": "alpha", "B": "beta"}}
+	if err := writeExport(&buf, map[string]*secrets.State{"proj": single}, true, false); err != nil {
+		t.Fatal(err)
+	}
+	wantSingle := `{
+  "version": 1,
+  "namespace": "proj",
+  "secrets": {
+    "A": "alpha",
+    "B": "beta"
+  }
+}
+`
+	if buf.String() != wantSingle {
+		t.Fatalf("export --json shape drifted:\n%s\nwant:\n%s", buf.String(), wantSingle)
+	}
+
+	buf.Reset()
+	all := map[string]*secrets.State{"proj": {Secrets: map[string]string{"A": "alpha"}}}
+	if err := writeExport(&buf, all, true, true); err != nil {
+		t.Fatal(err)
+	}
+	wantAll := `{
+  "version": 1,
+  "namespaces": {
+    "proj": {
+      "A": "alpha"
+    }
+  }
+}
+`
+	if buf.String() != wantAll {
+		t.Fatalf("vault export --json shape drifted:\n%s\nwant:\n%s", buf.String(), wantAll)
 	}
 }
 

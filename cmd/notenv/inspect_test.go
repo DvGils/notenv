@@ -24,6 +24,9 @@ func TestKeyInspectOf(t *testing.T) {
 	state := inspectState()
 
 	got := keyInspectOf("app", "DB_URL", "DB_URL", state)
+	if got.Version != 1 {
+		t.Errorf("version = %d, want 1", got.Version)
+	}
 	if !got.Exists {
 		t.Fatal("DB_URL should exist")
 	}
@@ -68,6 +71,9 @@ func TestInspectNeverEmitsValues(t *testing.T) {
 
 func TestNamespaceInspectOf(t *testing.T) {
 	got := namespaceInspectOf("app", inspectState())
+	if got.Version != 1 {
+		t.Errorf("version = %d, want 1", got.Version)
+	}
 	if got.Count != 2 {
 		t.Fatalf("count = %d, want 2", got.Count)
 	}

@@ -98,7 +98,7 @@ func runHandoffBuild(ctx context.Context, cache keyring.Cache) error {
 		total += len(st.Secrets)
 	}
 	if total == 0 {
-		return fmt.Errorf("the namespace(s) you handed off (%s) hold no secrets, so there's nothing to give the agent; add secrets with `notenv set` first", strings.Join(namespaces, ", "))
+		return fmt.Errorf("the namespace(s) you handed off (%s) hold no secrets, so there's nothing to give the agent; add secrets with `notenv secret set` first", strings.Join(namespaces, ", "))
 	}
 
 	if err := buildEphemeral(ctx, buildVault, recipient, states); err != nil {

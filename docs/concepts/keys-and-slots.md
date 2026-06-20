@@ -38,20 +38,20 @@ The header carries the wrapped master, the slot set, and metadata. It is protect
   [Storage and concurrency](storage.md)).
 
 A machine refuses a header whose revision went backward, whose vault identity changed, or that
-vanished where one was pinned. `notenv key forget` is the deliberate-reset escape hatch.
+vanished where one was pinned. `notenv credential forget` is the deliberate-reset escape hatch.
 
 ## Re-keys and signed transitions
 
 Two operations mint a fresh master and re-encrypt every secret under it, keeping all slots:
 
-- `notenv key rotate-master`: a precaution, for example if a machine may be compromised.
-- `notenv key rm <name>`: offboarding. It also drops the removed slot.
+- `notenv credential rotate-master`: a precaution, for example if a machine may be compromised.
+- `notenv credential delete <name>`: offboarding. It also drops the removed slot.
 
 A naive re-key would alarm every other machine (the master changed). Instead, each rotation records a
 **transition signed by the outgoing master**. A machine still pinned at that master verifies the chain
 and follows the change silently. The master-changed alarm therefore fires only for a change that *no
 holder of the pinned master authorized*, which is the case worth a human's attention.
-`notenv key trust` (which shows what changed and asks) remains only for changes that carry no such
+`notenv credential trust` (which shows what changed and asks) remains only for changes that carry no such
 signed proof.
 
 !!! note "What signed transitions do and do not prevent"
@@ -63,8 +63,8 @@ signed proof.
 ## Governance
 
 In shared-master team mode, every slot holder has the master key, so "who may remove slots" is
-tooling-enforced, not cryptographic. One slot is the advisory **primary**; `notenv key rm` refuses to
-remove it, and `notenv key set-primary` transfers it. This is governance, not a security boundary.
+tooling-enforced, not cryptographic. One slot is the advisory **primary**; `notenv credential delete` refuses to
+remove it, and `notenv credential set-primary` transfers it. This is governance, not a security boundary.
 
 ## What lives where
 

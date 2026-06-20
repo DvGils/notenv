@@ -7,12 +7,12 @@ and what is deliberately out of scope.
 
 - **Onboarding.** `setup`, `init`, and `import`; local vaults as the zero-account default, with
   one-command replication to a cloud remote (`vault copy`).
-- **The core loop.** `set`, `unset`, `list`, and `run`, with `cache` and `doctor` for housekeeping.
+- **The core loop.** `secret set`, `secret unset`, `secret inspect`, and `run`, with `cache` and `doctor` for housekeeping.
 - **Storage.** One encrypted blob per namespace under last-write-wins, so concurrent writers serialize
   on the header swap without losing each other, plus a one-generation backup per namespace and an
   authenticated, version-pinned header with a manifest binding every stored object (so storage-level
   tampering with any single secret alarms by name).
-- **Keys and teams.** Full key and slot management (`notenv key ...`): team access by age recipient,
+- **Keys and teams.** Full key and slot management (`notenv credential ...`): team access by age recipient,
   passphrase and master-key rotation, offboarding by re-key, advisory primary governance, and signed
   rotation transitions so legitimate re-keys propagate to every machine without prompts.
 - **Agents and CI.** A scoped, ephemeral [`handoff`](../guides/ai-agents.md) that runs an agent with

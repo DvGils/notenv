@@ -12,8 +12,11 @@ import (
 	"github.com/DvGils/notenv/internal/config"
 	"github.com/DvGils/notenv/internal/crypto"
 	"github.com/DvGils/notenv/internal/keyring"
+	"github.com/DvGils/notenv/internal/secrets"
 	"github.com/DvGils/notenv/internal/ui"
 )
+
+var doctorJSON bool
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
@@ -26,12 +29,26 @@ namespace reclaims them).
 
 doctor never fixes, writes, or prompts. With a session key cached it also
 verifies the header's authentication tag; without one it says so and reads
-the header unverified. Exit code 0 means no findings, 1 means look above.`,
+the header unverified. Exit code 0 means no findings, 1 means look above.
+--json emits every finding as one machine-readable document instead.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := loadHeaderStore()
 		if err != nil {
 			return err
+		}
+		if doctorJSON {
+			// Collect without echoing each finding (human lines go to stderr; --json
+			// keeps stdout to exactly one document), then emit the versioned envelope.
+			c := &checkup{print: false}
+			runDoctor(cmd, store, c)
+			if err := printJSON(newDoctorReport(c)); err != nil {
+				return err
+			}
+			if c.problems > 0 {
+				return &exitCodeError{code: 1}
+			}
+			return nil
 		}
 		c := &checkup{print: true}
 		runDoctor(cmd, store, c)
@@ -42,6 +59,23 @@ the header unverified. Exit code 0 means no findings, 1 means look above.`,
 		ui.Warnf("%d finding(s) above; each says how to fix it", c.problems)
 		return &exitCodeError{code: 1}
 	},
+}
+
+// doctorReport is the frozen `doctor --json` shape: a versioned envelope around
+// the findings (each a level + text) and the problem count. Exit is 1 iff
+// problems > 0, the same as the human run.
+type doctorReport struct {
+	Version  int       `json:"version"`
+	Findings []finding `json:"findings"`
+	Problems int       `json:"problems"`
+}
+
+func newDoctorReport(c *checkup) doctorReport {
+	findings := c.findings
+	if findings == nil {
+		findings = []finding{} // emit [] rather than null for a vault with no findings
+	}
+	return doctorReport{Version: 1, Findings: findings, Problems: c.problems}
 }
 
 // finding is one checkup line: level "ok", "note", or "problem", and the
@@ -95,7 +129,7 @@ func runDoctor(cmd *cobra.Command, store *headerTarget, c *checkup) {
 	raw, err := store.GetHeader(ctx)
 	if errors.Is(err, backend.ErrNotFound) {
 		if vaultID, bound, _ := config.ScopeVault(store.scope); bound {
-			c.problem("no key header, but this machine pinned vault %s at this storage: the vault may have been wiped or replaced. Restore it with `notenv key restore-backup` (or the remote's version history). If you reset this storage on purpose, run `notenv key forget`", vaultID)
+			c.problem("no key header, but this machine pinned vault %s at this storage: the vault may have been wiped or replaced. Restore it with `notenv credential restore-backup` (or the remote's version history). If you reset this storage on purpose, run `notenv credential forget`", vaultID)
 		} else {
 			c.note("no vault on this storage yet; `notenv setup` creates one")
 		}
@@ -163,7 +197,7 @@ func checkPin(c *checkup, scope string, header *crypto.Header) {
 		return
 	}
 	if boundVault != header.VaultID {
-		c.problem("this storage previously held vault %s but now presents vault %s: a wholesale replacement. If deliberate, `notenv key forget` and connect again; otherwise treat the storage as compromised", boundVault, header.VaultID)
+		c.problem("this storage previously held vault %s but now presents vault %s: a wholesale replacement. If deliberate, `notenv credential forget` and connect again; otherwise treat the storage as compromised", boundVault, header.VaultID)
 		return
 	}
 	pin, have, err := config.ReadPin(header.VaultID)
@@ -176,7 +210,7 @@ func checkPin(c *checkup, scope string, header *crypto.Header) {
 		return
 	}
 	if header.Revision < pin.Revision {
-		c.problem("the header is at revision %d but this machine already saw revision %d: a rollback. The next unlock will refuse; `notenv key trust` accepts it ONLY after out-of-band verification", header.Revision, pin.Revision)
+		c.problem("the header is at revision %d but this machine already saw revision %d: a rollback. The next unlock will refuse; `notenv credential trust` accepts it ONLY after out-of-band verification", header.Revision, pin.Revision)
 		return
 	}
 	c.ok("revision %d is at or past this machine's pin (%d)", header.Revision, pin.Revision)
@@ -200,7 +234,7 @@ func checkSlots(c *checkup, header *crypto.Header) {
 			age = int(time.Since(time.Unix(slot.TS, 0)).Hours() / 24)
 		}
 		if age >= 7 {
-			c.problem("slot %q has been provisional for %d days: the holder never replaced the onboarding passphrase, so its issuer still knows their credential. Resend the onboarding string, or `notenv key rm` the slot", dashIfEmpty(slot.Name), age)
+			c.problem("slot %q has been provisional for %d days: the holder never replaced the onboarding passphrase, so its issuer still knows their credential. Resend the onboarding string, or `notenv credential delete` the slot", dashIfEmpty(slot.Name), age)
 		} else {
 			c.note("slot %q is provisional: onboarding is not finished until its holder runs a notenv command and sets their own passphrase", dashIfEmpty(slot.Name))
 		}
@@ -255,11 +289,16 @@ func checkNamespaceBlobs(ctx context.Context, store *headerTarget, c *checkup, h
 		switch {
 		case !present[e.Blob]:
 			missing++
-			c.problem("namespace %q blob %s is recorded in the vault manifest but missing from storage: reads fail closed. Read what survives (its one-generation backup) with `notenv run --skip-corrupt`, or `notenv key evict %s` to rewrite the namespace from what survives", ns, e.Blob, ns)
+			c.problem("namespace %q blob %s is recorded in the vault manifest but missing from storage: reads fail closed. Read what survives (its one-generation backup) with `notenv run --skip-corrupt`, or `notenv namespace recover %s` to rebuild it from its last good backup", ns, e.Blob, ns)
 		case mk == nil:
 			// no session master: cannot check content; the header note already says so
 		case verifyNamespaceBlob(ctx, store, c, ns, e.Blob, e.MAC, mk):
 			corrupt++
+		default:
+			// Present, verified under the master, not corrupt: the only remaining
+			// thing worth surfacing is an empty namespace (persistence keeps these
+			// around, so they can accumulate).
+			noteEmptyNamespace(ctx, store, c, ns, e, mk)
 		}
 		if e.Prev != "" && mk != nil {
 			checkNamespaceBackup(ctx, store, c, ns, e, present, mk)
@@ -280,14 +319,35 @@ func verifyNamespaceBlob(ctx context.Context, store *headerTarget, c *checkup, n
 	}
 	plain, err := mk.Decrypt(blob)
 	if err != nil {
-		c.problem("namespace %q blob %s does not decrypt under the master (bit-rot or tampering): reads fail closed. Read its one-generation backup with `notenv run --skip-corrupt`, or `notenv key evict %s` to rewrite the namespace from what survives", ns, key, ns)
+		c.problem("namespace %q blob %s does not decrypt under the master (bit-rot or tampering): reads fail closed. Read its one-generation backup with `notenv run --skip-corrupt`, or `notenv namespace recover %s` to rebuild it from its last good backup", ns, key, ns)
 		return true
 	}
 	if err := mk.CheckBlobMAC(plain, mac); err != nil {
-		c.problem("namespace %q blob %s does not match its manifest MAC (reverted or substituted): reads fail closed. Read its one-generation backup with `notenv run --skip-corrupt`, or `notenv key evict %s` to rewrite the namespace", ns, key, ns)
+		c.problem("namespace %q blob %s does not match its manifest MAC (reverted or substituted): reads fail closed. Read its one-generation backup with `notenv run --skip-corrupt`, or `notenv namespace recover %s` to rebuild it from its last good backup", ns, key, ns)
 		return true
 	}
 	return false
+}
+
+// noteEmptyNamespace flags a namespace that verifies cleanly but holds no
+// secrets. A persistent namespace (kept after its last secret is removed, or
+// stood up empty with `namespace create`) is the one cost of persistence: these
+// can accumulate, so doctor surfaces them with the way to remove one. It needs
+// the master to decode the blob, so it runs only on the verified path; without a
+// session key an empty namespace is indistinguishable from a populated one.
+func noteEmptyNamespace(ctx context.Context, store *headerTarget, c *checkup, ns string, e crypto.ManifestEntry, mk *crypto.MasterKey) {
+	state, err := secrets.For(store, ns, mk).Read(ctx, e)
+	if err != nil {
+		// verifyNamespaceBlob already checked decrypt + MAC (and surfaced those
+		// failures), so the only error reaching here is one it does not cover: a
+		// payload that does not parse (e.g. a stranded older-format blob, which a v3
+		// vault should not hold). A real read fails loudly on it; this is only the
+		// empty-namespace note helper, so skip rather than double-report.
+		return
+	}
+	if len(state.Secrets) == 0 {
+		c.note("namespace %q holds no secrets (it persists empty). Remove it with `notenv namespace delete %s` if it is no longer needed", ns, ns)
+	}
 }
 
 // checkNamespaceBackup verifies a namespace's one-generation backup blob. A
@@ -325,5 +385,6 @@ func referencedBlobs(header *crypto.Header) map[string]bool {
 }
 
 func init() {
+	doctorCmd.Flags().BoolVar(&doctorJSON, "json", false, "machine-readable output: a versioned object of findings (level, text) and a problem count")
 	rootCmd.AddCommand(doctorCmd)
 }
