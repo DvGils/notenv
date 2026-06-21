@@ -83,9 +83,46 @@ func setupFlow(ctx context.Context) error {
 			break
 		}
 	}
-
-	ui.Infof("next: run `notenv init` inside a project to start using this storage")
 	return nil
+}
+
+// vaultSummary is the end-of-setup recap for one storage: what it is, where it
+// lives, and what to do next. It is rendered as a single delimited block so a
+// first-time user lands on one clear takeaway instead of a stream of mixed
+// status, note, and warning lines. The credential disclosure (the generated
+// passphrase and the escrow warning) is deliberately NOT here: it stays in the
+// key ceremony above, the one place that always runs on creation, so a summary
+// path that is skipped or errors can never swallow the only key to the vault.
+type vaultSummary struct {
+	name     string
+	created  bool     // true: just created; false: existing vault, credential verified
+	location string   // human label for where the vault lives
+	locNote  string   // parenthetical after the location, e.g. "encrypted at rest"
+	next     []string // next-step lines, already formatted (commands may be bolded)
+}
+
+func renderVaultSummary(s vaultSummary) {
+	ui.Rule()
+	if s.created {
+		ui.Plainf("  Vault %q is ready", s.name)
+	} else {
+		ui.Plainf("  Vault %q verified: this machine can decrypt its secrets", s.name)
+	}
+	if s.location != "" {
+		line := "  " + s.location
+		if s.locNote != "" {
+			line += "  (" + s.locNote + ")"
+		}
+		ui.Plainf("%s", line)
+	}
+	if len(s.next) > 0 {
+		ui.Plainf("")
+		ui.Plainf("  Next steps:")
+		for _, n := range s.next {
+			ui.Plainf("    • %s", n)
+		}
+	}
+	ui.Rule()
 }
 
 // addStorage runs one storage's setup. The structural question comes first:
@@ -199,12 +236,17 @@ func addLocalStorage(ctx context.Context, user *config.User, first bool) (bool, 
 		return false, err
 	}
 
+	ui.Heading("Setting up storage %q", name)
+
 	// force: localStorageTarget already resolved a fresh name, the same target, or
 	// a replacement the user confirmed, so the collision is decided by here.
 	confPath, err := config.UpsertStorage(name, config.StorageEntry{Path: path}, setupMakeDefault && first, true)
 	if err != nil {
 		return false, err
 	}
+	// The local path writes config before it can probe (the probe opens the store
+	// the saved config resolves), so report it here, in the order it happens.
+	ui.Substep("wrote config (%s)", confPath)
 	fresh, err := config.LoadUser()
 	if err != nil {
 		return false, err
@@ -217,27 +259,33 @@ func addLocalStorage(ctx context.Context, user *config.User, first bool) (bool, 
 	if err := store.Preflight(ctx); err != nil {
 		return false, err
 	}
-	if err := ui.Spin("Validating vault directory (write, read back, delete probe)", func() error {
+	if err := ui.SpinSub("validated the vault directory", func() error {
 		return store.Probe(ctx)
 	}); err != nil {
 		return false, err
 	}
-	ui.Successf("saved storage %q to config (%s)", name, confPath)
 
+	// The key ceremony runs here and owns the credential disclosure (the generated
+	// passphrase and the escrow warning); the summary below intentionally does not
+	// repeat it, so the only key is never deferred behind a fallible step.
 	_, created, err := ensureMaster(ctx, store, keyring.DefaultCache(), eff.Scope(), config.DefaultCacheTTL, readOnlyReason(name, false))
 	if err != nil {
 		return false, err
 	}
-	if created {
-		ui.Successf("vault created at %s", path)
-	} else {
-		ui.Successf("existing vault at %s: credential verified; this machine can decrypt its secrets", path)
-	}
-	ui.Notef("this vault is encrypted at rest but lives on this machine only; back up the directory or attach a cloud remote later with `notenv vault copy`")
 
 	if err := offerPromoteDefault(name); err != nil {
 		return false, err
 	}
+	renderVaultSummary(vaultSummary{
+		name:     name,
+		created:  created,
+		location: path,
+		locNote:  "on this machine, encrypted at rest",
+		next: []string{
+			"back up the vault directory, or attach a cloud remote: " + ui.Bold("notenv vault copy"),
+			"start using it in a project: " + ui.Bold("notenv init"),
+		},
+	})
 	return true, nil
 }
 
@@ -264,9 +312,11 @@ func addRemoteStorage(ctx context.Context, user *config.User, first bool) (bool,
 		return false, err
 	}
 
+	ui.Heading("Setting up storage %q", name)
+
 	// Fail here, with context, not at the first real `set` days later.
 	store := &backend.RcloneStorage{Remote: remote, Base: base}
-	if err := ui.Spin("Validating storage: write, read back, delete probe", func() error {
+	if err := ui.SpinSub("validated the remote (write, read back, delete probe)", func() error {
 		return store.Probe(ctx)
 	}); err != nil {
 		ui.Infof("check the credentials and that the bucket/path exists and is writable")
@@ -275,29 +325,34 @@ func addRemoteStorage(ctx context.Context, user *config.User, first bool) (bool,
 
 	makeDefault := setupMakeDefault && first
 	// force: chooseStorageName already confirmed any replacement above.
-	path, err := config.UpsertStorage(name, config.StorageEntry{Remote: remote, Base: base}, makeDefault, true)
+	confPath, err := config.UpsertStorage(name, config.StorageEntry{Remote: remote, Base: base}, makeDefault, true)
 	if err != nil {
 		return false, err
 	}
-	ui.Successf("saved storage %q to config (%s)", name, path)
+	ui.Substep("wrote config (%s)", confPath)
 
 	// Key ceremony (LUKS2-style header): virgin storage gets a master key
 	// wrapped under a newly chosen passphrase; existing storage verifies the
-	// escrowed passphrase by unlocking a slot, the new-machine recovery flow.
+	// escrowed passphrase by unlocking a slot, the new-machine recovery flow. It
+	// owns the credential disclosure; the summary below does not repeat it.
 	scope := config.CacheScope(remote, base)
 	_, created, err := ensureMaster(ctx, store, keyring.DefaultCache(), scope, config.DefaultCacheTTL, readOnlyReason(name, false))
 	if err != nil {
 		return false, err
 	}
-	if created {
-		ui.Successf("storage %q initialized", name)
-	} else {
-		ui.Successf("storage %q: credential verified; this machine can decrypt its secrets", name)
-	}
 
 	if err := offerPromoteDefault(name); err != nil {
 		return false, err
 	}
+	renderVaultSummary(vaultSummary{
+		name:     name,
+		created:  created,
+		location: describeEntry(config.StorageEntry{Remote: remote, Base: base}),
+		locNote:  "encrypted at rest on the remote",
+		next: []string{
+			"start using it in a project: " + ui.Bold("notenv init"),
+		},
+	})
 	return true, nil
 }
 

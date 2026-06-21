@@ -32,20 +32,60 @@ your project's notenv.toml or the --namespace flag. A namespace persists once it
 exists, even after its last secret is removed; "namespace delete" is how it goes away.`,
 }
 
+// resolveNamespaceArg folds a positional NAME and the --namespace/-n flag into
+// one namespace name for the `namespace` command group. Both forms are accepted
+// and mean the same thing; supplying both with different values is ambiguous and
+// refused. It returns "" when neither is given, leaving the caller to decide
+// whether that is allowed (a read falls back to the project contract; a lifecycle
+// verb requires an explicit name, see requireNamespaceArg).
+func resolveNamespaceArg(args []string) (string, error) {
+	var positional string
+	if len(args) > 0 {
+		positional = args[0]
+	}
+	if positional != "" && namespaceFlag != "" && positional != namespaceFlag {
+		return "", fmt.Errorf("namespace named twice and differently: %q as an argument, %q via --namespace; pass just one", positional, namespaceFlag)
+	}
+	if positional != "" {
+		return positional, nil
+	}
+	return namespaceFlag, nil
+}
+
+// requireNamespaceArg is resolveNamespaceArg for the lifecycle verbs, which must
+// name a namespace explicitly (positional or flag) and never fall back to the
+// project contract: create names a new one, and a destructive op must not act on
+// whatever the current directory happens to select.
+func requireNamespaceArg(args []string, verb string) (string, error) {
+	name, err := resolveNamespaceArg(args)
+	if err != nil {
+		return "", err
+	}
+	if name == "" {
+		return "", fmt.Errorf("name the namespace to %s: pass it as an argument or with --namespace", verb)
+	}
+	return name, nil
+}
+
 var namespaceCreateDescription string
 
 var namespaceCreateCmd = &cobra.Command{
-	Use:   "create NAME",
+	Use:   "create [NAME]",
 	Short: "Create an empty namespace before it holds any secret",
 	Long: `Create a namespace that holds no secrets yet.
 
 Setting the first secret already creates a namespace, so this is the deliberate
 path: reserve a name, or stand a namespace up before its first secret lands. It
-fails if the namespace already exists, and never touches an existing one.`,
-	Args: cobra.ExactArgs(1),
+fails if the namespace already exists, and never touches an existing one.
+
+Name the namespace as an argument or with --namespace; the two are equivalent.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		name := args[0]
+		name, err := requireNamespaceArg(args, "create")
+		if err != nil {
+			return err
+		}
 		if !contract.NamespaceName.MatchString(name) {
 			return fmt.Errorf("invalid namespace name %q: it must match %s", name, contract.NamespaceName)
 		}
@@ -53,16 +93,16 @@ fails if the namespace already exists, and never touches an existing one.`,
 		if err != nil {
 			return err
 		}
-		u, err := unlockHeader(ctx, store, true)
+		mk, header, err := unlockHeaderCached(ctx, store)
 		if err != nil {
 			return err
 		}
 		// Friendly early exit before any write; createNamespace re-checks atomically
 		// inside the swap, so a racing create still cannot clobber an existing one.
-		if _, exists := u.header.NamespaceEntry(name); exists {
+		if _, exists := header.NamespaceEntry(name); exists {
 			return fmt.Errorf("namespace %q already exists", name)
 		}
-		err = createNamespace(ctx, store, u.mk, name, namespaceCreateDescription)
+		err = createNamespace(ctx, store, mk, name, namespaceCreateDescription)
 		// Drop any stale warm cache from an earlier incarnation of this name when the
 		// write may have landed (clean success OR an uncertain commit), so a later
 		// run cannot serve old secrets instead of the new empty state.
@@ -107,7 +147,7 @@ func createNamespace(ctx context.Context, store *headerTarget, mk *crypto.Master
 var namespaceDeleteYes bool
 
 var namespaceDeleteCmd = &cobra.Command{
-	Use:   "delete NAME",
+	Use:   "delete [NAME]",
 	Short: "Permanently remove a namespace and all of its secrets",
 	Long: `Permanently remove a namespace: its manifest entry and every secret it holds.
 
@@ -116,12 +156,18 @@ yours to recover from). It works even on a namespace whose data is corrupt or
 missing, since it never reads the blob, so it also clears a namespace that can no
 longer be read.
 
-It requires the vault passphrase (to rewrite the header) and a confirmation; pass
---yes to skip the confirmation (the passphrase is still required).`,
-	Args: cobra.ExactArgs(1),
+Name the namespace as an argument or with --namespace; the two are equivalent.
+Being destructive, it re-unlocks the vault instead of using the warm cache, so a
+passphrase-protected vault prompts even on a warm session (a configured machine
+identity unlocks as usual). A confirmation is also required; pass --yes to skip
+it (not the unlock).`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		name := args[0]
+		name, err := requireNamespaceArg(args, "delete")
+		if err != nil {
+			return err
+		}
 		store, err := loadHeaderStore()
 		if err != nil {
 			return err
@@ -181,15 +227,20 @@ func deleteNamespace(ctx context.Context, store *headerTarget, mk *crypto.Master
 var namespaceUpdateDescription string
 
 var namespaceUpdateCmd = &cobra.Command{
-	Use:   "update NAME",
+	Use:   "update [NAME]",
 	Short: "Update a namespace's metadata (today, its description)",
 	Long: `Update an existing namespace's metadata. Today that is its description: pass
 --description "new text" to set it, or --description "" to clear it. The
-namespace must already exist (create it with ` + "`notenv namespace create`" + `).`,
-	Args: cobra.ExactArgs(1),
+namespace must already exist (create it with ` + "`notenv namespace create`" + `).
+
+Name the namespace as an argument or with --namespace; the two are equivalent.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		name := args[0]
+		name, err := requireNamespaceArg(args, "update")
+		if err != nil {
+			return err
+		}
 		// Tri-state like `set --description`: only an explicitly-passed --description
 		// changes anything, so updating without it is a no-op error rather than a
 		// silent clear.
@@ -200,14 +251,14 @@ namespace must already exist (create it with ` + "`notenv namespace create`" + `
 		if err != nil {
 			return err
 		}
-		u, err := unlockHeader(ctx, store, true)
+		mk, header, err := unlockHeaderCached(ctx, store)
 		if err != nil {
 			return err
 		}
-		if _, exists := u.header.NamespaceEntry(name); !exists {
+		if _, exists := header.NamespaceEntry(name); !exists {
 			return fmt.Errorf("namespace %q is not in the vault; create it first with `notenv namespace create %s`", name, name)
 		}
-		if err := updateNamespaceDescription(ctx, store, u.mk, name, namespaceUpdateDescription); err != nil {
+		if err := updateNamespaceDescription(ctx, store, mk, name, namespaceUpdateDescription); err != nil {
 			return err
 		}
 		ui.Successf("updated namespace %q", name)
@@ -237,7 +288,7 @@ func updateNamespaceDescription(ctx context.Context, store *headerTarget, mk *cr
 var namespaceRecoverYes bool
 
 var namespaceRecoverCmd = &cobra.Command{
-	Use:   "recover NAME",
+	Use:   "recover [NAME]",
 	Short: "Rebuild a namespace whose blob is unreadable from its last good backup (accepts data loss)",
 	Long: `Recover a namespace a normal read refuses because its current blob is missing or
 corrupt (bit-rot, a truncated upload, an unrecoverable remote). notenv rebuilds
@@ -248,11 +299,20 @@ If nothing readable survives (the backup is gone or corrupt too), recover cannot
 rebuild the namespace and stops without changing anything; remove it with
 "notenv namespace delete NAME" if you want it gone. This is a last resort for
 honest media loss: prefer your remote's version history if it keeps one, or
-"notenv run --skip-corrupt" to read what survives without changing anything.`,
-	Args: cobra.ExactArgs(1),
+"notenv run --skip-corrupt" to read what survives without changing anything.
+
+Name the namespace as an argument or with --namespace; the two are equivalent.
+Being a data-losing rebuild, it re-unlocks the vault instead of using the warm
+cache, so a passphrase-protected vault prompts even on a warm session (a
+configured machine identity unlocks as usual). A confirmation is also required;
+pass --yes to skip it.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		name := args[0]
+		name, err := requireNamespaceArg(args, "recover")
+		if err != nil {
+			return err
+		}
 		store, err := loadHeaderStore()
 		if err != nil {
 			return err

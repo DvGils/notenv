@@ -84,8 +84,17 @@ func storageSelector(fallback string) string {
 }
 
 func loadApp(ctx context.Context) (*app, error) {
-	if namespaceFlag != "" {
-		return projectlessApp(ctx, storageSelector(""), namespaceFlag)
+	return loadAppNamespace(ctx, namespaceFlag)
+}
+
+// loadAppNamespace is loadApp with the namespace already resolved by the caller,
+// so a command that accepts the namespace as a positional argument (the
+// `namespace` group) routes through the same projectless path as --namespace. An
+// empty namespace falls back to the committed-contract walk, exactly as a bare
+// invocation does.
+func loadAppNamespace(ctx context.Context, namespace string) (*app, error) {
+	if namespace != "" {
+		return projectlessApp(ctx, storageSelector(""), namespace)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -651,11 +660,8 @@ func (a *app) master(ctx context.Context) (*crypto.MasterKey, error) {
 	if err := sessionGuard(a.cacheScope); err != nil {
 		return nil, err
 	}
-	if cached, ok := a.cache.Get(a.cacheScope); ok {
-		if mk, err := crypto.ParseMasterKey(cached); err == nil {
-			return mk, nil
-		}
-		a.cache.Drop(a.cacheScope) // unparseable cached value, treat as stale and drop it
+	if mk, ok := cachedMasterKey(a.cache, a.cacheScope); ok {
+		return mk, nil
 	}
 	v, err := a.vault()
 	if err != nil {

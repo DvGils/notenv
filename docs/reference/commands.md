@@ -38,13 +38,19 @@ One encrypted key/value in the selected namespace (chosen by the project's `note
 
 A named, independently encrypted group of secrets in a vault.
 
+For `create`, `update`, `delete`, `recover`, and `inspect`, name the namespace either as a positional
+argument or with `--namespace` / `-n`; the two are equivalent (passing both with different values is
+refused). `inspect` may also omit the name inside a project, to summarize that project's namespace. The
+destructive verbs (`delete`, `recover`) require an explicit name and never fall back to the project's
+namespace. (`export` and `import` take `--namespace` or the project, with no positional.)
+
 | Command | What it does |
 |---|---|
-| `notenv namespace inspect` | Summarize the current namespace: its description and who/when stamps, then each secret's name, length, description, and last write, with a count (never values). `--skip-corrupt` reads the backup if the current blob is unreadable; `--json` for machines. |
-| `notenv namespace create NAME` | Create an empty namespace deliberately (setting the first secret also creates one). `--description` records what it holds. |
-| `notenv namespace update NAME --description "..."` | Update an existing namespace's metadata (today, its description; `""` clears it). |
-| `notenv namespace delete NAME` | Permanently remove a namespace and all of its secrets. Behind the passphrase and a confirmation (`--yes` skips it). |
-| `notenv namespace recover NAME` | Last resort for honest media loss: rebuild a namespace whose current blob is unreadable from its one-generation backup, dropping the corrupt blobs (the most recent write is lost). If nothing readable survives it refuses; remove it with `namespace delete`. `--yes` skips the confirmation. |
+| `notenv namespace inspect [NAME]` | Summarize a namespace: its description and who/when stamps, then each secret's name, length, description, and last write, with a count (never values). `--skip-corrupt` reads the backup if the current blob is unreadable; `--json` for machines. |
+| `notenv namespace create [NAME]` | Create an empty namespace deliberately (setting the first secret also creates one). `--description` records what it holds. Uses the warm passphrase cache like `secret set`. |
+| `notenv namespace update [NAME] --description "..."` | Update an existing namespace's metadata (today, its description; `""` clears it). Uses the warm passphrase cache like `secret set`. |
+| `notenv namespace delete [NAME]` | Permanently remove a namespace and all of its secrets. Re-unlocks the vault instead of using the warm cache, so a passphrase-protected vault prompts even on a warm session (machine identities unlock as usual), plus a confirmation (`--yes` skips the confirmation, not the unlock). |
+| `notenv namespace recover [NAME]` | Last resort for honest media loss: rebuild a namespace whose current blob is unreadable from its one-generation backup, dropping the corrupt blobs (the most recent write is lost). If nothing readable survives it refuses; remove it with `namespace delete`. Re-unlocks the vault instead of using the warm cache (a passphrase prompt even on a warm session; machine identities unlock as usual); `--yes` skips the confirmation. |
 | `notenv namespace export` | Print this namespace's secrets as `.env` to stdout, never a file. The inverse of `import`. Gated by the primary passphrase; `--json` emits a structured form. |
 | `notenv namespace import [file]` | Import a `.env` file into this namespace: every value encrypted in one write, every key declared. `--dry-run` previews (names, never values). |
 
@@ -81,9 +87,9 @@ are for machines: a slot is a person's passphrase or a machine's age public key.
 
 Add these to any command:
 
-- `--storage NAME` targets a specific configured storage (vault). Use it in CI to pin the vault from
-  outside the repo.
-- `--namespace NAME` addresses a vault namespace directly from anywhere, with no project and no
+- `--storage NAME` (short: `-s`) targets a specific configured storage (vault). Use it in CI to pin
+  the vault from outside the repo.
+- `--namespace NAME` (short: `-n`) addresses a vault namespace directly from anywhere, with no project and no
   checkout. The contract (and its declarations) is bypassed entirely, so `run` injects every secret
   in the namespace.
 

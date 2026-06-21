@@ -35,18 +35,23 @@ var (
 )
 
 var namespaceInspectCmd = &cobra.Command{
-	Use:   "inspect",
+	Use:   "inspect [NAME]",
 	Short: "Summarize the current namespace: its metadata and the secrets it holds (never values)",
 	Long: `Report what the selected namespace holds without revealing any secret value: the
 namespace's own description and who/when stamps, then each secret's name, byte
 length, description, and last write, with a count.
 
-The namespace is selected the usual way (the project, or --namespace). No value is
-ever printed. For one secret use "notenv secret inspect KEY"; for the whole vault
-use "notenv vault inspect".`,
-	Args: cobra.NoArgs,
+Name the namespace as an argument or with --namespace (the two are equivalent),
+or omit both inside a project to inspect its namespace. No value is ever printed.
+For one secret use "notenv secret inspect KEY"; for the whole vault use "notenv
+vault inspect".`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return inspectNamespace(cmd.Context())
+		name, err := resolveNamespaceArg(args)
+		if err != nil {
+			return err
+		}
+		return inspectNamespace(cmd.Context(), name)
 	},
 }
 
@@ -187,8 +192,8 @@ func stampLabel(ts int64, by string) string {
 	return label
 }
 
-func inspectNamespace(ctx context.Context) error {
-	a, err := loadApp(ctx)
+func inspectNamespace(ctx context.Context, namespace string) error {
+	a, err := loadAppNamespace(ctx, namespace)
 	if err != nil {
 		return err
 	}
