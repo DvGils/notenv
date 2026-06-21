@@ -1,11 +1,13 @@
 # notenv
 
 [![CI](https://github.com/DvGils/notenv/actions/workflows/ci.yml/badge.svg)](https://github.com/DvGils/notenv/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/DvGils/notenv?sort=semver)](https://github.com/DvGils/notenv/releases/latest)
-[![Docs](https://img.shields.io/badge/docs-dvgils.github.io%2Fnotenv-blue)](https://dvgils.github.io/notenv/)
-[![Go Reference](https://pkg.go.dev/badge/github.com/DvGils/notenv.svg)](https://pkg.go.dev/github.com/DvGils/notenv)
 [![Go Report Card](https://goreportcard.com/badge/github.com/DvGils/notenv)](https://goreportcard.com/report/github.com/DvGils/notenv)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13325/badge)](https://www.bestpractices.dev/projects/13325)
+[![OpenSSF Baseline](https://www.bestpractices.dev/projects/13325/baseline)](https://www.bestpractices.dev/projects/13325)
+[![Go Reference](https://pkg.go.dev/badge/github.com/DvGils/notenv.svg)](https://pkg.go.dev/github.com/DvGils/notenv)
+[![Docs](https://img.shields.io/badge/docs-dvgils.github.io%2Fnotenv-blue)](https://dvgils.github.io/notenv/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+[![Release](https://img.shields.io/github/v/release/DvGils/notenv?sort=semver)](https://github.com/DvGils/notenv/releases/latest)
 
 > Encrypted secrets, no infrastructure, no plaintext on disk.
 

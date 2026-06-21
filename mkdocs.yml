@@ -119,6 +119,7 @@ nav:
   - Security:
       - Threat model: security/threat-model.md
       - Reporting a vulnerability: security/reporting.md
+      - Security policies: security/policies.md
   - Project:
       - Roadmap: project/roadmap.md
       - Changelog: project/changelog.md

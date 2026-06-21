@@ -586,7 +586,7 @@ untouched, so other slots keep working. Escrow the new passphrase.`,
 		if err := writeHeader(cmd.Context(), store, u, verify); err != nil {
 			return err
 		}
-		ui.Warnf("escrow this new passphrase in your password manager NOW; the old one no longer opens this slot")
+		ui.Warnf("Store your passphrase somewhere safe; the old one no longer opens this slot")
 		ui.Successf("rotated passphrase for slot %q", u.header.Slots[u.slot].Name)
 		return nil
 	},
