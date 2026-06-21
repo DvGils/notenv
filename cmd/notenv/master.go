@@ -228,6 +228,23 @@ func warnShortPassphrase(pass string) {
 	}
 }
 
+// cachedMasterKey returns the warm master for scope when one is cached and still
+// parses; a stale or unparseable entry is dropped and reported as a miss, so the
+// caller falls through to a cold unlock. It is the shared front half of every
+// cache-friendly unlock (app.master and the namespace data-write path).
+func cachedMasterKey(cache keyring.Cache, scope string) (*crypto.MasterKey, bool) {
+	cached, ok := cache.Get(scope)
+	if !ok {
+		return nil, false
+	}
+	mk, err := crypto.ParseMasterKey(cached)
+	if err != nil {
+		cache.Drop(scope) // unparseable cached value, treat as stale and drop it
+		return nil, false
+	}
+	return mk, true
+}
+
 // cacheMaster stores best-effort: a cache failure must never fail the
 // command, the user just gets prompted again next time. While any handoff holds
 // the no-cache lease, NO master is cached: a handoff hands an agent your uid, and

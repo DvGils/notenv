@@ -40,6 +40,7 @@ type headerTarget struct {
 	scope    string
 	readOnly string
 	cache    keyring.Cache
+	cacheTTL time.Duration
 }
 
 // loadHeaderStore builds the storage backend for header operations. The header
@@ -83,7 +84,15 @@ func headerTargetFor(storageName string) (*headerTarget, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &headerTarget{vaultStorage: openStorage(eff), scope: eff.Scope(), readOnly: readOnlyReason(eff.StorageName, eff.ReadOnly), cache: keyring.DefaultCache()}, nil
+	// ResolveStorage resolves only the storage half, so the master-key cache TTL
+	// (a user-level crypto setting, independent of any one storage) is read here.
+	// The credential commands ignore it (unlockHeader never caches); the namespace
+	// data-write path (unlockHeaderCached) uses it to warm the cache like `set`.
+	ttl, err := user.MasterCacheTTL()
+	if err != nil {
+		return nil, fmt.Errorf("invalid crypto cache_ttl in config: %w", err)
+	}
+	return &headerTarget{vaultStorage: openStorage(eff), scope: eff.Scope(), readOnly: readOnlyReason(eff.StorageName, eff.ReadOnly), cache: keyring.DefaultCache(), cacheTTL: ttl}, nil
 }
 
 // trustHeader is the read-side integrity check run after every unlock: it
@@ -468,6 +477,64 @@ func unlockHeader(ctx context.Context, store *headerTarget, gateProvisional bool
 		}
 	}
 	return &unlocked{header: header, raw: raw, mk: res.mk, slot: res.slot, reverify: res.reverify, slotKey: res.slotKey}, nil
+}
+
+// unlockHeaderCached resolves the master key for a namespace DATA write (the
+// non-destructive `namespace create` / `update`) and returns the verified
+// current header. Unlike unlockHeader it serves the warm master-key cache and
+// prompts only on a cold cache, the same model as `secret set`: these are data
+// writes, not credential operations, so they need the master, not the operator's
+// slot or a post-write credential re-verification (secrets.For runs its own
+// header swap). A missing vault is an error here, never an invitation to
+// bootstrap one. The destructive verbs (delete, recover) deliberately keep the
+// freshly typed passphrase via unlockHeader instead.
+func unlockHeaderCached(ctx context.Context, store *headerTarget) (*crypto.MasterKey, *crypto.Header, error) {
+	if err := sessionGuard(store.scope); err != nil {
+		return nil, nil, err
+	}
+	if store.readOnly != "" {
+		return nil, nil, fmt.Errorf("%s; refusing to modify the vault header", store.readOnly)
+	}
+	if err := store.Preflight(ctx); err != nil {
+		return nil, nil, err
+	}
+	// Read the header up front so a missing vault surfaces as "run setup", rather
+	// than letting the cold-cache ensureMaster quietly initialize a fresh one from
+	// a write that was meant to land in an existing vault.
+	var raw []byte
+	if err := ui.Spin("Reading key header", func() error {
+		var getErr error
+		raw, getErr = store.GetHeader(ctx)
+		return getErr
+	}); err != nil {
+		if errors.Is(err, backend.ErrNotFound) {
+			return nil, nil, errors.New("no key header found in storage; run `notenv setup` first")
+		}
+		return nil, nil, err
+	}
+	header, err := crypto.ParseHeader(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Master: the warm cache first, else the standard cold-cache ceremony (which
+	// runs the onboarding gate and warms the cache). The header is known to exist,
+	// so ensureMaster unlocks it rather than creating one.
+	mk, cached := cachedMasterKey(store.cache, store.scope)
+	if !cached {
+		mk, _, err = ensureMaster(ctx, store, store.cache, store.scope, store.cacheTTL, store.readOnly)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	// A concurrent rotation makes the header and this master disagree; surface it
+	// as an epoch change, then run the same trust check every read path applies.
+	if header.Recipient != mk.PublicKey() {
+		return nil, nil, fmt.Errorf("%w; re-run the command to unlock the current key", keymgmt.ErrEpochChanged)
+	}
+	if err := trustHeader(store.scope, header, mk); err != nil {
+		return nil, nil, err
+	}
+	return mk, header, nil
 }
 
 // writeHeader marshals the mutated header and writes it through the safe-write

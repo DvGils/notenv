@@ -4,7 +4,43 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
-## Unreleased (0.21.0)
+## Unreleased (0.21.1)
+
+A follow-up to 0.21.0 that smooths out the `namespace` command group once it was
+in real use: one way to name a namespace across the whole group, short flags for
+the two selectors, and fewer passphrase prompts for the harmless namespace edits.
+
+### Added
+
+- **`-n` / `-s` short flags** for the two universal selectors: `-n` is
+  `--namespace` and `-s` is `--storage`, on every command.
+
+### Fixed
+
+- **The `namespace` verbs now select the namespace the same way.** `namespace
+  create`, `update`, `delete`, and `recover` previously took only a positional name
+  and rejected `--namespace`, while `namespace inspect` took only `--namespace` and
+  rejected a positional, so whichever form you reached for, half the group errored
+  ("accepts 1 arg(s), received 0", or "unknown command"). Now `create`, `update`,
+  `delete`, `recover`, and `inspect` accept the name either way: as a positional
+  argument or with `--namespace` / `-n` (the two are equivalent; passing both with
+  different values is refused). The destructive verbs (`delete`, `recover`) still
+  require an explicit name and never fall back to the project's namespace.
+  (`namespace export` and `import` are unchanged: `--namespace` or the project, no
+  positional.)
+
+### Changed
+
+- **`namespace create` and `update` no longer re-prompt for the passphrase on a
+  warm session.** They are ordinary writes (reserve a name; edit a description), so
+  they now use the master-key cache like `secret set`: no passphrase when one was
+  entered recently, a single prompt on a cold cache. The destructive `namespace
+  delete` and `recover` still re-unlock the vault instead of using the warm cache,
+  so a passphrase-protected vault prompts even on a warm session (a configured
+  machine identity unlocks as usual), on top of the confirmation, as a deliberate
+  barrier.
+
+## 0.21.0
 
 Namespaces become a first-class concept. Until now a namespace existed only while
 it held secrets: it appeared on the first `set` and vanished when its last secret
