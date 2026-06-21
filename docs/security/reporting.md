@@ -8,8 +8,10 @@ coordinated disclosure follow. We aim to assess every report and report back on 
 
 ## Supported versions
 
-notenv is pre-1.0 and developed on a rolling basis; security fixes land on the latest release. Run a
-recent version.
+notenv is pre-1.0 and developed on a rolling basis. Security fixes land on the latest release, and
+only the latest release is supported: a version stops receiving security updates as soon as a newer
+release ships. A formal supported-versions and end-of-life policy will be defined at 1.0. Run a
+recent version. See the [security policies](policies.md) for the full statement.
 
 ## Scope
 

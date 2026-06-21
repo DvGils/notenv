@@ -166,7 +166,7 @@ func enforceProvisional(ctx context.Context, store keymgmt.Vault, scope, readOnl
 	}
 	pinCurrent(scope, header, res.mk)
 	res.reverify = verify
-	ui.Warnf("escrow this passphrase in your password manager NOW; it is your only credential for this vault")
+	ui.Warnf("Store your passphrase somewhere safe; it is your only credential for this vault")
 	ui.Successf("replaced the temporary onboarding passphrase for slot %q", header.Slots[res.slot].Name)
 	return true, nil
 }

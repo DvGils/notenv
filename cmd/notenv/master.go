@@ -149,7 +149,7 @@ func createMaster(ctx context.Context, store keymgmt.Vault) (*crypto.MasterKey, 
 	}); err != nil {
 		return nil, nil, err
 	}
-	ui.Warnf("escrow this passphrase in your password manager NOW. It is the only key to your secrets; lose it and the ciphertext is unrecoverable by design")
+	ui.Warnf("Store your passphrase somewhere safe. It is the only key to your secrets; lose it and the ciphertext is unrecoverable by design")
 	return mk, header, nil
 }
 
