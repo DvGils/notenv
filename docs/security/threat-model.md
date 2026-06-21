@@ -62,6 +62,13 @@ Add three things:
   agent reads, and captured output is masked. This is accident-proofing, not a
   cage: code running as your user can still extract a value on purpose (see
   [Non-goals](#non-goals)).
+- **`notenv handoff` bounds an agent to one namespace.** It runs the agent against
+  an ephemeral vault holding only the namespace you scoped in, under a fresh key, so
+  your master key is never in its reach: a compromised or prompt-injected agent can
+  leak that one namespace but can never decrypt the rest of your vault. It bounds
+  which keys the agent holds, not what it does with them (it can still extract what
+  it was handed), and it needs a passphrase-gated source vault. See
+  [Agent handoff](../concepts/agent-handoff.md).
 - **Read equals write.** With a single master key, anyone who can decrypt can also
   author valid writes, so `read_only` is a guardrail for cooperating clients;
   *enforced* read-only is a read-only storage credential.
@@ -180,11 +187,13 @@ notenv does not defend these, by design. Calling them out keeps the line honest.
   that is the product. Pinning stops a *silent* cross-project reach, not misuse of
   what you knowingly hand over.
 - **Deliberate extraction by code running as you.** An agent can `printenv KEY |
-  rev` around the masker or read the session cache; masking catches accidents, not
-  intent (the ssh-agent trust model). A first step shipped: `NOTENV_IDENTITY` is
-  stripped from child environments. A broker that lets agents *use* but not
-  *extract* the key is planned; until it exists, notenv makes no agent-containment
-  claim.
+  rev` around the masker or read the secrets it was handed; masking catches
+  accidents, not intent (the ssh-agent trust model). What notenv contains is the
+  blast radius, not the intent: `NOTENV_IDENTITY` is stripped from child
+  environments, and `notenv handoff` scopes an agent to a single ephemeral namespace
+  with your master key out of reach (see [Agent handoff](../concepts/agent-handoff.md)).
+  The agent can still extract that one namespace; notenv bounds what an agent can
+  reach, never what it does with what it holds.
 - **Read-only as containment.** `read_only` and `NOTENV_READONLY` stop a
   cooperating client's accidental writes, not an adversary: read equals write under
   a single master key. Enforced read-only is the storage credential; cryptographic
