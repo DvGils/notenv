@@ -26,6 +26,15 @@ Changes you make on this machine refresh the cache immediately. To pull a change
 made on another machine before the cache expires, use `notenv run --refresh` (or
 `notenv cache clear`). Set either `cache_ttl` to `"0"` to disable caching.
 
+## Re-locking
+
+To drop the cached **master key** and force a passphrase prompt on the next
+operation, run `notenv cache lock`. It re-locks every vault set up on this machine;
+`notenv cache lock -s <storage>` re-locks just one. This is distinct from
+`notenv cache clear`, which removes cached ciphertext blobs (useless without the
+key) but leaves the key cached: `lock` removes the key itself. Reach for it before
+you hand off a machine or step away.
+
 ## What each platform guarantees
 
 The caches are not identical across platforms, and the differences are stated
@@ -45,6 +54,12 @@ the user's login credentials. What they cannot promise is the kernel keyring's
 eviction-at-the-deadline; an expired entry persists (encrypted) until the next
 notenv read touches and deletes it. If that difference matters to you, set
 `crypto.cache_ttl = "0"` and notenv prompts every time.
+
+On macOS specifically, the entry is a generic-password item in your local login
+keychain. It is not marked synchronizable, so it never leaves the machine through
+iCloud Keychain, and its access control trusts only the notenv binary that created
+it, so another program reading it raises a keychain prompt rather than getting
+silent access.
 
 Blob caching stays Linux-only: there is no RAM-backed location to promise
 elsewhere, and a cold fetch is latency, not a prompt.

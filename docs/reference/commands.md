@@ -18,6 +18,7 @@ see what a container holds, `inspect` it: `vault inspect`, `namespace inspect`,
 | `notenv handoff inspect` | For a program notenv launched: report whether it is inside a scoped handoff session. Reads only its own environment and the ephemeral vault (no unlock, no value). The answer is the exit code too: 0 = inside a handoff, 1 = not. `--json` for machines. |
 | `notenv doctor` | Check a storage read-only for known problem states; exit 1 when there are findings. `--json` for machines. |
 | `notenv cache clear` | Remove all locally cached ciphertext on this machine. |
+| `notenv cache lock` | Drop cached vault keys on this machine, re-locking every vault so the next use prompts again. `-s` locks just one. Touches local state only (no unlock needed). |
 | `notenv --version` | Print the version, commit, and build date. |
 
 ## Secrets (`notenv secret ...`)

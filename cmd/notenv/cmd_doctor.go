@@ -172,11 +172,11 @@ func verifyWithSessionKey(c *checkup, cache keyring.Cache, scope string, header 
 	}
 	mk, err := crypto.ParseMasterKey(cached)
 	if err != nil {
-		c.note("header not verified: the cached session key is unreadable (try `notenv cache clear` then unlock again). The object checks below confirm presence only, against the unverified manifest, not content")
+		c.note("header not verified: the cached session key is unreadable (try `notenv cache lock` then unlock again). The object checks below confirm presence only, against the unverified manifest, not content")
 		return nil, false
 	}
 	if err := header.Verify(mk); err != nil {
-		c.problem("header failed authentication under the session key: %v. If the vault was re-keyed elsewhere this is a stale cache (`notenv cache clear`, then unlock again); otherwise treat the storage as tampered", err)
+		c.problem("header failed authentication under the session key: %v. If the vault was re-keyed elsewhere this is a stale cache (`notenv cache lock`, then unlock again); otherwise treat the storage as tampered", err)
 		return nil, false
 	}
 	c.ok("header authenticates under the cached session key")

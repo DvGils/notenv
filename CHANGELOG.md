@@ -4,6 +4,26 @@ Notable changes to notenv. This project follows [semantic versioning](https://se
 while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
 on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 0.21.3
+
+A small follow-up to the cache commands: a way to drop cached vault keys, and a
+correction to guidance that pointed at the wrong cache.
+
+### Added
+
+- **`notenv cache lock`.** Drops cached vault keys on this machine (the master key
+  in the OS key store: the kernel keyring on Linux, the Keychain on macOS, DPAPI on
+  Windows), re-locking every vault so the next use prompts for the passphrase again.
+  `-s` re-locks a single storage. It is the counterpart to `cache clear`, which
+  removes only cached ciphertext blobs.
+
+### Fixed
+
+- **Cache guidance pointed at the wrong command.** Three messages (the agent-handoff
+  fallback warning and two `doctor` checks) advised running `notenv cache clear` to
+  evict a cached master key, which it never did: `cache clear` removes only cached
+  ciphertext. They now point at the new `notenv cache lock`.
+
 ## 0.21.2
 
 Chores in preparation for V1 release, specifically targeted at meeting OpenSSF best practices baselines.
