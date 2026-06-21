@@ -68,7 +68,7 @@ Add three things:
 
 ## What notenv assumes
 
-The operating envelope, stated as requirements rather than scattered caveats. When
+The operating envelope. When
 these hold, the properties in the next section hold.
 
 - **Your passphrase is strong** and your password manager keeps it. It is the root
