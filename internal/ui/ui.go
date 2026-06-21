@@ -9,6 +9,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"golang.org/x/term"
 )
@@ -45,3 +46,32 @@ func Warnf(format string, a ...any) {
 }
 func Infof(format string, a ...any) { fmt.Fprintln(os.Stderr, Dim("→"), fmt.Sprintf(format, a...)) }
 func Notef(format string, a ...any) { fmt.Fprintln(os.Stderr, Dim("•"), fmt.Sprintf(format, a...)) }
+
+// Substep reports a completed sub-step of a phase: a dim, indented check kept
+// subordinate to its Heading and the final summary, so the eye lands on those
+// rather than on each internal step.
+func Substep(format string, a ...any) {
+	fmt.Fprintln(os.Stderr, Dim("  ✓ "+fmt.Sprintf(format, a...)))
+}
+
+// Structural output for multi-step flows (setup): a phase Heading, an unadorned
+// Plainf line for a summary body, and a Rule to frame it. These carry no status
+// glyph, so a block built from them reads as one unit instead of a stack of
+// equally-weighted status lines.
+
+// Heading prints a blank line then a bold section title, opening a phase.
+func Heading(format string, a ...any) {
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, Bold(fmt.Sprintf(format, a...)))
+}
+
+// Plainf prints one unadorned line to stderr (no glyph), for the body of a
+// summary block where the status vocabulary would only add noise.
+func Plainf(format string, a ...any) {
+	fmt.Fprintln(os.Stderr, fmt.Sprintf(format, a...))
+}
+
+// Rule prints a dim horizontal rule, used to delimit a summary block.
+func Rule() {
+	fmt.Fprintln(os.Stderr, Dim(strings.Repeat("─", 56)))
+}
