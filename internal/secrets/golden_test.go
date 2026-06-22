@@ -90,6 +90,19 @@ func TestGoldenVault(t *testing.T) {
 	ctx := context.Background()
 	st := &local.Storage{Path: goldenDir}
 
+	h, mkID := openGolden(t, ctx, st)
+	for _, ns := range sortedKeys(goldenContent) {
+		verifyGoldenNamespace(t, ctx, st, h, mkID, ns)
+	}
+	verifyGoldenBackup(t, ctx, st, h, mkID)
+}
+
+// openGolden parses the committed header (asserting the frozen v6), then unlocks
+// the master both ways: the scrypt-free machine-identity recipient slot (which
+// opens under any build) and the passphrase slot (the scrypt-wrapped path). Both
+// must yield the same master.
+func openGolden(t *testing.T, ctx context.Context, st *local.Storage) (*crypto.Header, *crypto.MasterKey) {
+	t.Helper()
 	raw, err := st.GetHeader(ctx)
 	if err != nil {
 		t.Fatalf("read golden header (regenerate with -update-golden if the fixture is missing): %v", err)
@@ -101,10 +114,6 @@ func TestGoldenVault(t *testing.T) {
 	if h.Version != 6 {
 		t.Fatalf("golden vault header is v%d, want v6: the storage format is frozen for the 1.x line", h.Version)
 	}
-
-	// Unlock via the machine-identity recipient slot (no scrypt, opens under any
-	// build) and via the passphrase slot (the scrypt-wrapped path). Both must yield
-	// the same master.
 	id, err := age.ParseX25519Identity(goldenIdentity)
 	if err != nil {
 		t.Fatal(err)
@@ -120,43 +129,51 @@ func TestGoldenVault(t *testing.T) {
 	if mkPass.PublicKey() != mkID.PublicKey() {
 		t.Fatal("the passphrase and the machine identity opened different masters")
 	}
+	return h, mkID
+}
 
-	for _, ns := range sortedKeys(goldenContent) {
-		want := goldenContent[ns]
-		entry, ok := h.NamespaceEntry(ns)
-		if !ok {
-			t.Fatalf("namespace %q is missing from the manifest", ns)
-		}
-		switch {
-		case want.hasBackup && entry.Prev == "":
-			t.Errorf("namespace %q should carry a one-generation backup, but its manifest entry has no Prev pointer", ns)
-		case !want.hasBackup && entry.Prev != "":
-			t.Errorf("namespace %q should have no backup, but its manifest entry carries Prev %q", ns, entry.Prev)
-		}
-
-		state, err := secrets.For(st, ns, mkID).Read(ctx, entry)
-		if err != nil {
-			t.Fatalf("read namespace %q: %v", ns, err)
-		}
-		if state.Namespace.Description != want.desc {
-			t.Errorf("namespace %q description = %q, want %q", ns, state.Namespace.Description, want.desc)
-		}
-		if len(state.Secrets) != len(want.secrets) {
-			t.Errorf("namespace %q holds %d secrets, want %d", ns, len(state.Secrets), len(want.secrets))
-		}
-		for k, w := range want.secrets {
-			if got := state.Secrets[k]; got != w.value {
-				t.Errorf("namespace %q secret %q = %q, want %q", ns, k, got, w.value)
-			}
-			if got := state.Meta[k].Description; got != w.desc {
-				t.Errorf("namespace %q secret %q description = %q, want %q", ns, k, got, w.desc)
-			}
-		}
+// verifyGoldenNamespace checks that one namespace decrypts to its expected secrets
+// and metadata, and that its manifest entry carries a Prev backup pointer exactly
+// when the namespace was written more than once.
+func verifyGoldenNamespace(t *testing.T, ctx context.Context, st *local.Storage, h *crypto.Header, mkID *crypto.MasterKey, ns string) {
+	t.Helper()
+	want := goldenContent[ns]
+	entry, ok := h.NamespaceEntry(ns)
+	if !ok {
+		t.Fatalf("namespace %q is missing from the manifest", ns)
+	}
+	switch {
+	case want.hasBackup && entry.Prev == "":
+		t.Errorf("namespace %q should carry a one-generation backup, but its manifest entry has no Prev pointer", ns)
+	case !want.hasBackup && entry.Prev != "":
+		t.Errorf("namespace %q should have no backup, but its manifest entry carries Prev %q", ns, entry.Prev)
 	}
 
-	// The one-generation backup is itself a valid, readable blob: the write proj
-	// superseded. Reading it under its recorded PrevMAC proves the backup pointer
-	// and its MAC survived the freeze.
+	state, err := secrets.For(st, ns, mkID).Read(ctx, entry)
+	if err != nil {
+		t.Fatalf("read namespace %q: %v", ns, err)
+	}
+	if state.Namespace.Description != want.desc {
+		t.Errorf("namespace %q description = %q, want %q", ns, state.Namespace.Description, want.desc)
+	}
+	if len(state.Secrets) != len(want.secrets) {
+		t.Errorf("namespace %q holds %d secrets, want %d", ns, len(state.Secrets), len(want.secrets))
+	}
+	for k, w := range want.secrets {
+		if got := state.Secrets[k]; got != w.value {
+			t.Errorf("namespace %q secret %q = %q, want %q", ns, k, got, w.value)
+		}
+		if got := state.Meta[k].Description; got != w.desc {
+			t.Errorf("namespace %q secret %q description = %q, want %q", ns, k, got, w.desc)
+		}
+	}
+}
+
+// verifyGoldenBackup reads proj's one-generation backup directly, under its
+// recorded PrevMAC, proving the backup pointer and its MAC survived the freeze and
+// that the blob is the write proj superseded.
+func verifyGoldenBackup(t *testing.T, ctx context.Context, st *local.Storage, h *crypto.Header, mkID *crypto.MasterKey) {
+	t.Helper()
 	projEntry, _ := h.NamespaceEntry("proj")
 	backup, err := secrets.For(st, "proj", mkID).Read(ctx, crypto.ManifestEntry{Blob: projEntry.Prev, MAC: projEntry.PrevMAC})
 	if err != nil {
