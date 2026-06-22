@@ -47,11 +47,21 @@ as collaborators are added.
 
 ## Supported versions
 
-notenv is pre-1.0 and developed on a rolling basis. Security fixes land on the
-latest release, and only the latest release is supported: a version stops
-receiving security updates as soon as a newer release ships. There is no backport
-to older lines while pre-1.0. A formal supported-versions and end-of-life policy,
-including any longer support window, will be defined at the 1.0 release.
+Only the latest release receives security fixes. Within a major version line this
+costs nothing to follow: every 1.x release reads and writes every other 1.x vault,
+and an upgrade never migrates your storage (see the
+[compatibility contract](../project/compatibility.md)), so upgrading to the latest
+patch is always safe and is the fix path for any reported vulnerability. There is no
+backport to an older patch within a line.
+
+When a new major version ships (a 2.0), the previous major line receives critical
+security fixes for 6 months so you have time to migrate, then reaches end-of-life.
+That window is best-effort, and in practice mostly dependency updates: a fix that
+also affects the older major is backported to its release branch and shipped as a
+signed patch, while a fix that lives only in the new major's rewritten code has no
+counterpart to backport. Migration between majors uses the same `export` and
+`import` commands as any other vault move, so the window is migration runway rather
+than indefinite parallel support.
 
 ## Dependencies (software composition analysis)
 

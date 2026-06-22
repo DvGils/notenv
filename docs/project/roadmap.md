@@ -1,7 +1,8 @@
 # Roadmap
 
-notenv is actively developed and being tested. This page tracks what works today, what is planned,
-and what is deliberately out of scope.
+notenv is stable and follows a compatibility contract: within the 1.x line the storage format and
+documented interface stay compatible, so upgrading never breaks a vault or a script. This page
+tracks what works today, what is planned, and what is deliberately out of scope.
 
 ## Working today
 
@@ -25,11 +26,14 @@ and what is deliberately out of scope.
 
 ## Planned
 
-- **A broker mode.** The unlocked key lives in a separate trust domain and execs children on behalf of
-  agents, turning "agents shouldn't see credentials" from a convention into a boundary.
+- **Homebrew / AUR / Scoop** packages. (V1)
+- **Post-quantum hybrid recipient** Make encryption robust against quantum computers (V1 or V2)
 - **Hardware-backed key slots** (YubiKey, FIDO2, TPM) via age plugins: a human slot whose credential
-  cannot be exfiltrated at all.
-- **Homebrew / AUR / Scoop** packages.
+  cannot be exfiltrated at all. (V1 or V2)
+- **Cryptographic read-only** Support true read-only (currently policy backed only) (V2)
+- **RBAC** Support RBAC (V2)
+- **File encryption** Support encrypting files (V2)
+
 
 ## Non-goals
 

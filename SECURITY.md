@@ -10,10 +10,12 @@ coordinated disclosure follow. We aim to assess every report and report back on 
 
 ## Supported versions
 
-notenv is pre-1.0 and developed on a rolling basis. Security fixes land on the latest release, and
-only the latest release is supported: a version stops receiving security updates as soon as a newer
-release ships. A formal supported-versions and end-of-life policy will be defined at 1.0. Run a
-recent version.
+Only the latest release receives security fixes. Within a major version this costs nothing to
+follow: every 1.x release interoperates with every other and an upgrade never migrates your storage
+(see [Compatibility](https://dvgils.github.io/notenv/project/compatibility/)), so upgrading to the
+latest patch is always safe and is the fix path for any reported vulnerability. When a new major
+version ships, the previous major line receives critical security fixes on a best-effort basis for
+6 months to give you time to migrate, then reaches end-of-life.
 
 ## Scope
 

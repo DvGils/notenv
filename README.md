@@ -151,7 +151,9 @@ of release artifacts locally without publishing.
 
 ## Status
 
-Actively developed and being tested. See the
+Stable. notenv follows a [compatibility contract](https://dvgils.github.io/notenv/project/compatibility/):
+within the 1.x line the storage format and documented interface stay compatible, so upgrading never
+breaks a vault or a script. See the
 [roadmap](https://dvgils.github.io/notenv/project/roadmap/) for what works today, what is planned, and
 the non-goals.
 
