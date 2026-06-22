@@ -197,7 +197,7 @@ func runBuilder(srcSpec, namespace, eDir, recipient string) error {
 func dropAllCachedMasters(cache keyring.Cache) {
 	scopes, err := config.PinnedScopes()
 	if err != nil {
-		ui.Warnf("couldn't list cached vaults to clear them (%v); if you have other vaults unlocked, the agent's uid could read them. Run `notenv cache clear`, or lock them, to be safe", err)
+		ui.Warnf("couldn't list cached vaults to lock them (%v); if you have other vaults unlocked, the agent's uid could read them. Lock each with `notenv cache lock -s <storage>` to be safe", err)
 		return
 	}
 	for _, s := range scopes {

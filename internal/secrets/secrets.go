@@ -166,6 +166,15 @@ type NamespaceMeta struct {
 // State is a namespace's resolved secrets and namespace-level metadata. Corrupt
 // is populated only by a salvage read that fell back past an untrustable blob; a
 // strict read fails instead of listing.
+//
+// The plaintext here is deliberately not zeroed after use. notenv is a short-lived
+// CLI invocation, not a long-running daemon, so a value lives only for the seconds
+// the process runs; Go strings are immutable and cannot be wiped in place, and the
+// age decrypt path allocates intermediate buffers the underlying library does not
+// scrub either, so zeroing this map would be partial at best while implying a
+// guarantee the rest of the path cannot keep. The defense against memory disclosure
+// is the short process lifetime plus the OS (core-dump and swap controls), not
+// in-process scrubbing; a compromised live machine is a documented non-goal.
 type State struct {
 	Secrets   map[string]string
 	Meta      map[string]Meta
