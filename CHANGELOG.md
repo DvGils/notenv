@@ -1,8 +1,39 @@
 # Changelog
 
-Notable changes to notenv. This project follows [semantic versioning](https://semver.org);
-while pre-1.0, minor versions may include breaking changes. Releases before 0.2.0 are listed
-on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
+Notable changes to notenv. This project follows [semantic versioning](https://semver.org):
+from 1.0, the storage format and the documented interface stay compatible within the 1.x line,
+and breaking changes are reserved for a future major version (see
+[COMPATIBILITY.md](https://dvgils.github.io/notenv/project/compatibility/)). Releases before 0.2.0
+are listed on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
+
+## 1.0.0
+
+notenv is 1.0. How you use it does not change; what changes is the promise around it.
+From this release until a future 2.0, notenv is trusted not to break: a vault written by
+any 1.x build is readable and writable by any other 1.x build, in either direction, and the
+commands, output formats, config files, and environment variables stay stable and only grow.
+There are no functional changes since 0.21.3. 1.0 is the point where the format and interface
+stop moving, not a feature release.
+
+### Added
+
+- **A compatibility contract (`COMPATIBILITY.md`).** It states exactly what 1.0 freezes
+  (the on-storage format, bit-for-bit), what stays stable but may grow additively (the
+  command, output, config, and environment-variable surface), and what is fungible
+  (per-machine pins and caches). Published at
+  [Compatibility](https://dvgils.github.io/notenv/project/compatibility/).
+- **A supported-versions and end-of-life policy.** The latest release receives security
+  fixes, and because every 1.x release interoperates and upgrading never migrates your
+  storage, upgrading to the latest patch is always the fix path. When a future 2.0 ships,
+  the 1.x line receives critical security fixes for six months to cover migration, then
+  reaches end-of-life. Stated in `SECURITY.md` and the
+  [security policies](https://dvgils.github.io/notenv/security/policies/).
+
+### Changed
+
+- **Versioning is now a guarantee, not a warning.** Before 1.0, any release could change
+  the storage format or the interface with no migration kept. From 1.0, those changes are
+  reserved for a future major version under the compatibility contract above.
 
 ## 0.21.3
 

@@ -122,4 +122,5 @@ nav:
       - Security policies: security/policies.md
   - Project:
       - Roadmap: project/roadmap.md
+      - Compatibility: project/compatibility.md
       - Changelog: project/changelog.md
