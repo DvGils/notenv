@@ -53,7 +53,7 @@ func ReadSecret(label string) (string, error) {
 		}
 		tty = os.Stdin
 	} else {
-		defer tty.Close()
+		defer func() { _ = tty.Close() }()
 	}
 
 	fmt.Fprint(os.Stderr, label)

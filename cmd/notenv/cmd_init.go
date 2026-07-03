@@ -259,15 +259,16 @@ func bindProject(dir, name string) error {
 		return err
 	}
 	ui.Successf("bound this project to storage %q (%s)", name, filepath.Base(path))
-	if err := ensureGitignore(dir, config.LocalBindingFile); err != nil {
+	if err := ensureGitignore(dir); err != nil {
 		ui.Warnf("could not update .gitignore (add %q yourself): %v", config.LocalBindingFile, err)
 	}
 	return nil
 }
 
-// ensureGitignore makes sure entry is ignored in dir/.gitignore, creating the
-// file if needed and leaving an existing one otherwise untouched.
-func ensureGitignore(dir, entry string) error {
+// ensureGitignore makes sure the local binding file is ignored in dir/.gitignore,
+// creating the file if needed and leaving an existing one otherwise untouched.
+func ensureGitignore(dir string) error {
+	entry := config.LocalBindingFile
 	path := filepath.Join(dir, ".gitignore")
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {

@@ -260,8 +260,11 @@ func copyVault(ctx context.Context, src, dst vaultStorage) error {
 			return fmt.Errorf("install the copied header: %w", err)
 		}
 		got, err := dst.GetHeader(ctx)
-		if err != nil || !bytes.Equal(got, header) {
-			return fmt.Errorf("the copied header read back differently than written: %v", err)
+		if err != nil {
+			return fmt.Errorf("re-reading the copied header failed: %w", err)
+		}
+		if !bytes.Equal(got, header) {
+			return errors.New("the copied header read back differently than written")
 		}
 		return nil
 	}
@@ -292,8 +295,11 @@ func copyObjects(ctx context.Context, src, dst vaultStorage) error {
 			return fmt.Errorf("write %s: %w", key, err)
 		}
 		got, err := dst.Get(ctx, key)
-		if err != nil || !bytes.Equal(got, blob) {
-			return fmt.Errorf("object %s read back differently than written: %v", key, err)
+		if err != nil {
+			return fmt.Errorf("re-reading object %s failed: %w", key, err)
+		}
+		if !bytes.Equal(got, blob) {
+			return fmt.Errorf("object %s read back differently than written", key)
 		}
 	}
 	dstKeys, err := dst.List(ctx, "")

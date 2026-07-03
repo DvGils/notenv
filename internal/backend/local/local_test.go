@@ -2,6 +2,7 @@ package local_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,7 +49,7 @@ func TestSwapHeaderConcurrentNoLostUpdates(t *testing.T) {
 		wg.Go(func() {
 			for range rounds {
 				base, err := s.GetHeader(ctx)
-				if err != nil && err != backend.ErrNotFound {
+				if err != nil && !errors.Is(err, backend.ErrNotFound) {
 					t.Errorf("GetHeader: %v", err)
 					return
 				}
@@ -60,10 +61,10 @@ func TestSwapHeaderConcurrentNoLostUpdates(t *testing.T) {
 					}
 				}
 				err = s.SwapHeader(ctx, base, []byte(strconv.Itoa(n+1)))
-				switch err {
-				case nil:
+				switch {
+				case err == nil:
 					successes.Add(1)
-				case backend.ErrHeaderChanged:
+				case errors.Is(err, backend.ErrHeaderChanged):
 					// lost the race cleanly; retry next round
 				default:
 					t.Errorf("SwapHeader: %v", err)

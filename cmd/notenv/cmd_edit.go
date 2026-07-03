@@ -95,7 +95,7 @@ func runEdit(cmd *cobra.Command, a *app) error {
 		return err
 	}
 	entries, err := parseEditBuffer(f)
-	f.Close()
+	_ = f.Close()
 	if err != nil {
 		return fmt.Errorf("%w (nothing was written; the buffer was discarded)", err)
 	}

@@ -47,7 +47,7 @@ once the import succeeds, deleting it is safe, and the point.`,
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		pairs, err := dotenv.Parse(f)
 		if err != nil {
 			return fmt.Errorf("%s: %w (nothing was imported)", file, err)

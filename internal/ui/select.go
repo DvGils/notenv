@@ -88,7 +88,7 @@ func Select(label string, options []Option) (int, error) {
 		return -1, err
 	}
 	if f != os.Stdin {
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 	}
 
 	fd := int(f.Fd())
@@ -96,7 +96,7 @@ func Select(label string, options []Option) (int, error) {
 	if err != nil {
 		return selectNumbered(label, options)
 	}
-	defer term.Restore(fd, previous)
+	defer func() { _ = term.Restore(fd, previous) }()
 
 	out := os.Stderr
 	fmt.Fprint(out, "\x1b[?25l")       // hide cursor
@@ -120,7 +120,7 @@ func Select(label string, options []Option) (int, error) {
 		switch decodeKey(buf[:n]) {
 		case keyConfirm:
 			wipe()
-			term.Restore(fd, previous)
+			_ = term.Restore(fd, previous)
 			fmt.Fprintln(out, question(label, "")+options[cursor].Label)
 			return cursor, nil
 		case keyCancel:

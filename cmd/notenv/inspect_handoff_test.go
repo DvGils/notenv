@@ -128,16 +128,16 @@ func TestLocalSpecPath(t *testing.T) {
 }
 
 func TestFirstNamespace(t *testing.T) {
-	cases := map[string]string{
-		"":            "",
-		"api":         "api",
-		"api,db":      "api",
-		" api , db ":  "api",
-		",leadingsep": "",
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"api", "api"},
+		{"api,db", "api"},
+		{" api , db ", "api"},
+		{",leadingsep", ""},
 	}
-	for in, want := range cases {
-		if got := firstNamespace(in); got != want {
-			t.Errorf("firstNamespace(%q) = %q, want %q", in, got, want)
+	for _, c := range cases {
+		if got := firstNamespace(c.in); got != c.want {
+			t.Errorf("firstNamespace(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

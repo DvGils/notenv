@@ -125,7 +125,7 @@ func TestReadStateColdReadsNamespace(t *testing.T) {
 func TestWithMasterRecoversFromStaleCache(t *testing.T) {
 	ctx := context.Background()
 	a, _, mk := identityApp(t, map[string]string{"K": "vvvvvv"})
-	a.cache.Store(a.cacheScope, mk.String(), time.Hour) // wasCached on entry
+	_ = a.cache.Store(a.cacheScope, mk.String(), time.Hour) // wasCached on entry
 	calls := 0
 	got, err := a.withMaster(ctx, func(*crypto.MasterKey) error {
 		calls++

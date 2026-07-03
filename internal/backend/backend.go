@@ -38,19 +38,19 @@ const (
 	MaxListBytes   int64 = 64 << 20 // 64 MiB
 )
 
-// ReadCapped reads from r until EOF or max bytes, whichever comes first, and
-// returns ErrObjectTooLarge if r holds more than max (it reads one byte past max
-// to detect the overflow). Memory is bounded to max+1 regardless of how much r
-// would yield, so a huge or endless object cannot exhaust memory. It never
+// ReadCapped reads from r until EOF or limit bytes, whichever comes first, and
+// returns ErrObjectTooLarge if r holds more than limit (it reads one byte past
+// limit to detect the overflow). Memory is bounded to limit+1 regardless of how
+// much r would yield, so a huge or endless object cannot exhaust memory. It never
 // returns a truncated object: on overflow it errors rather than hand back a
 // partial read the crypto layer would then reject anyway.
-func ReadCapped(r io.Reader, max int64) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r, max+1))
+func ReadCapped(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(data)) > max {
-		return nil, fmt.Errorf("%w (limit %d bytes)", ErrObjectTooLarge, max)
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%w (limit %d bytes)", ErrObjectTooLarge, limit)
 	}
 	return data, nil
 }

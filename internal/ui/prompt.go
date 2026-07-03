@@ -28,7 +28,7 @@ func tty() (*os.File, error) {
 // Interactive reports whether prompts are possible at all.
 func Interactive() bool {
 	if f, err := os.Open("/dev/tty"); err == nil {
-		f.Close()
+		_ = f.Close()
 		return true
 	}
 	return term.IsTerminal(int(os.Stdin.Fd()))
@@ -49,7 +49,7 @@ func Input(label, def string) (string, error) {
 		return "", err
 	}
 	if in != os.Stdin {
-		defer in.Close()
+		defer func() { _ = in.Close() }()
 	}
 	fmt.Fprint(os.Stderr, question(label, def))
 	line, err := bufio.NewReader(in).ReadString('\n')

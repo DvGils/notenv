@@ -781,7 +781,7 @@ type inflightVault struct {
 func (s *inflightVault) SwapHeader(ctx context.Context, base, updated []byte) error {
 	if !s.injected {
 		s.injected = true
-		_ = s.Store.Put(ctx, "proj/data-inflight.age", []byte("concurrent in-flight blob"))
+		_ = s.Put(ctx, "proj/data-inflight.age", []byte("concurrent in-flight blob"))
 	}
 	return s.Store.SwapHeader(ctx, base, updated)
 }

@@ -1,0 +1,81 @@
+version: "2"
+
+run:
+  # Lint test files too; the linters that only add noise there are turned off
+  # for _test.go under exclusions below.
+  tests: true
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errorlint
+    - gocritic
+    - gocyclo
+    - gosec
+    - makezero
+    - misspell
+    - nilerr
+    - predeclared
+    - unconvert
+    - unparam
+    - wastedassign
+  settings:
+    errcheck:
+      # Output to stdout/stderr: a failed terminal write is neither recoverable
+      # nor actionable, and the surrounding command surfaces the real failure.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gocyclo:
+      # Matches the previous gate (go tool gocyclo -over 15).
+      min-complexity: 15
+    misspell:
+      locale: US
+    gosec:
+      # These rules describe notenv's designed behavior rather than a defect:
+      #   G204/G702 - running a subprocess IS the product (`notenv run`, the
+      #               editor, and the rclone backend all exec by design).
+      #   G304 - the storage backends open vault objects by a computed path.
+      #   G703 - path handling on user-directed files (edit, inspect) is the feature.
+      #   G115 - the flagged integer conversions are provably bounded (a uid, a
+      #          mask index), which the linter cannot prove.
+      # G306 (world-readable writes) stays ON: it is exactly the guard a secrets
+      # tool wants. The known non-secret metadata writes are excepted below.
+      excludes:
+        - G115
+        - G204
+        - G304
+        - G702
+        - G703
+  exclusions:
+    generated: lax
+    rules:
+      # Test code uses fixture secrets and single-purpose helpers; gosec and
+      # unparam produce noise there rather than signal.
+      - path: _test\.go
+        linters:
+          - gosec
+          - unparam
+      # These write project metadata that is meant to be readable, not secrets:
+      # the local binding, the contract, the .gitignore entry. 0644 is intentional.
+      - linters:
+          - gosec
+        text: "G306"
+        path: (internal/config/config|internal/contract/contract|cmd/notenv/cmd_init)\.go
+
+issues:
+  # Report every finding. The defaults (max-same-issues 3, max-issues-per-linter
+  # 50) hide repeated findings, which lets a regression ride in behind a capped one.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  # gofmt as a formatter so `golangci-lint run` also fails on unformatted code
+  # (and `golangci-lint fmt` fixes it), replacing the standalone gofmt gate.
+  enable:
+    - gofmt

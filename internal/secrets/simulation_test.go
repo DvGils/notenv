@@ -19,7 +19,7 @@ import (
 // so the compare-and-swap RETRY path and the reclaim-under-contention path it
 // guards go unexercised; this target forces them by interleaving competing
 // commits at swap boundaries, while a seeded fraction of blob uploads fail before
-// storing. The concurrency is modelled deterministically (one goroutine, all
+// storing. The concurrency is modeled deterministically (one goroutine, all
 // randomness derived from the fuzz input), so a crash replays exactly and the
 // last-write-wins oracle stays precise. It checks the same invariants the
 // sequential target does, now after racing and failed writes: the namespace reads
@@ -66,7 +66,7 @@ type wop struct {
 }
 
 // multiWriter replays a fuzzed queue of writes against one shared vault as if
-// several machines committed concurrently. The concurrency is modelled without
+// several machines committed concurrently. The concurrency is modeled without
 // goroutines: at a top-level commit's first swap it may inject competing commits
 // (consuming further queued ops), which land first and leave the top-level
 // commit's base stale, so the real Commit takes its ErrHeaderChanged retry,

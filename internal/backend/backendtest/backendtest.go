@@ -1,7 +1,7 @@
 // Package backendtest holds the shared conformance suites for backend
 // implementations. Both the in-memory fake (memstore) and the real
-// RcloneStorage run them, so a behaviour the fake is trusted to model is the
-// behaviour the real backend is required to have. The suites assert only what
+// RcloneStorage run them, so a behavior the fake is trusted to model is the
+// behavior the real backend is required to have. The suites assert only what
 // the interfaces expose, so they work against any implementation.
 package backendtest
 
