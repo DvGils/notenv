@@ -45,7 +45,7 @@ func guardApp(t *testing.T) (*app, *memstore.Store, *crypto.MasterKey) {
 		blobs:      blobcache.New(0),
 		cacheScope: "test-scope",
 	}
-	a.cache.Store(a.cacheScope, mk.String(), time.Hour)
+	_ = a.cache.Store(a.cacheScope, mk.String(), time.Hour)
 	return a, store, mk
 }
 

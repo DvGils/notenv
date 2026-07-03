@@ -94,8 +94,8 @@ func (s *Storage) Get(ctx context.Context, key string) ([]byte, error) {
 // readFileCapped reads at most max bytes from path, returning
 // backend.ErrObjectTooLarge if the file holds more (so a hostile vault directory
 // cannot OOM the process) and backend.ErrNotFound if it is absent. Memory is
-// bounded to max regardless of the file's real size.
-func readFileCapped(path string, max int64) ([]byte, error) {
+// bounded to limit regardless of the file's real size.
+func readFileCapped(path string, limit int64) ([]byte, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, backend.ErrNotFound
@@ -103,8 +103,8 @@ func readFileCapped(path string, max int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	return backend.ReadCapped(f, max)
+	defer func() { _ = f.Close() }()
+	return backend.ReadCapped(f, limit)
 }
 
 // Put stores data at key. The write is a temp file in the same directory

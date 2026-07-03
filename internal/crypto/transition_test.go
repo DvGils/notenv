@@ -11,15 +11,15 @@ func twoMasters(t *testing.T) (*MasterKey, *MasterKey) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	new, err := GenerateMasterKey()
+	newKey, err := GenerateMasterKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return old, new
+	return old, newKey
 }
 
 func TestSignPubIsStablePerMaster(t *testing.T) {
-	old, new := twoMasters(t)
+	old, newKey := twoMasters(t)
 	a1, err := old.SignPub()
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestSignPubIsStablePerMaster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := new.SignPub()
+	b, err := newKey.SignPub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,21 +53,21 @@ func TestSignPubIsStablePerMaster(t *testing.T) {
 }
 
 func TestTransitionRoundTrip(t *testing.T) {
-	old, new := twoMasters(t)
-	tr, err := NewTransition(old, new, "vault-1", 7)
+	old, newKey := twoMasters(t)
+	tr, err := NewTransition(old, newKey, "vault-1", 7)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := tr.Verify(); err != nil {
 		t.Fatalf("freshly signed transition must verify: %v", err)
 	}
-	if tr.ToMasterPub != new.PublicKey() || tr.ToRevision != 7 || tr.VaultID != "vault-1" {
+	if tr.ToMasterPub != newKey.PublicKey() || tr.ToRevision != 7 || tr.VaultID != "vault-1" {
 		t.Fatalf("transition fields wrong: %+v", tr)
 	}
 }
 
 func TestTransitionRejectsTampering(t *testing.T) {
-	old, new := twoMasters(t)
+	old, newKey := twoMasters(t)
 	for name, mutate := range map[string]func(*Transition){
 		"vault id":    func(tr *Transition) { tr.VaultID = "other-vault" },
 		"to sign pub": func(tr *Transition) { tr.ToSignPub = strings.Repeat("ab", 32) },
@@ -75,7 +75,7 @@ func TestTransitionRejectsTampering(t *testing.T) {
 		"revision":    func(tr *Transition) { tr.ToRevision++ },
 		"signature":   func(tr *Transition) { tr.Sig[0] ^= 1 },
 	} {
-		tr, err := NewTransition(old, new, "vault-1", 7)
+		tr, err := NewTransition(old, newKey, "vault-1", 7)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,14 +87,14 @@ func TestTransitionRejectsTampering(t *testing.T) {
 }
 
 func TestTransitionRejectsForeignSigner(t *testing.T) {
-	old, new := twoMasters(t)
+	old, newKey := twoMasters(t)
 	intruder, err := GenerateMasterKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	// An intruder signs a transition claiming to be from the pinned master:
 	// the record's FromSignPub (the pinned key) must not verify their sig.
-	tr, err := NewTransition(intruder, new, "vault-1", 7)
+	tr, err := NewTransition(intruder, newKey, "vault-1", 7)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -50,6 +50,7 @@ func TestMaskerLargeSecretBoundedMemory(t *testing.T) {
 	m := NewMasker(io.Discard, []Secret{{Name: "BIG", Value: secret}})
 	runtime.GC()
 	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(m) // keep the masker rooted through the measurement above
 	// Signed: a flat matcher may net negative (GC reclaims more than it allocates),
 	// which would underflow unsigned subtraction.
 	if grew := int64(after.HeapAlloc) - int64(before.HeapAlloc); grew > 100<<20 {

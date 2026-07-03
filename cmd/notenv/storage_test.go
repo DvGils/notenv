@@ -12,7 +12,7 @@ import (
 func TestEnsureGitignore(t *testing.T) {
 	// Creates the file when absent.
 	dir := t.TempDir()
-	if err := ensureGitignore(dir, config.LocalBindingFile); err != nil {
+	if err := ensureGitignore(dir); err != nil {
 		t.Fatal(err)
 	}
 	gi := filepath.Join(dir, ".gitignore")
@@ -22,7 +22,7 @@ func TestEnsureGitignore(t *testing.T) {
 	}
 
 	// Idempotent: no duplicate on a second call.
-	if err := ensureGitignore(dir, config.LocalBindingFile); err != nil {
+	if err := ensureGitignore(dir); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = os.ReadFile(gi)
@@ -36,7 +36,7 @@ func TestEnsureGitignore(t *testing.T) {
 	if err := os.WriteFile(giPath, []byte("node_modules/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureGitignore(other, config.LocalBindingFile); err != nil {
+	if err := ensureGitignore(other); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(giPath)

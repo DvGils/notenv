@@ -97,7 +97,7 @@ func TestSpinSubFailureSurfaces(t *testing.T) {
 	out := captureStderr(t, func() {
 		gotErr = ui.SpinSub("validated the vault directory", func() error { return wantErr })
 	})
-	if gotErr != wantErr {
+	if !errors.Is(gotErr, wantErr) {
 		t.Fatalf("SpinSub should return the fn error, got %v", gotErr)
 	}
 	if !strings.Contains(out, "✗ validated the vault directory") {

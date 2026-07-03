@@ -28,13 +28,9 @@ vet:
 fmt:
 	gofmt -w .
 
-## lint: check formatting, vet, cyclomatic complexity, and ineffectual assignments (no changes)
+## lint: run golangci-lint (gofmt, vet, gocyclo, ineffassign, gosec and more; see .golangci.yml)
 lint:
-	@unformatted="$$(gofmt -l .)"; \
-	if [ -n "$$unformatted" ]; then echo "needs gofmt:"; echo "$$unformatted"; exit 1; fi
-	go vet ./...
-	go tool gocyclo -over 15 .
-	go tool ineffassign ./...
+	golangci-lint run
 
 ## snapshot: build a local release into ./dist without publishing (needs goreleaser)
 snapshot:

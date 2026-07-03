@@ -26,9 +26,12 @@ in [SECURITY.md](./SECURITY.md).
 
 - **Tests.** New functionality and bug fixes ship with tests that fail before the change and pass
   after. The suite runs under the race detector (`make test`).
-- **Formatting and vetting.** `make lint` runs `gofmt`, `go vet`, `gocyclo` (functions over a
-  complexity of 15 fail), and `ineffassign`. Keep functions under the threshold rather than raising
-  it.
+- **Formatting and vetting.** `make lint` runs [golangci-lint](https://golangci-lint.run) with the
+  set configured in `.golangci.yml`: `gofmt`, `go vet`, `gocyclo` (functions over a complexity of 15
+  fail), `ineffassign`, `gosec`, and more. Keep functions under the threshold rather than raising it.
+  golangci-lint is not a `go.mod` tool dependency, so
+  [install it](https://golangci-lint.run/welcome/install/) at the version CI pins (see
+  `.github/workflows/ci.yml`).
 - **CI.** Pull requests run the full matrix: the race suite, native key-store tests on macOS and
   Windows, backend conformance against a real rclone, the fuzz smoke, a cross-build for all six
   release targets, and `govulncheck`. All jobs must be green.

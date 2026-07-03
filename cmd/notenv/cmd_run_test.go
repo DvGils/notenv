@@ -34,7 +34,7 @@ func captureMasked(t *testing.T, injected []runner.Secret, write func(w io.Write
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	out, m := maskedStream(w, injected)
 	write(out)
 	flushMasker(m)
@@ -52,7 +52,7 @@ func TestMaskedStreamMasksCapturedStream(t *testing.T) {
 	withMaskFlags(t, false, false)
 	secret := []runner.Secret{{Name: "API_KEY", Value: "supersecretvalue"}}
 	got := captureMasked(t, secret, func(w io.Writer) {
-		io.WriteString(w, "connecting with token=supersecretvalue done\n")
+		_, _ = io.WriteString(w, "connecting with token=supersecretvalue done\n")
 	})
 	want := "connecting with token=<notenv-masked:API_KEY> done\n"
 	if got != want {
@@ -71,7 +71,7 @@ func TestMaskedStreamNoMaskPassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	out, m := maskedStream(w, secret)
 	if m != nil {
 		t.Fatal("--no-mask must return no masker")
@@ -79,8 +79,8 @@ func TestMaskedStreamNoMaskPassesThrough(t *testing.T) {
 	if out != w {
 		t.Fatal("--no-mask must wire the stream through untouched")
 	}
-	io.WriteString(out, "token=supersecretvalue")
-	w.Close()
+	_, _ = io.WriteString(out, "token=supersecretvalue")
+	_ = w.Close()
 	data, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestMaskedStreamForceMaskReturnsMasker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	out, m := maskedStream(w, secret)
 	if m == nil {
 		t.Fatal("--mask must return a masker")
@@ -106,9 +106,9 @@ func TestMaskedStreamForceMaskReturnsMasker(t *testing.T) {
 	if out != io.Writer(m) {
 		t.Fatal("--mask must return the masker as the write target")
 	}
-	io.WriteString(out, "token=supersecretvalue")
+	_, _ = io.WriteString(out, "token=supersecretvalue")
 	flushMasker(m)
-	w.Close()
+	_ = w.Close()
 	data, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestMaskedStreamMasksEncodedForm(t *testing.T) {
 	secret := []runner.Secret{{Name: "API_KEY", Value: value}}
 	enc := base64.StdEncoding.EncodeToString([]byte(value))
 	got := captureMasked(t, secret, func(w io.Writer) {
-		io.WriteString(w, "Authorization: Basic "+enc+"\n")
+		_, _ = io.WriteString(w, "Authorization: Basic "+enc+"\n")
 	})
 	if !strings.Contains(got, "<notenv-masked:API_KEY>") {
 		t.Fatalf("base64-encoded secret not masked: %q", got)
@@ -138,8 +138,8 @@ func TestMaskedStreamSplitAcrossWrites(t *testing.T) {
 	withMaskFlags(t, false, false)
 	secret := []runner.Secret{{Name: "API_KEY", Value: "supersecretvalue"}}
 	got := captureMasked(t, secret, func(w io.Writer) {
-		io.WriteString(w, "supersecr")
-		io.WriteString(w, "etvalue!")
+		_, _ = io.WriteString(w, "supersecr")
+		_, _ = io.WriteString(w, "etvalue!")
 	})
 	if got != "<notenv-masked:API_KEY>!" {
 		t.Fatalf("secret split across writes not masked: %q", got)
@@ -152,7 +152,7 @@ func TestFlushMaskerEmitsHeldTailNoTruncation(t *testing.T) {
 	// "superse" is a prefix of the secret, so the masker holds it pending more
 	// bytes that never arrive. Flush must emit it raw, not drop it.
 	got := captureMasked(t, secret, func(w io.Writer) {
-		io.WriteString(w, "balance=superse")
+		_, _ = io.WriteString(w, "balance=superse")
 	})
 	if got != "balance=superse" {
 		t.Fatalf("held tail was truncated or altered on flush: %q", got)
@@ -164,7 +164,7 @@ func TestMaskedStreamEmptyInjectedPassesThrough(t *testing.T) {
 	// No injected secrets: maskedStream still returns a masker (the stream is
 	// captured), but with no patterns it must forward bytes verbatim.
 	got := captureMasked(t, nil, func(w io.Writer) {
-		io.WriteString(w, "AKIAEXAMPLE not actually a secret\n")
+		_, _ = io.WriteString(w, "AKIAEXAMPLE not actually a secret\n")
 	})
 	if got != "AKIAEXAMPLE not actually a secret\n" {
 		t.Fatalf("empty injected set altered the stream: %q", got)
@@ -199,13 +199,13 @@ func TestFlushMaskerWarnsOnWriteError(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, m := maskedStream(w, secret)
-	io.WriteString(out, "superse") // held, nothing written to the pipe yet
-	r.Close()                      // closing the read end makes the flush write fail
+	_, _ = io.WriteString(out, "superse") // held, nothing written to the pipe yet
+	_ = r.Close()                         // closing the read end makes the flush write fail
 
 	stderr := captureStderr(t, func() {
 		flushMasker(m) // Flush tries to write the held tail to a broken pipe
 	})
-	w.Close()
+	_ = w.Close()
 	if !strings.Contains(stderr, "could not finish writing masked output") {
 		t.Fatalf("flushMasker did not warn on write failure: %q", stderr)
 	}
@@ -223,11 +223,11 @@ func captureStderr(t *testing.T, fn func()) string {
 	os.Stderr = w
 	fn()
 	os.Stderr = old
-	w.Close()
+	_ = w.Close()
 	data, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.Close()
+	_ = r.Close()
 	return string(data)
 }

@@ -85,7 +85,8 @@ The dependency surface is kept deliberately small and is patched continuously:
 
 ## Code scanning (static analysis)
 
-- **Tooling.** [CodeQL](https://codeql.github.com) code scanning and `go vet` run on
+- **Tooling.** [CodeQL](https://codeql.github.com) code scanning and
+  [golangci-lint](https://golangci-lint.run) (which includes `gosec` and `go vet`) run on
   changes to the codebase.
 - **Remediation threshold.** A High or Critical alert blocks merge. A Medium alert
   is remediated within 30 days. Low and informational alerts are tracked. No release

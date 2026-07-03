@@ -6,6 +6,16 @@ and breaking changes are reserved for a future major version (see
 [COMPATIBILITY.md](https://dvgils.github.io/notenv/project/compatibility/)). Releases before 0.2.0
 are listed on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 1.0.1
+
+### Changed
+
+- **Linting moved to golangci-lint.** Go Report Card was sunset, so its README badge
+  is gone and both CI and `make lint` now run
+  [golangci-lint](https://golangci-lint.run) (configured in `.golangci.yml`). It folds
+  in the previous gofmt, vet, gocyclo, and ineffassign gates and adds gosec and several
+  more. This is a development-tooling change; how notenv behaves is unchanged.
+
 ## 1.0.0
 
 notenv is 1.0. How you use it does not change; what changes is the promise around it.

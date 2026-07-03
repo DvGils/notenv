@@ -37,7 +37,7 @@ func identityHeaderStore(t *testing.T, scope string) (*headerTarget, *crypto.Mas
 		t.Fatal(err)
 	}
 	cache := newMapCache()
-	cache.Store(scope, mk.String(), time.Hour)
+	_ = cache.Store(scope, mk.String(), time.Hour)
 	target := &headerTarget{vaultStorage: doctorStore{store}, scope: scope, cache: cache}
 	return target, mk
 }

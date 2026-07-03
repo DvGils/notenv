@@ -58,7 +58,7 @@ func copyApp(t *testing.T, srcKV map[string]secrets.Write) (*app, *memstore.Stor
 		cacheScope: "test-scope",
 		cacheTTL:   time.Hour,
 	}
-	a.cache.Store(a.cacheScope, mk.String(), time.Hour)
+	_ = a.cache.Store(a.cacheScope, mk.String(), time.Hour)
 	if err := config.AcceptNamespace(a.cacheScope, "src"); err != nil {
 		t.Fatal(err)
 	}

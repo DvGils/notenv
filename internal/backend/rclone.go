@@ -137,8 +137,8 @@ func (s *RcloneStorage) Get(ctx context.Context, key string) ([]byte, error) {
 // quirk to ErrNotFound. `rclone cat` on a missing path treats it as a directory
 // and concatenates its (zero) files (exit 0, empty output), and an empty result
 // can never be a valid age blob.
-func (s *RcloneStorage) catObject(ctx context.Context, path string, max int64) ([]byte, error) {
-	out, err := runRcloneCapped(ctx, max, []string{"cat"}, path)
+func (s *RcloneStorage) catObject(ctx context.Context, path string, limit int64) ([]byte, error) {
+	out, err := runRcloneCapped(ctx, limit, []string{"cat"}, path)
 	if err != nil {
 		if isNotFoundExit(err) {
 			return nil, ErrNotFound
@@ -269,7 +269,7 @@ func (s *RcloneStorage) SwapHeader(ctx context.Context, base, updated []byte) er
 		// The Put returned success but we cannot read it back to confirm. It may
 		// have landed, so the caller must not roll back a data object it wrote for
 		// this header (see ErrCommitUncertain).
-		return fmt.Errorf("%w: read header back after write: %v", ErrCommitUncertain, err)
+		return fmt.Errorf("%w: read header back after write: %w", ErrCommitUncertain, err)
 	}
 	if !bytes.Equal(readBack, updated) {
 		return fmt.Errorf("%w (another writer landed over ours)", ErrHeaderChanged)
@@ -350,20 +350,20 @@ func runRclone(ctx context.Context, stdin []byte, args []string, paths ...string
 // can neither exhaust memory nor keep the transfer running. cmd.Run waits for the
 // stdout copier to finish before returning, so reading cw.exceeded afterward is
 // race-free.
-func runRcloneCapped(ctx context.Context, max int64, args []string, paths ...string) ([]byte, error) {
+func runRcloneCapped(ctx context.Context, limit int64, args []string, paths ...string) ([]byte, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if len(paths) > 0 {
 		args = append(append(slices.Clip(args), "--"), paths...)
 	}
 	cmd := exec.CommandContext(ctx, "rclone", args...)
-	cw := &cappedWriter{max: max, cancel: cancel}
+	cw := &cappedWriter{max: limit, cancel: cancel}
 	var stderr bytes.Buffer
 	cmd.Stdout = cw
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if cw.exceeded {
-		return nil, fmt.Errorf("%w (limit %d bytes)", ErrObjectTooLarge, max)
+		return nil, fmt.Errorf("%w (limit %d bytes)", ErrObjectTooLarge, limit)
 	}
 	if err != nil {
 		return nil, &rcloneError{args: args, err: err, stderr: strings.TrimSpace(stderr.String())}

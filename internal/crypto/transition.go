@@ -31,14 +31,14 @@ type Transition struct {
 const transitionContext = "notenv/transition/v1\x00"
 
 // NewTransition builds and signs the record for a master change: old is the
-// master being replaced (it signs), new the successor, toRevision the header
+// master being replaced (it signs), newKey the successor, toRevision the header
 // revision the successor is installed at.
-func NewTransition(old, new *MasterKey, vaultID string, toRevision int) (*Transition, error) {
+func NewTransition(old, newKey *MasterKey, vaultID string, toRevision int) (*Transition, error) {
 	fromPub, err := old.SignPub()
 	if err != nil {
 		return nil, err
 	}
-	toPub, err := new.SignPub()
+	toPub, err := newKey.SignPub()
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func NewTransition(old, new *MasterKey, vaultID string, toRevision int) (*Transi
 		VaultID:     vaultID,
 		FromSignPub: fromPub,
 		ToSignPub:   toPub,
-		ToMasterPub: new.PublicKey(),
+		ToMasterPub: newKey.PublicKey(),
 		ToRevision:  toRevision,
 	}
 	msg, err := t.signedBytes()

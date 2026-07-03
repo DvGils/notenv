@@ -54,7 +54,7 @@ func TestCappedWriter(t *testing.T) {
 	}
 
 	// Further writes are discarded, so memory stays bounded as the killed child drains.
-	cw.Write([]byte("more and more"))
+	_, _ = cw.Write([]byte("more and more"))
 	if cw.buf.String() != "hello" {
 		t.Fatalf("buffer must hold only the pre-overflow bytes, got %q", cw.buf.String())
 	}

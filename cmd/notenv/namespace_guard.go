@@ -159,7 +159,7 @@ func pinNamespace(dir string, binding config.LocalBinding, namespace string) {
 		ui.Warnf("could not pin namespace %q in %s: %v (notenv won't detect later contract changes for this project)", namespace, config.LocalBindingFile, err)
 		return
 	}
-	if err := ensureGitignore(dir, config.LocalBindingFile); err != nil {
+	if err := ensureGitignore(dir); err != nil {
 		ui.Warnf("could not update .gitignore (add %q yourself): %v", config.LocalBindingFile, err)
 	}
 }

@@ -1,7 +1,6 @@
 # notenv
 
 [![CI](https://github.com/DvGils/notenv/actions/workflows/ci.yml/badge.svg)](https://github.com/DvGils/notenv/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/DvGils/notenv)](https://goreportcard.com/report/github.com/DvGils/notenv)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13325/badge)](https://www.bestpractices.dev/projects/13325)
 [![OpenSSF Baseline](https://www.bestpractices.dev/projects/13325/baseline)](https://www.bestpractices.dev/projects/13325)
 [![Go Reference](https://pkg.go.dev/badge/github.com/DvGils/notenv.svg)](https://pkg.go.dev/github.com/DvGils/notenv)

@@ -34,7 +34,7 @@ func warmApp(t *testing.T) (*app, *mapBlobCache, *crypto.MasterKey) {
 	}
 	blobs := newMapBlobCache()
 	a := &app{namespace: "proj", cache: newMapCache(), blobs: blobs, cacheScope: "scope"}
-	a.cache.Store(a.cacheScope, mk.String(), time.Hour)
+	_ = a.cache.Store(a.cacheScope, mk.String(), time.Hour)
 	return a, blobs, mk
 }
 

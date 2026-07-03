@@ -12,8 +12,6 @@ require (
 
 require (
 	filippo.io/hpke v0.4.0 // indirect
-	github.com/fzipp/gocyclo v0.6.0 // indirect
-	github.com/gordonklaus/ineffassign v0.2.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/crypto v0.45.0 // indirect
@@ -24,8 +22,4 @@ require (
 	golang.org/x/vuln v1.4.0 // indirect
 )
 
-tool (
-	github.com/fzipp/gocyclo/cmd/gocyclo
-	github.com/gordonklaus/ineffassign
-	golang.org/x/vuln/cmd/govulncheck
-)
+tool golang.org/x/vuln/cmd/govulncheck
