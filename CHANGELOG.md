@@ -6,6 +6,25 @@ and breaking changes are reserved for a future major version (see
 [COMPATIBILITY.md](https://dvgils.github.io/notenv/project/compatibility/)). Releases before 0.2.0
 are listed on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 1.0.2
+
+### Security
+
+- **`golang.org/x/crypto` updated from v0.45.0 to v0.54.0, clearing thirteen published
+  advisories.** notenv pulls in `golang.org/x/crypto` indirectly through its encryption
+  library ([age](https://filippo.io/age)). Every one of the thirteen advisories is in the
+  SSH packages of that module, which notenv never imports or calls (`govulncheck`
+  confirms no affected code paths), so no notenv release was exploitable through them.
+  The module is updated anyway so the dependency tree carries no known-vulnerable code.
+  `golang.org/x/sys` and `golang.org/x/term` move to their latest releases alongside it.
+
+### Changed
+
+- **CI actions updated and re-pinned by commit SHA.** `actions/checkout` moves from
+  v6.0.3 to v7.0.0 and `actions/cache/restore` plus `actions/cache/save` from v5.0.5
+  to v6.1.0. This only affects the project's own CI; released binaries are unchanged
+  beyond the dependency updates above.
+
 ## 1.0.1
 
 ### Changed
