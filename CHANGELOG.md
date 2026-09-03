@@ -6,6 +6,34 @@ and breaking changes are reserved for a future major version (see
 [COMPATIBILITY.md](https://dvgils.github.io/notenv/project/compatibility/)). Releases before 0.2.0
 are listed on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 1.0.3
+
+### Security
+
+- **`golang.org/x/crypto` updated from v0.54.0 to v0.56.0, clearing three published
+  advisories (GO-2026-6303, GO-2026-6354, GO-2026-6355).** All three are in the SSH
+  package of that module, which notenv never imports or calls (`govulncheck` confirms no
+  affected code paths), so no notenv release was exploitable through them. The module is
+  updated anyway so the dependency tree carries no known-vulnerable code. The one advisory
+  that remains, GO-2026-5932, covers the module's unmaintained OpenPGP package, has no
+  fixed version, and is likewise never imported.
+
+### Changed
+
+- **[age](https://filippo.io/age) updated from v1.3.1 to v1.3.2.** A hardening release:
+  age now rejects headers over 2 MiB, more than 1024 recipient stanzas, and a few other
+  previously tolerated malformed inputs. notenv blobs stay far inside those limits (a vault
+  header holds at most 256 key slots), the file format is unchanged, and existing vaults
+  read and write exactly as before. `golang.org/x/mod`, `x/sync`, `x/telemetry` and
+  `x/tools` move to the versions age v1.3.2 requires; they are build-time dependencies of
+  the `govulncheck` tool and are not linked into the notenv binary.
+- **CI actions updated and re-pinned by commit SHA.** `actions/setup-go` moves from v6.5.0
+  to v7.0.0, `actions/setup-python` from v6.2.0 to v7.0.0, `actions/checkout` from v7.0.0
+  to v7.0.1, `anchore/sbom-action/download-syft` from v0.24.0 to v0.24.2,
+  `actions/attest-build-provenance` from v4.1.1 to v4.2.2 and `pypa/gh-action-pypi-publish`
+  from v1.14.0 to v1.14.2. This only affects the project's own CI; released binaries are
+  unchanged beyond the dependency updates above.
+
 ## 1.0.2
 
 ### Security
