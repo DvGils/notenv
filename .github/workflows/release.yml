@@ -22,14 +22,14 @@ jobs:
           fetch-depth: 0 # full history for the changelog
           persist-credentials: false
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # syft on PATH for GoReleaser's `sboms:` step (one SPDX SBOM per archive).
-      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
 
       # The GitHub release body is the curated CHANGELOG.md section for this tag,
       # not GoReleaser's auto commit list. Extract it for --release-notes below.
