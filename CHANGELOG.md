@@ -6,6 +6,40 @@ and breaking changes are reserved for a future major version (see
 [COMPATIBILITY.md](https://dvgils.github.io/notenv/project/compatibility/)). Releases before 0.2.0
 are listed on the [GitHub releases](https://github.com/DvGils/notenv/releases) page.
 
+## 1.0.4
+
+### Security
+
+- **`golang.org/x/mod` updated from v0.39.0 to v0.41.0, clearing two published advisories
+  (GO-2026-6179 / CVE-2026-56865 and GO-2026-6180 / CVE-2026-56864).** Both are in the
+  module's `sumdb` checksum-database client, which notenv never imports or calls
+  (`govulncheck` confirms no affected code paths). `x/mod` is a build-time dependency of
+  the `govulncheck` tool and is not linked into the notenv binary, so no notenv release was
+  exploitable through them. The module is updated anyway so the dependency tree carries no
+  known-vulnerable code.
+- **Go toolchain moved from 1.26.4 to 1.26.8.** The 1.26.5 and 1.26.6 point releases fix
+  ten standard-library advisories (GO-2026-4970, GO-2026-5026, GO-2026-5856, GO-2026-5942,
+  GO-2026-5972, GO-2026-6088 to GO-2026-6091 and GO-2026-6218). They sit in `os.Root`,
+  `crypto/tls`, `net/http`, `net/url`, `encoding/asn1`, `encoding/xml`, `html/template` and
+  the `x/net` DNS and IDNA helpers, none of which notenv calls (`govulncheck` against the
+  1.26.4 standard library reports no affected code paths). Binaries from this release are
+  built with the patched toolchain regardless.
+
+### Changed
+
+- **`golang.org/x/crypto` updated from v0.56.0 to v0.57.0, `x/sys` from v0.47.0 to
+  v0.48.0 and `x/term` from v0.45.0 to v0.46.0.** Routine upstream releases with no
+  advisories against the previous versions; `x/term` now also processes bytes returned
+  alongside a read error. `x/sync`, `x/telemetry`, `x/tools` and `x/vuln` (the
+  `govulncheck` tool itself, v1.4.0 to v1.8.0) move to their current releases; they are
+  build-time dependencies and are not linked into the notenv binary. The one advisory that
+  remains, GO-2026-5932, covers `x/crypto`'s unmaintained OpenPGP package, has no fixed
+  version, and is never imported.
+- **CI actions updated and re-pinned by commit SHA.** `actions/deploy-pages` moves from
+  v5.0.0 to v5.0.1 and `anchore/sbom-action/download-syft` from v0.24.2 to v0.24.3. This
+  only affects the project's own CI; released binaries are unchanged beyond the dependency
+  updates above.
+
 ## 1.0.3
 
 ### Security
